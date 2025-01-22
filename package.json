@@ -5,11 +5,12 @@
   "scripts": {
     "dev": "tsnd --respawn --files ./src",
     "clean": "rimraf build/",
-    "copy-files": "copyfiles -u 1 src/**/*.proto src/**/*.js build/",
+    "copy-files": "copyfiles -u 1 src/**/*.proto src/**/*.js out/",
     "copy-build": "cp -r ./build ../../com.eufylife.home/lib/eufy-clean/build && cp -r ./package.json ../../com.eufylife.home/lib/eufy-clean/ && cp -r ./tsconfig.json ../../com.eufylife.home/lib/eufy-clean/",
     "clear-build": "rimraf ../../com.eufylife.home/lib/eufy-clean/build",
     "build": "yarn clean && tsc && yarn copy-files && yarn clear-build && yarn copy-build",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "watch": "tsc -w -p tsconfig.json"
   },
   "keywords": [],
   "author": "",
@@ -24,9 +25,10 @@
   },
   "dependencies": {
     "@tuyapi/cloud": "^0.6.2",
-    "tuyapi": "github:codetheweb/tuyapi",
     "axios": "^1.6.8",
+    "dotenv": "^16.4.7",
     "mqtt": "^5.5.5",
-    "protobufjs": "^7.3.0"
+    "protobufjs": "^7.4.0",
+    "tuyapi": "github:codetheweb/tuyapi"
   }
 }

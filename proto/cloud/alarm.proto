@@ -1,0 +1,27 @@
+syntax = "proto2";
+package  alarm.message;
+
+option java_package = "com.eufylife.smarthome.protobuftool";
+option java_outer_classname = "AlarmInfo";
+/*VER0.1*/
+/*author : bruce.yin@oceanwing.com*/
+
+
+
+message Alarm {
+	required uint32 hours 					= 1;//range 0~23
+	required uint32 minutes 				= 2;//range 0~59
+	required bool	repetition				= 3;//1-enable weekly repetition 0-execute only once When only once, week_info can only have one valid BIT
+	required uint32 week_info				= 4;//Monday to Sunday occupy BIT0-BIT6 in sequence, BIT7 is reserved as 0
+}
+
+
+message SyncTime {
+	required uint32 year 	= 1;//example :2017
+	required uint32 month 	= 2;//range 1~12
+	required uint32 day		= 3;//rang 1~31
+	required uint32 weekday	= 4;//rang 1~7
+	required uint32 hours	= 5;//range 0~23
+	required uint32 minutes	= 6;//range 0~59
+	required uint32 seconds	= 7;//range 0~59
+}

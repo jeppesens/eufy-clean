@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+import "proto/cloud/common.proto";
+
+message Volume {
+    uint32 value = 1;   // 0 - 100
+}
+
+message Power {
+    Switch sw = 1;
+}
+
+message Battery {
+    uint32 level = 1;   // 0 - 100
+}

@@ -1,0 +1,134 @@
+/**
+ * 蓝牙协议，通过 btgatt 进行通信；
+ */
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+// 手机 app 发给机器人
+message BtAppMsg {
+    message GetProductInfo {
+        bool get = 1;   // 该字段随意填入
+
+        // 手机端配网功能的版本
+        // 设备根据获取的版本使用不同的配网方法
+        // 目前：版本=0 蓝牙配网不加密
+        //       版本=1 蓝牙配网的 ssid、passwd 使用 AesCbc128 加密
+        uint32 distribute_version = 2;
+
+        message RemedyField {
+            uint32 distribute_version2 = 1;  // distribute_version 必须传 0 时使用该字段
+        }
+        RemedyField remedy_field = 3;        // X10 Pro Omni 项目错误使用了 distribute_version 需要补救，其他项目不需要该字段
+
+        // WiFi 合规需要country code，如 CN、US、JP
+        message Country {
+            string code = 1;  // https://datahub.io/core/country-list
+        }
+        Country country = 4;
+    }
+    GetProductInfo get_product_info = 1;
+
+    message GetApList {
+        uint32 max_num = 1;
+    }
+    GetApList get_ap_list = 2;
+
+    message Distribute {
+        string ssid = 1;
+        string passwd = 2;
+        string token = 3;
+        string user_id = 4;
+        string time_zone_id = 5;  // 时区 id，如 "Asia/Shanghai"
+
+        string domain = 6;        // 服务器域名，如 "https://vsaas-api-ci.eufylife.com"
+        string app_id = 7;        // app id，如 "eufy_home"
+        string house_id = 8;
+        string dev_name = 9;
+        string hub_name = 10;
+    }
+    Distribute distribute = 3;
+
+    // id 4 已不再使用
+
+    message Debug {
+        string d_data = 1;
+    }
+    Debug req = 5;
+}
+
+// 机器人发给手机 App
+message BtRobotMsg {
+    message ProductInfo {
+        enum Result {
+            E_OK = 0;
+            E_FAIL = 1;
+        }
+        Result ret = 1;         // 该字段为 E_OK 时其他字段才有非零值
+        string brand = 2;       // 如 eufy
+        string code_name = 3;   // 如 T2320
+        string model = 4;       // 如 mopper
+        string name = 5;        // 如 Eufyclean M61
+        string alisa_name = 6;  // 如 Eufyclean M61
+        string cloud_pid = 7;
+        string mac = 8;         // 使用 AesCbc128 加密
+
+        // 机器端配网功能的版本
+        // 手机 app 根据获取的版本使用不同的配网方法
+        // 目前：版本=0 蓝牙配网不加密
+        //       版本=1 蓝牙配网的 ssid、passwd 使用 AesCbc128 加密
+        uint32 distribute_version = 10;
+
+        message RemedyField {
+            uint32 distribute_version2 = 1;  // distribute_version 必须传 0 时使用该字段
+        }
+        RemedyField remedy_field = 11;        // X10 Pro Omni 项目错误使用了 distribute_version 需要补救，其他项目不需要该字段
+    }
+    ProductInfo product_info = 1;
+
+    message ApList {
+        message ApInfo {
+            string ssid = 1;
+            int32 dbm = 2;
+        }
+        repeated ApInfo ap_info = 1;
+    }
+    ApList ap_list = 2;
+
+    message DistributeResult {
+        enum Value {
+            E_OK = 0;           // 成功
+            E_SRV_ERR = 1;      // 服务异常
+            E_AP_NOT_FOUND = 2; // 没有找到 ap
+            E_PASSWD_ERR = 3;   // 密码错误
+            E_DHCP_ERR = 4;     // dhcp 错误
+            E_GW_ERR = 5;       // 网关错误
+            E_DNS_ERR = 6;      // dns 错误
+            E_NET_ERR = 7;      // 网络错误
+        }
+        Value value = 1;
+        string mac = 2;     // 使用 AesCbc128 加密
+        string pid = 3;
+        string uuid = 4;    // SN
+        string authkey = 5; // chip_id
+        int32 dbm = 6;  // 选择 ap 的信号强度
+
+        message AiotResult {
+            int32 get_mqtt_info_ret = 1;
+            int32 get_data_point_ret = 2;
+            int32 connect_mqtt_ret = 3;
+            int32 bind_ret = 4;
+        }
+        AiotResult aiot_result = 7;
+    }
+    DistributeResult distribute_result = 3;
+
+    // id 4 已不再使用
+
+    message Debug {
+        string d_data = 1;
+    }
+    Debug ack = 5;
+}

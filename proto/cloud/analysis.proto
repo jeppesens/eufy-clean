@@ -1,0 +1,196 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+message AnalysisRequest {
+}
+
+message AnalysisInternalStatus {
+    string robotapp_state = 1;
+    string motion_state = 2;
+}
+
+message AnalysisStatistics {
+    // Cleaning record, reported at the end of cleaning (including automatic and manual intervention).
+    message CleanRecord {
+        uint32 clean_id = 1;       // 清洁id，每次清洁id++，id从1开始，0为无效.
+
+        bool result = 2;           // 清洁结果，true - 成功，反之失败
+
+        enum FailCode {
+            UNKNOW = 0;            // 未知原因，下面原因都不是
+
+            /**
+              清洁过程机器原因触发异常导致停机，用户介入恢复清洁并成功后也判断为清洁失败;
+              下面情况也算:
+                 脱困失败；
+                 断点续扫回充失败;
+                 回洗失败；
+             */
+            ROBOT_FAULT = 1;
+
+            /**
+              不受机器控制的报警，比如水箱满、托盘不在位等
+             */
+            ROBOT_ALERT = 2;
+
+            /**
+              用户干预，比如清洁中暂停按回充(或直接搬到基站上)、清洁中切换模式等
+             */
+            MANUAL_BREAK = 3;
+        }
+        FailCode fail_code = 3;       // 失败原因，当 result == false 有效
+
+        enum Mode {
+            AUTO_CLEAN = 0;           // 全局自动清洁
+            SELECT_ROOMS_CLEAN = 1;   // 选房清洁
+            SELECT_ZONES_CLEAN = 2;   // 选区清洁
+            SPOT_CLEAN = 3;           // 定点清洁
+            FAST_MAPPING = 4;         // 快速建图
+        }
+        Mode mode = 4;
+
+        enum Type {
+            SWEEP_ONLY = 0;
+            MOP_ONLY = 1;
+            SWEEP_AND_MOP = 2;
+        }
+        Type type = 5;
+
+        uint64 start_time = 6;     // 清洁开始时间，单位s，不带时区
+        uint64 end_time = 7;       // 清洁结束时间，单位s，不带时区
+        uint32 clean_time = 8;     // 清洁时间，去除断点回充/回洗、暂停时间，不包括回充导航和上座， 单位s
+        uint32 clean_area = 9;     // 清洁面积，清洁过的栅格面积，单位 m2
+        uint32 slam_area  = 10;    // slam建图面积，不包括障碍物面积，单位 m2
+        uint32 map_id = 11;        // 当前清洁地图的id
+        uint32 room_count = 12;    // 当前清洁地图中房间总数
+
+        message RollBrush {
+            // 单次清扫地毯过流次数，特指机器为了在长毛地毯上能正常清扫(没有卡住异物)，采取的保护电机策略，
+            // 例如 L60 长毛地毯电流在 800mA-1100mA之间采取开1s停2s策略.
+            uint32 protect_count = 1;
+
+            // 单次清扫堵转过流次数，堵转后机器采取类似开1s停3s策略.
+            uint32 stalled_count = 2;
+        }
+        RollBrush roll_brush = 13;  // 单次清扫过程滚刷停转的次数
+    }
+    CleanRecord clean = 1;
+
+    // 回充记录，回充上座完成或回充失败时上报
+    message GoHomeRecord {
+        uint32 clean_id = 1;       // 清洁id, 清洁后回充与CleanRecord中的clean_id相同，无清洁的回充设置为0
+        bool result = 2;           // 回充结果，true - 成功，反之失败
+
+        enum FailCode {
+            UNKNOW = 0;            // 未知，以下原因都不是.
+            MANUAL_BREAK = 1;      // 人工手动停止
+            NAVIGATE_FAIL = 2;     // 导航到充电座附件失败
+            ENTER_HOME_FAIL = 3;   // 上座失败
+        }
+        FailCode fail_code = 3;    // 失败原因，当 result == false 有效
+
+        uint64 power_level = 4;    // 开始回充的电量百分比，0 - 100
+        uint64 start_time = 5;     // 回充开始时间，单位s，不带时区
+        uint64 end_time = 6;       // 回充结束时间，单位s，不带时区
+    }
+    GoHomeRecord gohome = 2;
+
+    // 重定位记录，重定位成功或失败时上报
+    message RelocateRecord {
+        uint32 clean_id = 1;       // 清洁id, 清洁后回充与CleanRecord中的clean_id相同
+        bool result = 2;           // 重定位结果，true - 成功，反之失败
+        uint32 map_count = 3;      // 当前地图数量
+        uint64 start_time = 4;     // 重定位开始时间，单位s，不带时区
+        uint64 end_time = 5;       // 重定位结束时间，单位s，不带时区
+    }
+    RelocateRecord relocate = 3;
+
+    // 集尘记录，集尘完成或失败时上报
+    message CollectRecord {
+        uint32 clean_id = 1;       // 清洁id, 清洁后回充与CleanRecord中的clean_id相同
+        bool result = 2;           // 集尘结果，true - 成功，反之失败
+        uint64 start_time = 3;     // 集尘开始时间，单位s，不带时区
+    }
+    CollectRecord collect = 4;
+
+    // 控制事件
+    message ControlEvent {
+        uint32 clean_id = 1;       // 清洁id, 清洁后回充与CleanRecord中的clean_id相同，无清洁的回充设置为0
+
+        enum Type {
+            AUTO_CLEAN = 0;        // 自动清洁
+            SPOT_CLEAN = 1;        // 定点清洁
+            GOHOME = 2;            // 回充
+            CLEAN_PAUSE = 3;       // 清洁(包括自动清洁、选房、选区、定点)暂停
+            CLEAN_RESUME = 4;      // 清洁(包括自动清洁、选房、选区、定点)恢复
+        }
+        Type type = 2;
+
+        enum Source {
+            KEY = 0;              // 机身按键
+            APP = 1;              // APP控制
+            TIMER = 2;            // 预约定时
+        }
+        Source source = 3;
+
+        uint64 timestamp = 4;     // 时间戳，单位s，不带时区
+    }
+    ControlEvent ctrl_event = 5;
+
+    // 配网事件
+    message DistributeEvent {
+        message TimeStamp {
+            uint64 value = 1;     // 时间戳，单位s，不带时区
+        }
+        TimeStamp timestamp = 1;  // 配网结束时间，仅配网成功有这个字段
+
+        enum Mode {
+            AP = 0;               // AP
+            BLE = 1;              // 蓝牙
+        }
+        Mode mode = 2;
+
+        enum Result {
+            E_OK = 0;           // 成功
+            E_SRV_ERR = 1;      // 服务异常（连路由器超时）
+            E_AP_NOT_FOUND = 2; // 没有找到 ap
+            E_PASSWD_ERR = 3;   // 密码错误
+            E_DHCP_ERR = 4;     // dhcp 错误
+            E_GW_ERR = 5;       // 网关错误
+            E_DNS_ERR = 6;      // dns 错误
+            E_NET_ERR = 7;      // 网络错误
+        }
+        Result result = 3;
+
+        string software_version = 4;    // 固件版本
+        string sn = 7;                  // sn
+        string mac = 5;                 // mac 地址
+        string uuid = 6;                // uuid
+
+        string country_code = 8;        // 国家地区码 https://datahub.io/core/country-list
+        string token = 9;               // token
+    }
+    DistributeEvent distribute_event = 6;
+
+    // 电池信息
+    message BatteryInfo {
+        uint64 update_time = 1;     // 更新时间，单位s，不带时区
+        uint32 show_level = 2;      // 显示电量百分比，0 - 100
+        uint32 real_level = 3;      // 真实电量百分比，0 - 100
+        uint32 voltage = 4;         // 电压，单位mV
+        sint32 current = 5;         // 电流，单位mA
+        repeated sint32 temperature = 6;   // 温度，单位0.1摄氏度（支持单个或多个电池）
+    }
+    BatteryInfo battery_info = 7;
+}
+
+message AnalysisResponse {
+    // 机器人内部状态信息，不做缓存，变化比较频繁时将只上传最后的状态
+    AnalysisInternalStatus internal_status = 1;
+
+    // 数据分析信息，做缓存，保证数据不丢失
+    AnalysisStatistics statistics = 2;
+}

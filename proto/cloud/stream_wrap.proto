@@ -1,0 +1,20 @@
+/**
+ * 流通道协议包装.
+ *
+ * @note: 机器端使用，app忽略
+ */
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud.stream;
+
+import "proto/cloud/stream.proto";
+
+message RoomParamsWrap {
+    repeated .proto.cloud.stream.RoomParams room_params = 1;
+}
+
+message ObstacleInfoWrap {
+    repeated .proto.cloud.stream.ObstacleInfo obstacle_info = 1;
+}

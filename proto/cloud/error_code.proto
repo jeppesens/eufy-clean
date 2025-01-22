@@ -1,0 +1,55 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+import "proto/cloud/common.proto";
+
+// 云端下发给机器
+message ErrorSetting {
+    repeated uint32 warn_mask = 1;  // 警告码屏蔽，可多个
+    repeated string obstacle_reminder_mask = 2; // obstacle_reminder 屏蔽，可多个
+}
+
+// 机器上报到云的错误警告码，包含云端下发的 mask 字段（二次触发需要清除相应的项），枚举来自 ErrorCodeList
+message ErrorCode {
+    uint64 last_time = 1;  // 当前时间，单位是纳秒，开机到现在的单调时间 CLOCK_MONOTONIC
+
+    repeated uint32 error = 2;  // 可多个
+    repeated uint32 warn = 3;  // 可多个
+    ErrorSetting setting = 4;  // 可多个
+
+    message NewCode {
+        repeated uint32 error = 1;     // 新上报的错误码
+        repeated uint32 warn = 2;      // 新上报的警告码
+    }
+    NewCode new_code = 10;
+
+    message Battery {
+        bool restored = 1;  // 电池恢复（换电池标志）
+    }
+    Battery battery = 11;
+
+    message ObstacleReminder {
+        enum Type {
+            POOP = 0;
+        }
+        Type type = 1;
+        string photo_id = 2;
+        uint32 accuracy = 3;    // 准确率，0~100，表示百分比（0 表示无效）
+        uint32 map_id = 4;
+
+        oneof Description {
+            Point point = 5;
+        }
+    }
+    repeated ObstacleReminder obstacle_reminder = 12;
+}
+
+// 方向：机器上报到云的提醒（手机 app 显示 toast），枚举来自 PromptCodeList
+message PromptCode {
+    uint64 last_time = 1;  // 当前时间，单位是纳秒，开机到现在的单调时间 CLOCK_MONOTONIC
+
+    repeated uint32 value = 2;
+}

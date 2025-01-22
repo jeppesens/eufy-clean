@@ -1,9 +1,9 @@
-import axios from 'axios';
-import crypto from 'crypto';
+import axios, { AxiosInstance } from 'axios';
+import * as crypto from 'crypto';
 
 
 export class EufyApi {
-    private requestClient: axios.AxiosInstance;
+    private requestClient: AxiosInstance;
     private username: string;
     private password: string;
     public openudid: string;
@@ -40,13 +40,13 @@ export class EufyApi {
                 category: 'Home',
                 Accept: '*/*',
                 openudid: this.openudid,
-                'Accept-Language': 'nl-NL;q=1, uk-DE;q=0.9, en-NL;q=0.8',
+                'Accept-Language': 'uk-SE;q=1, en-SE;q=0.9',
                 'Content-Type': 'application/json',
                 clientType: '1',
-                language: 'nl',
+                language: 'en',
                 'User-Agent': 'EufyHome-iOS-2.14.0-6',
-                timezone: 'Europe/Berlin',
-                country: 'NL',
+                timezone: 'Europe/Stockholm',
+                country: 'SE',
                 Connection: 'keep-alive',
             },
             data: {
@@ -88,8 +88,8 @@ export class EufyApi {
                 token: this.session.access_token,
                 openudid: this.openudid,
                 clienttype: '2',
-                language: 'de',
-                country: 'DE',
+                language: 'en',
+                country: 'SE',
             },
         })
             .then(async (res) => {
@@ -122,8 +122,8 @@ export class EufyApi {
                 token: this.session.access_token,
                 openudid: this.openudid,
                 clienttype: '2',
-                language: 'nl',
-                country: 'NL',
+                language: 'en',
+                country: 'SE',
             },
         })
             .then(async (res) => {
@@ -154,8 +154,8 @@ export class EufyApi {
                 'user-agent': 'EufyHome-Android-3.1.3-753',
                 timezone: 'Europe/Berlin',
                 openudid: this.openudid,
-                language: 'de',
-                country: 'DE',
+                language: 'en',
+                country: 'SE',
                 'os-version': 'Android',
                 'model-type': 'PHONE',
                 'app-name': 'eufy_home',
@@ -210,8 +210,8 @@ export class EufyApi {
                 'user-agent': 'EufyHome-Android-3.1.3-753',
                 timezone: 'Europe/Berlin',
                 openudid: this.openudid,
-                language: 'de',
-                country: 'DE',
+                language: 'en',
+                country: 'SE',
                 'os-version': 'Android',
                 'model-type': 'PHONE',
                 'app-name': 'eufy_home',
@@ -255,8 +255,8 @@ export class EufyApi {
                 'user-agent': 'EufyHome-Android-3.1.3-753',
                 timezone: 'Europe/Berlin',
                 openudid: this.openudid,
-                language: 'de',
-                country: 'DE',
+                language: 'en',
+                country: 'SE',
                 'os-version': 'Android',
                 'model-type': 'PHONE',
                 'app-name': 'eufy_home',

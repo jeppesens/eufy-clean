@@ -72,7 +72,7 @@ export class EufyLogin extends Base {
     }
 
     public async getDevices(): Promise<any> {
-        // // Get all devices from the Eufy Cloud API. 
+        // // Get all devices from the Eufy Cloud API.
         this.eufyApiDevices = await this.eufyApi.getCloudDeviceList();
 
         if (this.sid) {

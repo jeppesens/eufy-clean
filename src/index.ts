@@ -1,10 +1,9 @@
-import crypto from 'crypto';
+import * as crypto from 'crypto';
 
-import { EufyLogin } from './controllers/Login';
-import { LocalConnect } from './controllers/LocalConnect';
 import { CloudConnect } from './controllers/CloudConnect';
+import { LocalConnect } from './controllers/LocalConnect';
+import { EufyLogin } from './controllers/Login';
 import { MqttConnect } from './controllers/MqttConnect';
-import { sleep } from './lib/utils';
 
 export class EufyClean {
     private eufyCleanApi: EufyLogin;

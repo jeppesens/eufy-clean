@@ -1,0 +1,136 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+import "proto/cloud/common.proto";
+import "proto/cloud/stream.proto";
+import "proto/cloud/clean_param.proto";
+
+message MapEditRequest {
+    enum Method {
+        MERGE_ROOMS = 0;
+        DIVIDE_ROOM = 1;
+        RESET_ROOMS = 2;
+        RENAME_ROOM = 3;            // 房间描述
+        SET_RESTRICTED_ZONES = 4;   // 设置限制区域：虚拟墙、禁区、禁拖区；
+        SET_ROOMS_CUSTOM = 5;       // 房间定制(个性化清洁)
+        SET_CRUISE_POINTS = 6;      // 设置全局巡航点
+        ROTATION = 7;               // 地图旋转
+        IGNORE_OBSTACLE = 8;        // 忽略/恢复障碍物
+    }
+
+    Method method = 1;
+    uint32 seq = 2;
+    uint32 map_id = 3;
+
+    message MergeRooms {
+        repeated uint32 room_ids = 1;
+    }
+
+    message DivideRoom {
+        uint32 room_id = 1;
+        repeated Point points = 2;  // 分房是两个点还是可以大于2个点？？？
+    }
+
+    // 房间定制(个性化清洁)
+    message RoomsCustom {
+        message Enable {
+            bool value = 1; // false: 使用全局参数；true: 使用房间定制参数
+        }
+        Enable custom_enable = 1;   // x10 之后不再使用
+
+        // 设置房间顺序
+        message Order {
+            message Room {
+                uint32 id = 1;
+                uint32 order = 2;
+            }
+            repeated Room rooms = 1;
+        }
+        Order rooms_order = 2;
+
+        // 设置房间定制参数
+        message Parm {
+            message Room {
+                uint32 id = 1;
+
+                message Custom {
+                    CleanType clean_type = 1;
+                    Fan fan = 2;
+                    MopMode mop_mode = 3;
+                    CleanExtent clean_extent = 4;
+                    uint32 clean_times = 5; // 清扫次数，非 0 有效
+                }
+                Custom custom = 2;
+            }
+            repeated Room rooms = 1;
+        }
+        Parm rooms_parm = 3;
+
+        Switch smart_mode_sw = 4; // 智能省心模式开关
+
+        enum Condition {
+            GENERAL = 0;                    // 通常设置房间定制参数
+            RESERVATION_IN_PROGRESS = 1;    // 预约房间清扫过程中设置房间定制参数
+        }
+        Condition condition = 5;
+    }
+
+    message RoomDesc {
+        uint32 id = 1;
+        string name = 2;
+        Floor floor = 3;
+        RoomScene scene = 4;
+    }
+
+    message CruisePoints {
+        repeated Point points = 1;
+    }
+
+    message Rotation {
+        uint32 angle = 1;  // 顺时针的角度的度数，如 90，180
+    }
+
+    message IgnoreObstacle {
+        bool valid = 1;         // false: 设置无效；true: 设置有效
+        string object_type = 2;
+        string photo_id = 3;    // 照片 id（优先通过照片 id 进行匹配）
+        Point point = 4;        // 障碍物中心点（其次搜索点的周围区域）
+    }
+
+    oneof Param {
+        MergeRooms merge_rooms = 6;
+        DivideRoom divide_room = 7;
+        stream.RestrictedZone restricted_zone = 8;
+        RoomDesc room_desc = 9;
+        RoomsCustom rooms_custom = 10;
+        CruisePoints cruise_points = 11;
+        Rotation rotation = 12;
+        IgnoreObstacle ignore_obstacle = 13;
+    }
+}
+
+message MapEditResponse {
+    MapEditRequest.Method method = 1;
+    uint32 seq = 2;
+
+    enum Result {
+        SUCCESS = 0;
+        STARTED = 1;
+        FAILED = 2;
+    }
+    Result result = 3;
+
+    message FailCode{
+        enum Value {
+            UNKNOWN = 0;  // 其他错误，非以下错误码
+            AREA_SMALL = 1;  // 分割后房间面积太小
+            ROOM_UNADJACENT = 2;  // 房间不相邻不能合并
+            TOO_MANY_ROOMS = 3;  // 分割后房间数太多
+        }
+        Value value = 1;
+    }
+    FailCode fail_code = 4;
+}

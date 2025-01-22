@@ -1,0 +1,29 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+import "proto/cloud/common.proto";
+
+message Undisturbed {
+    message TimePoint {
+        uint32 hour = 1;
+        uint32 minute = 2;
+    }
+
+    Switch sw = 1;       // 勿扰使能开关
+
+    TimePoint begin = 2;
+    TimePoint end = 3;
+}
+
+message UndisturbedRequest {
+    Undisturbed undisturbed = 1;
+}
+
+message UndisturbedResponse {
+    Active active = 1;      // 勿扰激活状态
+
+    Undisturbed undisturbed = 2;
+}

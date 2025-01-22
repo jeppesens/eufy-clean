@@ -1,0 +1,54 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+import "proto/cloud/version.proto";
+
+// 手机 app 每次进入实时地图控制面板后有且仅下发一次
+// 手机 app 主用户和分享用户都需要发送这个消息，其中 user_id 必须填主用户的
+message AppInfo {
+    enum Platform {
+        PF_OTHER = 0;
+        PF_ANDROID = 1;
+        PF_IOS = 2;
+        PF_CLOUD = 3;
+    }
+    Platform platform = 1;
+
+    string app_version = 2; // App 版本，如 "3.3.60"
+    string family_id = 3;   // 主用户 family_id
+    string user_id = 4;     // 主用户 user_id
+
+    enum DataCenter {
+        EU = 0;     // 欧洲数据中心
+        AZ = 1;     // 美国数据中心
+        AY = 2;     // 亚洲数据中心
+    }
+    DataCenter data_center = 5;
+
+    AppFunction app_function = 6;
+
+    string time_zone_id = 7;    // 时区 id，如 "Asia/Shanghai"
+}
+
+// 机器上线时上报一次或者 ip、user_id 变更上报
+message DeviceInfo {
+    string product_name = 1;    // 产品名称，如 eufy Clean xxx
+    string video_sn = 2;        // 序列号（video 相关服务使用）
+    string device_mac = 3;      // 设备 mac
+    string software = 4;        // 软件版本，如 "1.2.3"
+    uint32 hardware = 5;        // 硬件版本，如 2
+    string wifi_name = 6;       // 已连接的 wifi 名称
+    string wifi_ip = 7;         // 当前 wifi 的 ip
+    string last_user_id = 8;    // 机器上存储的最新 user_id（用于 app 判断是否相同账户）
+
+    message Station {
+        string software = 1;    // 软件版本，如 "1.2.3"
+        uint32 hardware = 2;    // 硬件版本，如 400
+    }
+    Station station = 11;       // 基站信息（机器在基站开机才有这个字段）
+
+    ProtoInfo proto_info = 12;
+}

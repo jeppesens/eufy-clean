@@ -1,0 +1,14 @@
+/**
+ * 清洁记录包装，调试专用，APP 忽略.
+ */
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+message CleanRecordWrap {
+    uint32 id = 1;
+    bytes desc = 2;   //  CleanRecordDesc 序列化结果
+    bytes data = 3;   //  CleanRecordData 序列化结果
+}

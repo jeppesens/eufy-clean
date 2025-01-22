@@ -123,6 +123,8 @@ TuyaCloud.prototype._mobileHash = function (data) {
  * API action to invoke (for example, 'tuya.cloud.device.token.create')
  * @param {Object} [options.data={}]
  * data to send in the request body
+ * @param {String} [options.deviceID=undefined]
+ * DEvice ID param
  * @param {String} [options.gid]
  * Group ID URL GET param (necessary for device-related actions)
  * @param {String} [options.version='1.0']

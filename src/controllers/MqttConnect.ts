@@ -1,9 +1,10 @@
 // Communication with the Eufy cloud - This goes via MQTT
 // This is only supported for "new" devices like the RoboVac X10 and RoboVac S1
+import fs from 'fs';
 import mqtt from 'mqtt';
-import { SharedConnect } from './SharedConnect';
 import { EufyLogin } from '../controllers/Login';
 import { sleep } from '../lib/utils';
+import { SharedConnect } from './SharedConnect';
 
 export class MqttConnect extends SharedConnect {
     private mqttClient: any;
@@ -65,13 +66,17 @@ export class MqttConnect extends SharedConnect {
             if (this.mqttClient) {
                 this.mqttClient.end();
             }
-
+            const c1 = Buffer.from(this.mqttCredentials.certificate_pem, 'utf8');
+            fs.writeFileSync('ca2.pem', c1);
+            const c2 = Buffer.from(this.mqttCredentials.private_key, 'utf8');
+            fs.writeFileSync('key2.key', c2);
             this.mqttClient = await mqtt.connect('mqtt://' + this.mqttCredentials.endpoint_addr, {
                 clientId: `android-${this.mqttCredentials.app_name}-eufy_android_${this.openudid}_${this.mqttCredentials.user_id
                     }-${Date.now()}`,
                 username: this.mqttCredentials.thing_name,
                 cert: Buffer.from(this.mqttCredentials.certificate_pem, 'utf8'),
                 key: Buffer.from(this.mqttCredentials.private_key, 'utf8'),
+                path: '/',
             });
 
             this.setupListeners();

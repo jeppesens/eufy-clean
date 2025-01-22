@@ -1,0 +1,45 @@
+/**
+ * 耗材统计.
+ */
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+message ConsumableRequest {
+    enum Type {
+        SIDE_BRUSH = 0;
+        ROLLING_BRUSH = 1;
+        FILTER_MESH = 2;
+        SCRAPE = 3;
+        SENSOR = 4;
+        MOP = 5;
+        DUSTBAG = 6;
+        DIRTY_WATERTANK = 7;
+        DIRTY_WATERFILTER = 8;
+    }
+    repeated Type reset_types = 1;
+}
+
+message ConsumableRuntime {
+    message Duration {
+        uint32 duration = 1;   // 单位：hour
+    }
+
+    Duration side_brush = 1;    //边刷
+    Duration rolling_brush = 2; //滚刷
+    Duration filter_mesh = 3;   //滤网
+    Duration scrape = 4;        //刮条
+    Duration sensor = 5;        //传感器
+    Duration mop = 6;           //拖布
+    Duration dustbag = 7;       //尘袋
+    Duration dirty_watertank = 10;       //污水预存水槽
+    Duration dirty_waterfilter = 11;     //污水泵滤芯
+
+    uint64 last_time = 20;  // 需要带上时间，单位纳秒，从1970.1.1开始的纳秒数。
+}
+
+message ConsumableResponse {
+    ConsumableRuntime runtime = 1;
+}

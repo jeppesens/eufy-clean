@@ -1,0 +1,80 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+message Empty {
+
+}
+
+message Point {
+    sint32 x = 1;       // 单位: m x 100
+    sint32 y = 2;
+}
+
+message Pose {
+    sint32 x = 1;       // 单位: m x 100
+    sint32 y = 2;
+    sint32 theta = 3;   // 单位: rad * 100
+}
+
+message Line {
+    Point p0 = 1;
+    Point p1 = 2;
+}
+
+message Quadrangle {
+    Point p0 = 1;
+    Point p1 = 2;
+    Point p2 = 3;
+    Point p3 = 4;
+}
+
+message Polygon {
+    repeated Point points = 1;
+}
+
+message Switch {
+    bool value = 1;
+}
+
+message Active {
+    bool value = 1;
+}
+
+message Numerical {   // 数值分级
+    uint32 value = 1;
+}
+
+// 地面类型
+message Floor {
+    enum Type {
+        UNKNOW = 0;
+        BLANKET = 1;  // 毛毯
+        WOOD = 2;     // 木质
+        CERAMIC = 3;  // 瓷砖
+    }
+    Type type = 1;
+}
+
+// 房间类型
+// 当房间未命名时，手机 app 根据类型和索引值自动多语言命名，如 "厨房1"、"Kitchen1" 等
+message RoomScene {
+    enum Type {
+        UNKNOW = 0;
+        STUDYROOM = 1;
+        BEDROOM = 2;
+        RESTROOM = 3;
+        KITCHEN = 4;
+        LIVINGROOM = 5;
+        DININGROOM = 6;
+        CORRIDOR = 7;
+    }
+    Type type = 1;
+
+    message Index {
+        uint32 value = 1;  // 从1开始
+    }
+    Index index = 2;
+}

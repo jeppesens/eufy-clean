@@ -1,0 +1,50 @@
+/**
+ * 地图管理相关协议，存储在云端的地图文件信息.
+ *
+ * 此协议与云端存储方式相关，目前以涂鸦为例：
+ * 涂鸦地图可以存储多张，每张地图有两个通道，分别是显示地图通道和特征地图通道，
+ * 由于特征地图目前已经不需要，故将地图通道数据拆开分两部分：MapEntity 和 MapExtras.
+ */
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+import "proto/cloud/common.proto";
+import "proto/cloud/stream.proto";
+
+/**
+ * 地图实体数据，包括
+    - 地图描述；
+    - 地图像素；
+ */
+message MapEntity {
+    message Desc {
+        uint32 map_id = 1;
+
+        uint32 width = 2;
+        uint32 height = 3;
+        uint32 resolution = 4;
+
+        Point origin = 5;          // 原点
+        repeated Pose docks = 6;
+    }
+    Desc desc = 1;
+
+    bytes pixel = 2;
+}
+
+/**
+ * 地图附加信息，包括
+ *  - 地图名称；
+ *  - 房间轮廓；
+ *  - 房间参数；
+ *  - 禁区；
+ */
+message MapExtras {
+    string name = 1;
+    repeated stream.RoomOutline room_outline = 2;
+    repeated stream.RoomParams room_params = 3;
+    stream.RestrictedZone restricted_zone = 4;
+}

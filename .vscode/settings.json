@@ -1,0 +1,16 @@
+{
+    "cSpell.words": [
+        "eufy",
+        "Eufy",
+        "mqtt",
+        "Mqtt",
+        "paho",
+        "robovac",
+        "sess",
+        "tuya",
+        "Tuya"
+    ],
+    "files.exclude": {
+        "**/__pycache__": true
+    },
+}

@@ -1,0 +1,86 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud.t22xx;
+
+enum ErrorCodeList {
+    E0000_NONE                             = 0;
+
+    E1010_LEFT_WHEEL_OPEN_CIRCUIT          = 1010;  // 左轮开路
+    E1011_LEFT_WHEEL_SHORT_CIRCUIT         = 1011;  // 左轮短路
+    E1012_LEFT_WHEEL_ERROR                 = 1012;  // 左轮异常
+    E1013_LEFT_WHEEL_STUCK                 = 1013;  // 左轮被卡住
+    E1020_RIGHT_WHEEL_OPEN_CIRCUIT         = 1020;  // 右轮开路
+    E1021_RIGHT_WHEEL_SHORT_CIRCUIT        = 1021;  // 右轮短路
+    E1022_RIGHT_WHEEL_ERROR                = 1022;  // 右轮异常
+    E1023_RIGHT_WHEEL_STUCK                = 1023;  // 右轮被卡住
+    E1030_WHEELS_OPEN_CIRCUIT              = 1030;  // 双轮开路
+    E1031_WHEELS_SHORT_CIRCUIT             = 1031;  // 双轮短路
+    E1032_WHEELS_ERROR                     = 1032;  // 双轮异常
+    E1033_WHEELS_STUCK                     = 1033;  // 双轮被卡住
+
+    E2010_SUNCTION_FAN_OPEN_CIRCUIT        = 2010;  // 单风机开路
+    E2013_SUNCTION_FAN_RPM_ERROR           = 2013;  // 单风机转数异常
+    E2110_ROLLER_BRUSH_OPEN_CIRCUIT        = 2110;  // 滚刷开路
+    E2111_ROLLER_BRUSH_SHORT_CIRCUIT       = 2111;  // 滚刷短路
+    E2112_ROLLER_BRUSH_STUCK               = 2112;  // 滚刷被卡住
+    E2210_SIDE_BRUSH_OPEN_CIRCUIT          = 2210;  // 边刷开路
+    E2211_SIDE_BRUSH_SHORT_CIRCUIT         = 2211;  // 边刷短路
+    E2212_SIDE_BRUSH_ERROR                 = 2212;  // 边刷异常
+    E2213_SIDE_BRUSH_STUCK                 = 2213;  // 边刷被卡住
+    E2310_DUSTBIN_NOT_INSTALLED            = 2310;  // 尘盒和滤网不在位
+    E2311_DUSTBIN_NOT_CLEANED_FOR_TOO_LONG = 2311;  // 长时间未清理尘盒
+    E3010_ROBOT_WATER_PUMP_OPEN_CIRCUIT    = 3010;  // 机器人水泵开路
+    E3013_ROBOT_WATER_INSUFFICIENT         = 3013;  // 机器人水量不足
+
+    E4010_LASER_ERROR                      = 4010;  // 激光传感器异常
+    E4011_LASER_BLOCKED                    = 4011;  // 激光传感器被遮挡
+    E4012_LASER_STUCK                      = 4012;  // 激光传感器被卡住或缠绕
+    E4111_LEFT_BUMPER_STUCK                = 4111;  // 左前撞被卡住
+    E4112_RIGHT_BUMPER_STUCK               = 4112;  // 右前撞被卡住
+    E4130_LASER_COVER_STUCK                = 4130;  // 激光罩被卡住
+
+    E5014_LOW_BATTERY_SHUT_DOWN            = 5014;  // 电量低关机
+    E5015_LOW_BATTERY_SCHEDULES_FAILED     = 5015;  // 电量低不能预约清洁
+    E5110_WIFI_OR_BLUETOOTH_ERROR          = 5110;  // WIFI或蓝牙异常
+    E5112_STATION_COMMUNICATION_ERROR      = 5112;  // 基站通信异常
+    E6113_NO_DUST_BAG_INSTALLED            = 6113;  // 未安装尘袋
+    E6310_CUT_HAIR_INTERRUPTED             = 6310;  // 切割毛发被中断
+    E6311_CUT_HAIR_STUCK                   = 6311;  // 割毛发组件被卡住
+
+    E7000_ROBOT_TRAPPED                    = 7000;  // 机器被困
+    E7001_ROBOT_PARTLY_SUSPEND             = 7001;  // 机器部分悬空
+    E7002_ROBOT_SUSPEND                    = 7002;  // 机器完全悬空(被抬起)
+    E7003_ROBOT_STARTUP_SUSPEND            = 7003;  // 机器启动自检时检测到悬空
+    E7010_ENTERED_NO_GO_ZONE               = 7010;  // 误入禁区
+
+    E7020_POSITIONING_FAILED_AND_START_CLEANING        = 7020;  // 定位失败，开始新清洁
+    E7021_POSITIONING_FAILED_AND_HEADING_HOME          = 7021;  // 定位失败，返回基站
+
+    E7031_RETURN_FAILED                                = 7031;  // 上座失败
+    E7032_FIND_STATION_FAILED_AND_RETURN_START_POINT   = 7032;  // 探索基站失败,返回起点
+    E7033_RETURN_STATION_FAILED_AND_STOP               = 7033;  // 返回基站失败，停止工作
+    E7034_FINE_START_POINT_FAILED_AND_STOP             = 7034;  // 找不到起点，停止工作
+    E7040_LEAVE_STATION_FAILED                         = 7040;  // 下座失败
+    E7050_INACCESSIBLE_AREAS_NOT_CLEANED               = 7050;  // 部分区域无法到达，还未清洁
+    E7051_IN_TASK_SCHEDULES_FAILED                     = 7051;  // 任务中，预约清洁启动失败
+    E7052_ROUTE_UNAVAILABLE                            = 7052;  // 路径规划失败，无法到达指定区域
+}
+
+enum PromptCodeList {
+    P0000_NONE                                         = 0;
+
+    P0031_POSITIONING_SUCCESSFUL                       = 31;  // 定位成功
+    P0040_TASK_FINISHED_HEADING_HOME                   = 40;  // 任务完成，开始返回
+    P0076_NO_PERFORMANCE_AT_STATION                    = 76;  // 在充电座或基站上无法执行任务
+    P0078_LOW_BATTERY_NEED_CHARGING                    = 78;  // 电量不足，请充电后再试
+    P0079_LOW_BATTERY_HEADING_HOME                     = 79;  // 电量不足，开始返回
+    P0085_SCHEDULED_CLEANING                           = 85;  // 开始预约清洁
+    P0087_MAP_UPDATING_TRY_LATER                       = 87;  // 地图数据更新中，请稍后再试
+
+
+    P6301_LOW_BATTERY_CANT_CUT_HAIR                    = 6301;  // 电量不足，无法割毛发
+    P6300_CUTTING_HAIR                                 = 6300;  // 正在割毛发清理
+}
+

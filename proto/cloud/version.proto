@@ -1,0 +1,87 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+enum Global {
+    NONE = 0;
+    PROTO_VERSION = 1;  // 目前是1，有变更则递增
+}
+
+// 设备支持的协议
+message ProtoInfo {
+    uint32 global_verison = 1;  // 使用 Global 的 PROTO_VERSION
+
+    message Module {
+        uint32 version = 1;
+        uint32 options = 2;
+    }
+
+    enum CollectDustOptionBit {
+        COLLECT_DUST_APP_START = 0;  // 此位为1时表示带App一键启动集尘功能，0表示不带
+    }
+    /**
+     * 对应 station.proto 文件
+     * version 1 使用 CollectDustCfg
+     * version 2 使用 CollectDustCfgV2, option定义见CollectDustOptionBit
+     */
+    Module collect_dust = 2;
+
+    enum MapFormatOptionBit {
+        MAP_FORMAT_ANGLE = 0;         // 地图存在 angle 字段
+        MAP_FORMAT_RESERVE_MAP = 1;   // 固件适配关闭多地图能选择保留地图
+        MAP_FORMAT_DEFAULT_NAME = 2;  // 固件支持地图和房间默认名称
+    }
+    /**
+     * version 1 地图增加 angle 字段（仅使用 Module.version）
+     * version 2 地图使用 option 定义见 MapFormatOptionBit
+     */
+    Module map_format = 3;
+
+    enum ContinueCleanOptionBit {
+        SMART_CONTINUE_CLEAN = 0;     // 智能断点续扫
+    }
+    /**
+     * version 1 断点续扫使用 option 定义见 ContinueCleanOptionBit
+     */
+    Module continue_clean = 4;
+
+    /**
+     * version 1 支持割毛发功能
+     */
+    Module cut_hair = 5;
+
+    enum TimingOptionBit {
+        SCHEDULE_ROOMS_CLEAN_CUSTOM = 0;    // 预约房间清扫支持每个房间自定义参数
+        SCHEDULE_SCENE_CLEAN = 1;           // 预约场景清扫
+    }
+    /**
+     * version 1 定时功能使用 option 定义见 TimingOptionBit
+     */
+    Module timing = 6;
+}
+
+// App 支持的功能
+message AppFunction {
+    message Module {
+        uint32 version = 1;
+        uint32 options = 2;
+    }
+
+    enum MultiMapsFunctionBit {
+        REMIND_MAP_SAVE = 0;  // 此位为1时表示App的拥有能力是地图提醒保存
+    }
+    /**
+     * version 1 使用 option 定义见 MultiMapsFunctionBit
+     */
+    Module multi_maps= 2;
+
+    enum OptimizationFunctionBit {
+        PATH_HIDE_TYPE = 0;  // 此位为1时表示App支持路径隐藏类型
+    }
+    /**
+     * version 1 使用 option 定义见 OptimizationFunctionBit
+     */
+    Module optimization = 3;
+}

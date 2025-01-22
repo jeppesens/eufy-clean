@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+import "proto/cloud/common.proto";
+
+message DebugRequest {
+    Switch log_sw = 1;   // 日志开关
+
+    // 用户在手机 app 主动反馈异常，这时设备可以单次上传日志
+    message FaultReport {
+        uint32 seq = 1;
+    }
+    FaultReport fault_report = 2;
+
+    Switch capture_sw = 3;  // 数据采集开关（数据回流）
+
+    // 图像识别不准确时，用户可以在手机 app 上主动反馈
+    message ImageFeedback {
+        string object_type = 1;
+        string photo_id = 2;    // 照片 id
+    }
+    ImageFeedback image_feedback = 4;  // !!! 需求变更，此项废弃
+
+    Switch toggle_mop_raise = 11;  // 翻转拖把抬起/下降，true 翻转，false 忽略
+    Switch toggle_mop_spin = 12;   // 翻转拖把旋转/停转，true 翻转，false 忽略
+}
+
+message DebugResponse {
+    Switch log_sw = 1;
+
+    message UpdateInfo {
+        uint32 err_code = 1;
+    }
+    UpdateInfo update_info = 2;
+
+    message WebTtyInfo {
+        string connection_data = 1;
+    }
+    WebTtyInfo webtty_info = 3;
+
+    Switch capture_sw = 4;  // 如果没有这个字段，app 上就不显示采集开关
+}

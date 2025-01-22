@@ -1,0 +1,116 @@
+/**
+ * media控制协议；
+ */
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+message MediaSetting {
+    enum Resolution {
+        R_480P = 0;
+        R_720P = 1;
+        R_1080P = 2;
+    }
+
+    // 实时视频流参数
+    message RTStream {
+        Resolution resolution = 1;
+    }
+    RTStream rt_stream = 1;
+
+    // 录像参数
+    message Record {
+        Resolution resolution = 1;
+        uint32 bitrate = 2;
+    }
+    Record record = 2;
+
+    // 拍照参数
+    message Capture {
+        uint32 width = 1;
+        uint32 height = 2;
+    }
+    Capture capture = 3;
+}
+
+message MediaStatus {
+    enum State {
+        IDLE = 0;         // 空闲
+        RECORDING = 1;    // 录像中
+    }
+    State state = 1;
+
+    enum Storage {
+        NORMAL = 0;
+        THRESHOLD = 1;      // 达到阈值
+        FULL = 2;           // 存储空间满
+    }
+    Storage storage = 2;
+
+    uint32 total_space = 3; // 总空间大小（单位 kb，下同）
+    uint32 photo_space = 4; // 照片占用空间大小
+    uint32 video_space = 5; // 视频占用空间大小
+    bool bind_state = 6;    // 是否已绑定云
+}
+
+message MediaManagerRequest {
+    // 媒体控制
+    message Control {
+        enum Method {
+            RECORD_START = 0;   // 开始录像
+            RECORD_STOP = 1;    // 停止录像
+            CAPTURE = 2;        // 执行拍照
+        }
+        Method method = 1;
+        uint32 seq = 2;   // 序号
+    }
+    Control control = 1;
+
+    MediaSetting setting = 2;
+
+    message BindMediaSvc {
+        uint32 seq = 1;
+        uint32 c = 2;
+        uint32 d = 3;
+        string g = 4;
+        uint32 j = 5;
+        string user_account = 6;
+    }
+    BindMediaSvc bind_media_svc_data = 3;
+}
+
+message MediaManagerResponse {
+    // 媒体控制结果
+    message Control {
+        MediaManagerRequest.Control.Method method = 1;
+        uint32 seq = 2;   // 返回与Request相同的seq
+
+        enum Result {
+            SUCCESS = 0;
+            FAIL = 1;
+        }
+        Result result = 3;
+
+        message FileInfo {
+            string filepath = 1;
+            string id = 2;
+        }
+        FileInfo file_info = 4;
+    }
+    Control control = 1;
+
+    MediaSetting setting = 2;
+    MediaStatus status = 3;
+
+    message BindMediaSvc {
+        uint32 seq = 1;
+        enum Result {
+            SUCCESS = 0;
+            FAIL = 1;
+        }
+        Result result = 2;
+    }
+    BindMediaSvc bind_media_svc = 4;
+}

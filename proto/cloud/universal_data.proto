@@ -1,0 +1,27 @@
+/**
+ * 通用数据协议
+ */
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+import "proto/cloud/common.proto";
+
+message UniversalDataRequest {
+}
+
+message UniversalDataResponse {
+    message RoomTable {
+        uint32 map_id = 1;
+
+        message Data {
+            uint32 id = 1;
+            string name = 2;
+            RoomScene scene = 3;
+        }
+        repeated Data data = 2;
+    }
+    RoomTable cur_map_room = 1;
+}

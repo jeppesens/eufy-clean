@@ -1,7 +1,7 @@
 import TuyaCloud from '../lib/TuyaCloud.js';
 
 export class TuyaCloudApi {
-    private tuyaCloud: any;
+    private tuyaCloud: TuyaCloud;
     private username: string;
     private password: string;
     private userId: string;

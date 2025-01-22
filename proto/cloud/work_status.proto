@@ -1,0 +1,252 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud;
+
+message WorkStatus {
+    // 刚开机时，不用传 mode，由手机 app 自行决定展示默认值
+    // mode 由手机 app 下发或按键更改，回复值和上次相同
+    message Mode {
+        enum Value {
+            AUTO = 0;           // 全局自动清洁
+            SELECT_ROOM = 1;    // 选房清洁
+            SELECT_ZONE = 2;    // 选区清洁
+            SPOT = 3;           // 定点清洁
+            FAST_MAPPING = 4;   // 快速建图
+            GLOBAL_CRUISE = 5;  // 全屋巡航
+            ZONES_CRUISE = 6;   // 选区巡航
+            POINT_CRUISE = 7;   // 指哪巡航（精准到达）
+            SCENE = 8;          // 场景清洁
+            SMART_FOLLOW = 9;   // 智能跟随
+        }
+        Value value = 1;
+    }
+    Mode mode = 1;
+
+    enum State {
+        STANDBY = 0;            // 待机、建图暂停、暂停清洁、暂停回洗、暂停回充、暂停巡航、寻找机器人
+        SLEEP = 1;              // 休眠
+        FAULT = 2;              // 故障
+        CHARGING = 3;           // 升级中（未来可能考虑非充电状态也能升级）、充电中、充电完成、充电异常
+        FAST_MAPPING = 4;       // 定位中、快速建图
+        CLEANING = 5;           // 定位中、全局清洁、选区清洁、划区清洁、定点清洁、回洗拖布中、清洗拖布中
+        REMOTE_CTRL = 6;        // 遥控中
+        GO_HOME = 7;            // 定位中、回充中（包括清洁完成回充、低电回充）
+        CRUISIING = 8;          // 定位中、巡航中
+    }
+    State state = 2;
+
+    // 某一时刻以下子状态可能存在一个或同时存在多个
+    // 隐含规则：下面 message 如果不存在表示该子状态为 IDLE
+
+    message Charging {
+        enum State {
+            DOING = 0;
+            DONE = 1;
+            ABNORMAL = 2;  // 充电异常（充电弹片接触但无法充电）
+        }
+        State state = 1;
+    }
+    Charging charging = 3;
+
+    message Upgrading {
+        enum State {
+            DOING = 0;
+            DONE = 1;
+        }
+        State state = 1;
+    }
+    Upgrading upgrading = 4;
+
+    message Mapping {   // 快速建图、清洁建图都会有这个 message
+        enum RunState {
+            DOING = 0;
+            PAUSED = 1;
+        }
+        RunState state = 1;
+
+        enum Mode {
+            MAPPING = 0; // [兼容字段，4.1 废弃]
+            RELOCATING = 1; // [兼容字段，4.1 废弃]
+        }
+        Mode mode = 2;  // [兼容字段，4.1 废弃]
+    }
+    Mapping mapping = 5;
+
+    message Cleaning {
+        enum RunState {
+            DOING = 0;
+            PAUSED = 1;
+        }
+        RunState state = 1;
+
+        enum Mode {
+            CLEANING = 0;
+            RELOCATING = 1;  // [兼容字段，4.1 废弃]
+            GOTO_POS = 2;
+            POOP_CLEANING = 3;      // 便便补扫
+        }
+        Mode mode = 2;
+        bool scheduled_task = 3;    // 是否在执行预约定时任务
+    }
+    Cleaning cleaning = 6;
+
+    message GoWash {
+        enum RunState {
+            DOING = 0;
+            PAUSED = 1;
+        }
+        RunState state = 1;
+
+        enum Mode {
+            NAVIGATION = 0;     // 回洗
+            WASHING = 1;        // 清洗拖布中
+            DRYING = 2;         // 烘干拖布中（严格意义不属于回洗）
+        }
+        Mode mode = 2;
+    }
+    GoWash go_wash = 7;
+
+    message GoHome {
+        enum RunState {
+            DOING = 0;
+            PAUSED = 1;
+        }
+        RunState state = 1;
+
+        enum Mode {
+            COMPLETE_TASK = 0;      // 完成任务回充
+            COLLECT_DUST = 1;       // 中途集尘回充
+            OTHRERS = 10;           // 其他回充
+        }
+        Mode mode = 2;
+    }
+    GoHome go_home = 8;
+
+    message Cruisiing {
+        enum RunState {
+            DOING = 0;
+            PAUSED = 1;
+        }
+        RunState state = 1;
+
+        enum Mode {
+            RELOCATING = 0; // [兼容字段，4.1 废弃]
+            CRUISIING = 1; // [兼容字段，4.1 废弃]
+        }
+        Mode mode = 2; // [兼容字段，4.1 废弃]
+    }
+    Cruisiing cruisiing = 9;
+
+    message Relocating {
+        enum State {
+            DOING = 0;
+        }
+        State state = 1;
+    }
+    Relocating relocating = 10;
+
+    message Breakpoint {
+        enum State {
+            DOING = 0;
+        }
+        State state = 1;
+    }
+    Breakpoint breakpoint = 11;
+
+    message RollerBrushCleaning {
+        enum State {
+            DOING = 0;
+        }
+        State state = 1;
+    }
+    RollerBrushCleaning roller_brush_cleaning = 12;
+
+    message SmartFollow {
+        enum State {
+            DOING = 0;
+        }
+        State state = 1;
+
+        enum Mode {
+            FOLLOWING = 0;  // 跟随中
+            SEARCHING = 1;  // 搜索目标中
+        }
+        Mode mode = 2;
+        uint32 elapsed_time = 3;    // 已执行时间
+        uint32 area = 4;            // 面积
+    }
+    SmartFollow smart_follow = 13;
+
+    message Station {
+        // 注水系统，操作对象：机器人水箱
+        message WaterInjectionSystem {
+            enum State {
+                ADDING = 0;     // 注水中
+                EMPTYING = 1;   // 排水中
+            }
+            State state = 1;
+        }
+        WaterInjectionSystem water_injection_system = 1;
+
+        // 集尘系统，操作对象：机器人集尘盒
+        message DustCollectionSystem {
+            enum State {
+                EMPTYING = 0;   // 排空中
+            }
+            State state = 1;
+        }
+        DustCollectionSystem dust_collection_system = 2;
+
+        // 洗和烘干系统，操作对象：机器人拖布
+        message WashingDryingSystem {
+            enum State {
+                WASHING = 0;    // 洗拖布中
+                DRYING = 1;     // 烘干拖布中
+            }
+            State state = 1;
+        }
+        WashingDryingSystem washing_drying_system = 3;
+
+        // 基站水箱状态
+        message WaterTankState {
+            bool clear_water_adding = 1;        // 清水添加中
+            bool waste_water_recycling = 2;     // 污水回收中
+        }
+        WaterTankState water_tank_state = 4;
+    }
+    Station station = 14;  // 从 x10 项目开始使用这里的基站状态，station dp 的状态保留但不做逻辑处理
+
+    message Scene {
+        uint32 id = 1;
+
+        uint32 elapsed_time = 2;    // 已执行时间，0 有效
+        uint32 estimate_time = 3;   // 预估完成时间，0 无效
+        string name = 4;
+
+        enum TaskMode {
+            AUTO = 0;           // 全局自动清洁
+            SELECT_ROOM = 1;    // 选房清洁
+            SELECT_ZONE = 2;    // 选区清洁
+        }
+        TaskMode task_mode = 5;
+
+        // 后面这里加上场景的时间线
+        // ...
+    }
+    Scene current_scene = 19;
+
+    message Trigger {
+        enum Source {
+            UNKNOWN = 0;        // 来源未知，如：刚开机
+            APP = 1;            // 手机 app 或者其他调试工具
+            KEY = 2;            // 按键，如：暂停、继续、停止、回充等
+            TIMING = 3;         // 定时，如：每天清洁、每周清洁等
+            ROBOT = 4;          // 机器人，如：低电、故障、清洁完成等
+            REMOTE_CTRL = 5;    // 遥控器, 如：遥控器按键
+        }
+        Source source = 1;
+    }
+    Trigger trigger = 20;
+}

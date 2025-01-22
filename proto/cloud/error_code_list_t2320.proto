@@ -1,0 +1,85 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+enum ErrorCodeList {
+    E000_NONE = 0;
+
+    E001_CRASH_BUFFER_IS_STUCK = 1;  // 碰撞缓冲器被卡住
+    E002_WHEEL_IS_STUCK = 2;          // 轮子被卡住
+    E003_THE_SIDE_BRUSH_IS_STUCK = 3; // 边刷被卡住
+    E004_ROLLING_BRUSH_IS_STUCK = 4;  // 滚刷被卡住
+    E005_THE_HOST_MACHINE_IS_TRAPPED_PLEASE_CLEAR_OBSTACLES = 5; // 主机被困，请清理周围障碍物
+    E006_MACHINE_IS_TRAPPED_PLEASE_MOVE_TO_START = 6; // 机器被困，请移动到原地附近启动
+    E007_THE_WHEEL_IS_OVERHANGING = 7; // 轮子悬空
+    E008_THE_POWER_IS_TOO_LOW_THE_SYSTEM_IS_ABOUT_TO_SHUT_DOWN_AUTOMATICALLY = 8; // 电量过低，系统即将自动关机
+
+
+    E013_THE_HOST_IS_TILTED = 13;  // 主机倾斜
+    E014_THE_FAULT_NO_DUST_BOX = 14; // 请装回尘盒和滤网
+    E017_FORBIDDEN_AREA_IS_DETECTED = 17;              // 检测到禁区
+    E018_THE_LASER_PROTECTION_COVER_IS_STUCK = 18;     // 激光保护罩被卡住
+    E019_LASER_SENSOR_IS_STUCK_OR_TANGLED = 19; // 激光传感器被卡住或缠绕
+    E020_LASER_SENSOR_MAY_BE_BLOCKED = 20;      // 激光传感器可能被遮挡
+    E021_ON_DOCK_FAILED = 21;      // 上座失败
+    E026_INSUFFICIENT_POWER_APPOINTMENT_START_FAILED = 26; // 错误26: 电量不足，预约启动失败
+    E031_FOREIGN_OBJECTS_STUCK_IN_SUCTION_PORT = 31; // 吸口卡主异物
+    E032_THE_WIPE_HOLDER_ROTATING_MOTOR_IS_STUCK = 32; // 抹布支架旋转电机被卡住，请清除抹布上被缠绕的异物。
+    E033_THE_WIPING_BRACKET_LIFT_MOTOR_IS_STUCK = 33; // 抹布支架升降电机被卡住，请清除升降支架内异物。
+    E039_POSITIONING_FAILED_END_OF_CLEANING = 39; // 错误39:定位失败，结束清扫，请确认当前使用地图是否与家庭环境匹配。
+    E040_THE_MOP_CLOTH_IS_DISLODGED = 40;              // 拖布脱落
+    E041_THE_AIRDRYING_DEVICE_HEATER_IS_ABNORMAL = 41; // 风干装置加热器异常
+    E050_THE_MACHINE_IS_ON_THE_CARPET_BY_MISTAKE = 50; // 机器误上地毯，请检查
+    E051_THE_CAMERA_BLOCK = 51;   // 摄像头被遮挡，请检查
+    E052_UNABLE_TO_LEAVE_THE_STATION = 52;   // 机器下座失败，请检查周围环境
+    E055_EXPLORING_STATION_FAILED = 55;   // 探索基站失败
+
+    E070_CLEAN_DUST_COLLECTOR_AND_FITTER = 70;     // 请清理尘盒和滤网
+    E071_WALL_SENSOR_DO_NOT_WORK = 71;     // 沿墙传感器异常
+    E072_INSUFFICIENT_WATER_OF_ROBOVAC = 72;     // 水箱水量不足
+    E073_DIRTY_TANK_OF_STATION_IS_FULL = 73;     // 污水箱满
+    E074_CLEAN_WATER_OF_STATION_IS_INSUFFICIENT = 74;     // 清水箱水量不足
+    E075_WATER_TANK_IS_ABSENT = 75;     // 基站内没有清水箱或者污水箱
+    E076_CAMERA_IS_ABNORMAL = 76;     // 摄像头异常
+    E077_3D_TOF_IS_ABNORMAL = 77;     // 3d tof异常
+    E078_ULTRASONIC_SENSOR_IS_ABNORMAL = 78;     // 超声波传感器异常
+    E079_CLEAN_TRAY_OF_STATION_IS_NOT_INSTALLED = 79;     // 清洗盘未安装
+    E080_ROBOVAC_AND_STATION_COMMUNICATION_IS_ABNORMAL = 80;     // 主机与基站通信异常
+    E081_SEWAGE_TANK_IS_LEAKING_GAS = 81;     // 污水箱漏气
+    E082_CLEAN_TRAY_OF_STATION_NEED_CLEAN = 82;     // 请清理清洗盘
+    E083_POOR_CONTACT_DURING_CHARGING = 83; // 充电时接触不良，请检查
+
+    E101_THE_BATTERY_IS_ABNORMAL = 101; // 电池异常
+    E102_WHEEL_MODULE_IS_ABNORMAL = 102;              // 轮子模组异常
+    E103_THE_SIDE_BRUSH_MODULE_IS_ABNORMAL = 103;     // 边刷模组异常
+    E104_THE_FAN_IS_ABNORMAL = 104;                   // 风机异常
+    E105_THE_ROLLER_BRUSH_MOTOR_IS_ABNORMAL = 105;    // 滚刷电机异常
+    E106_THE_HOST_PUMP_IS_ABNORMAL = 106;             // 主机水泵异常
+    E107_THE_LASER_SENSOR_IS_ABNORMAL = 107;          // 激光传感器异常
+    E111_ROTATION_MOTOR_ABNORMAL = 111;               // 旋转电机异常
+    E112_LIFT_MOTOR_ABNORMAL = 112;                   // 升降电机异常
+    E113_THE_WATER_SPRAYING_DEVICE_IS_ABNORMAL = 113; // 喷水装置异常
+    E114_THE_WATER_PUMPING_DEVICE_IS_ABNORMAL = 114;  // 抽水装置异常
+    E117_ULTRASONIC_SENSOR_IS_ABNORMAL = 117;         // 超声波传感器异常
+    E119_WIFI_OR_BLUETOOTH_ABNORMAL = 119;       // Wi-Fi或蓝牙异常
+}
+
+enum PromptCodeList {
+    P000_NONE = 0;
+
+    P001_START_SCHEDULED_CLEANING = 1; // 开始预约清洁
+    P003_POWER_IS_LOW_RETURN_TO_BASE_STATION_IMMEDIATELY = 3; // 电量不足，立即返回基站
+    P004_POSITIONING_FAILED_REBUILD_MAP_START_NEW_CLEANING = 4; // 定位失败，重新建图，开始新清洁
+    P005_POSITIONING_FAILED_MISSION_ENDED_START_BACK_TO_BASE_STATION = 5; // 定位失败，任务结束，开始返回基站
+    P006_SOME_AREAS_ARE_NOT_YET_CLEANED_BECAUSE_THEY_ARE_UNREACHABLE = 6; // 部分区域因为无法到达，还未清洁
+    P007_PATH_PLANNING_FAILED_CANT_REACH_THE_DESIGNATED_AREA = 7; // 路径规划失败，无法到达指定区域
+    P009_BASE_STATION_EXPLORATION_FAILED_THE_MACHINE_RETURNED_TO_THE_STARTING_POINT = 9; // 基站探索失败，机器返回起点
+    P010_POSITION_SUCCESS = 10;     // 定位成功
+    P011_TASK_FINISHED_AND_RETURN = 11;     // 任务完成，开始返回基站
+    P012_START_TASK_FAILED_DUE_TO_ON_STATION = 12;      // 在基站上无法执行任务
+    P013_START_SCHEDULE_FAILED_DUE_TO_WORKING = 13;     // 任务中，预约清洁启动失败
+    P014_START_TASK_FAILED_DUE_TO_MAP_UPDATING = 14;    // 地图数据更新中，请稍后再试
+    P015_FINISHED_WASHING_MOP_AND_RESUME_TASK = 15;     // 清洗拖布完成，继续清洁
+    P016_LOW_BATTERY_PLZ_CHARGE_AND_TRY_AGAIN = 16;     // 电量不足，请充电后再试
+    P017_CLEAN_MOP_COMPLETED = 17;      // 清洗拖布完成
+}

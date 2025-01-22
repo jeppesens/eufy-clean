@@ -1,6 +1,13 @@
 build
+out
 .git
 node_modules
 # build
 *.tgz
 .DS_Store
+**/__pycache__
+*.pem
+*.key
+# proto/cloud/*.py
+**/__pycache__
+*.env

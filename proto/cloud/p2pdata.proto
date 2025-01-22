@@ -1,0 +1,152 @@
+syntax = "proto3";
+
+// option optimize_for = LITE_RUNTIME;
+
+package proto.cloud.p2p;
+
+import "proto/cloud/common.proto";
+import "proto/cloud/stream.proto";
+
+/**
+ * 地图数据的统一入口, 包括实时地图数据, 多地图相关数据.
+ */
+message MapChannelMsg {
+    enum MsgType {
+        MAP_INFO = 0;
+        MULTI_MAP_RESPONSE = 1;
+    }
+
+    MsgType type = 1;
+    oneof MsgData {
+        /*
+         * 实时地图数据不需要发送请求(为实时推送)
+         */
+        MapInfo map_info = 2;
+
+        /*
+         * 该成员解析为MultiMapsManageResponse类型, 需要发送相应DP请求.
+         */
+        bytes multi_map_response = 3;
+    }
+}
+
+/**
+ * 房间轮廓信息（使用包含分区信息的地图），单次上传.
+ *
+ * @note: Delimited 方式序列化.
+ */
+message MapPixels {
+    /**
+     * 地图像素数据，目前采用 LZ4 压缩;
+     * 地图更新采用SLAM地图+分区地图的方式维护，slam地图实时更新，分区地图仅在保存地图、用户手动调整分区时更新；
+     * 实时地图:
+     *      1byte表示4像素，即1个像素2bit:
+     *          0x00 为未知区域
+     *          0x01 为张障碍物
+     *          0x02 为可清扫区域
+     *          0x03 为地毯
+     * 分区地图：
+     *      1byte表示1像素的方式
+     *          低2bit表示像素
+     *              0x00 为未知区域
+     *              0x01 为张障碍物
+     *              0x02 为可清扫区域
+     *              0x03 为地毯
+     *          高6bit表示房间分区id
+     *              每个像素占 1byte，包含房间id、是否是背景等数据.
+     *              房间标识说明
+     *                  有效房间标识: 0 - 31
+     *                  无效房间标识: 大于等于32
+     *              特殊房间标识：
+     *                  60：没有房间数据
+     *                  61：房间间隙
+     *                  62：代表障碍物
+     *                  63：未知的房间标识
+     */
+    bytes pixels = 1;   // 地图压缩
+
+    /**
+     * 地图像素原始size, 如果pixels有压缩，则 pixel_size 表示解压后的长度.
+     */
+    uint32 pixel_size = 2;
+}
+
+
+/**
+    p2p数据相当于直播，不会在云端保存，每次可以直接传输全量数据
+*/
+message MapInfo {
+    uint32 releases = 1;        //map 的大版本修正号, version
+    uint32 map_id = 2;          // map 的 id 号, name/releases在后面
+    bool map_stable = 3;        // 地图是否稳定
+    uint32 map_width = 4;
+    uint32 map_height = 5;
+    Point origin = 6;           // 原点
+    repeated Pose docks = 7;    // 支持多个充电座/基站
+
+    enum MapMsgType{
+        MAP_REALTIME = 0;
+        MAP_ROOMOUTLINE = 1;
+        OBSTACLE_INFO = 2;
+        RESTRICT_ZONES = 3;
+        ROOM_PARAMS = 4;
+        CRUISE_DATA = 5;
+        TEMPORARY_DATA = 6;
+    };
+    MapMsgType msg_type = 8;
+
+    oneof MapMsg { // 由 msg_type 决定包含哪种数据
+        MapPixels pixels = 9; // 实时地图信息或房间轮廓信息
+        stream.ObstacleInfo obstacles = 10;
+        stream.RestrictedZone restricted_zones = 11;
+        stream.RoomParams room_params = 12;
+        stream.CruiseData cruise_data = 13;
+        stream.TemporaryData temporary_data = 14;
+    }
+
+    uint32 is_new_map = 15;    // p2p同时加入
+    string name       = 16;    // map 的名称
+}
+
+message CompleteMap {
+    uint32 releases = 1;        // map 的大版本修正号, version
+    uint32 map_id = 2;
+    bool map_stable = 3;        // 地图是否稳定
+    uint32 map_width = 4;
+    uint32 map_height = 5;
+    Point origin = 6;           // 原点
+
+    repeated Pose docks = 7;    // 支持多个充电座/基站
+    MapPixels map = 8; // 实时地图信息
+    MapPixels room_outline = 9; // 房间轮廓信息
+    stream.ObstacleInfo obstacles = 10;
+    stream.RestrictedZone restricted_zones = 11;
+    stream.RoomParams room_params = 12;
+    stream.TemporaryData temporary_data = 13;
+    uint32 is_new_map = 14;     // p2p同时加入
+    string name       = 15;     // map 的名称
+}
+
+/**
+    一个路径点包含 5 个字节:
+      byte 1-2:  x 坐标, byte1高字节，最高位为符号位, byte2为低字节;
+      byte 3-4:  y 坐标，byte3高字节，最高位为符号位, byte4为低字节;
+      byte 5:    flags信息，
+        bit 0-3 类型，0 - 清扫，1 - 拖地，2 - 扫+拖，3 - 导航，4 - 回充 (TODO: 根据需求完善)
+        bit 4: 状态，0 - 继续上一轨迹点， 1 - 新轨迹点，与上一轨迹点不连续；
+ */
+message CompletePath {
+    enum Type{
+        SWEEP = 0;
+        MOP = 1;
+        SWEEP_MOP = 2;
+        NAVI = 3;
+        GOHOME = 4;
+    };
+    enum State {
+        FOLLOW = 0;    // 继续上一轨迹点
+        NEW = 1;       // 新轨迹点，与上一轨迹点不连续
+    }
+    bytes path = 3;             //lz4压缩
+    uint32 path_lz4len = 4;     //压缩原始长度
+}
