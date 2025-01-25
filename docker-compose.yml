@@ -2,6 +2,7 @@ services:
   service:
     env_file:
       - .env
+    restart: unless-stopped
     build:
       context: .
       dockerfile: node.Dockerfile
