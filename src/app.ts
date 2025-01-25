@@ -15,6 +15,7 @@ const scenes: {[sceneName: string]: number} = {
     morning: 4,
     afternoon: 5,
     weekly: 6,
+    home: 1,
 }
 
 const getDevice = async (deviceId?: string) => {
@@ -60,3 +61,14 @@ app.get('/status', async (req, res) => {
 app.listen(3000, () => {
     console.log('Server running on port 3000');
 });
+
+// getDevice().then(async device => {
+//     await device.connect();
+//     let status = null;
+//     device.robovacData.subscribe(data => {
+//         console.log('Data:', data);
+//     });
+//     device.getWorkStatus().then(status => {
+//         console.log('Status:', status);
+//     });
+// });
