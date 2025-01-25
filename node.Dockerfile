@@ -5,14 +5,13 @@ WORKDIR /
 
 # Copy only requirements to cache them in docker layer
 WORKDIR /app
-COPY package.json package-lock.json /app/
-
-RUN npm install
 
 # dev image with all dependencies (for local development)
 FROM reqs AS final_image
 WORKDIR /app
 COPY . /app
+
+RUN npm install
 RUN npm run build
 CMD node out/app.js
 
