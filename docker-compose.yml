@@ -1,9 +1,11 @@
 services:
   service:
+    env_file:
+      - .env
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: node.Dockerfile
     ports:
-      - "8080:8080"
+      - "3000:3000"
     volumes:
       - .:/app

@@ -1,7 +1,5 @@
 import * as crypto from 'crypto';
 
-import { CloudConnect } from './controllers/CloudConnect';
-import { LocalConnect } from './controllers/LocalConnect';
 import { EufyLogin } from './controllers/Login';
 import { MqttConnect } from './controllers/MqttConnect';
 
@@ -47,11 +45,7 @@ export class EufyClean {
         return [...this.eufyCleanApi.cloudDevices, ...this.eufyCleanApi.mqttDevices]
     }
 
-    public async initDevice(deviceConfig: { deviceId: string, localKey?: string, ip?: string, autoUpdate?: boolean, debug?: boolean }): Promise<CloudConnect | MqttConnect | LocalConnect | null> {
-        if ('localKey' in deviceConfig && 'ip' in deviceConfig && deviceConfig.localKey) {
-            console.log('LocalConnect is deprecated, use CloudConnect instead');
-            return new LocalConnect(deviceConfig);
-        }
+    public async initDevice(deviceConfig: { deviceId: string, localKey?: string, ip?: string, autoUpdate?: boolean, debug?: boolean }): Promise<MqttConnect | null> {
 
         // Local connection doesn't require this check
         const devices = await this.getAllDevices();
@@ -59,11 +53,6 @@ export class EufyClean {
 
         if (!device) {
             return null;
-        }
-
-        if (!('localKey' in deviceConfig) && !device.mqtt) {
-            return new CloudConnect({ ...device, autoUpdate: deviceConfig.autoUpdate, debug: deviceConfig.debug }, this.eufyCleanApi,);
-
         }
 
         if (!('localKey' in deviceConfig) && device.mqtt) {

@@ -8,7 +8,7 @@
     "copy-files": "copyfiles -u 1 src/**/*.proto src/**/*.js out/",
     "copy-build": "cp -r ./build ../../com.eufylife.home/lib/eufy-clean/build && cp -r ./package.json ../../com.eufylife.home/lib/eufy-clean/ && cp -r ./tsconfig.json ../../com.eufylife.home/lib/eufy-clean/",
     "clear-build": "rimraf ../../com.eufylife.home/lib/eufy-clean/build",
-    "build": "yarn clean && tsc && yarn copy-files && yarn clear-build && yarn copy-build",
+    "build": "tsc -p tsconfig.json && npm run copy-files",
     "test": "echo \"Error: no test specified\" && exit 1",
     "watch": "tsc -w -p tsconfig.json"
   },
@@ -18,17 +18,17 @@
   "description": "",
   "devDependencies": {
     "@tsconfig/node20": "^20.1.4",
+    "@types/express": "^5.0.0",
     "copyfiles": "^2.4.1",
     "rimraf": "^5.0.7",
     "ts-node-dev": "^2.0.0",
     "typescript": "^5.4.5"
   },
   "dependencies": {
-    "@tuyapi/cloud": "^0.6.2",
     "axios": "^1.6.8",
     "dotenv": "^16.4.7",
+    "express": "^4.21.2",
     "mqtt": "^5.5.5",
-    "protobufjs": "^7.4.0",
-    "tuyapi": "github:codetheweb/tuyapi"
+    "protobufjs": "^7.4.0"
   }
 }

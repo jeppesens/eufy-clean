@@ -1,9 +1,7 @@
 import { EufyApi } from '../api/EufyApi';
-import { TuyaCloudApi } from '../api/TuyaCloudApi';
 import { Base } from './Base';
 
 export class EufyLogin extends Base {
-    private tuyaApi: TuyaCloudApi | null = null;
     private eufyApi: EufyApi;
 
     private username: string;
@@ -42,26 +40,6 @@ export class EufyLogin extends Base {
             if (config.mqtt) {
                 this.mqttCredentials = eufyLogin.mqtt;
             }
-
-            if (config.tuya) {
-                try {
-                    this.tuyaApi = new TuyaCloudApi(this.username, this.password, eufyLogin.session.user_id, 'EU');
-                    this.sid = await this.tuyaApi.login();
-                    console.log('TuyaCloudApi EU login successful');
-                } catch (error) {
-                    console.error('TuyaCloudApi EU login failed');
-                    console.error(error)
-
-                    try {
-                        this.tuyaApi = new TuyaCloudApi(this.username, this.password, eufyLogin.session.user_id, 'US');
-                        this.sid = await this.tuyaApi.login();
-                        console.log('TuyaCloudApi US login successful');
-                    } catch (error) {
-                        console.error('TuyaCloudApi US login failed');
-                        console.error(error)
-                    }
-                }
-            }
         }
     }
 
@@ -74,17 +52,6 @@ export class EufyLogin extends Base {
     public async getDevices(): Promise<any> {
         // // Get all devices from the Eufy Cloud API.
         this.eufyApiDevices = await this.eufyApi.getCloudDeviceList();
-
-        if (this.sid) {
-            this.cloudDevices = await this.tuyaApi.getDeviceList();
-            this.cloudDevices = this.cloudDevices.map(device => ({
-                ...this.findModel(device.devId),
-                apiType: this.checkApiType(device.dps),
-                mqtt: false,
-                dps: device?.dps || {}
-            }));
-        }
-
         // Devices like the X10 are not supported by the Tuya Cloud API
         this.mqttDevices = await this.eufyApi.getDeviceList();
         this.mqttDevices = this.mqttDevices.map(device => ({
@@ -95,27 +62,6 @@ export class EufyLogin extends Base {
         }));
 
         this.mqttDevices = this.mqttDevices.filter(device => !device.invalid);
-    }
-
-    public async getCloudDevice(deviceId: string): Promise<any> {
-        try {
-            await this.checkLogin();
-            return await this.tuyaApi.getDevice(deviceId);
-        } catch (error) {
-            this.sid = null;
-            throw new Error(error);
-
-        }
-    }
-
-    public async sendCloudCommand(deviceId: string, dps: any): Promise<any> {
-        try {
-            await this.checkLogin();
-            return await this.tuyaApi.sendCommand(deviceId, dps);
-        } catch (error) {
-            this.sid = null;
-            throw new Error(error);
-        }
     }
 
     public async getMqttDevice(deviceId: string): Promise<any> {

@@ -5,6 +5,7 @@ import { EufyClean } from './';
 const setup = async () => {
     const eufyClean = new EufyClean(process.env.EUFY_USERNAME, process.env.EUFY_PASSWORD);
     await eufyClean.init();
+    await eufyClean.init();
     const devices = await eufyClean.getAllDevices();
     console.log(devices);
 
@@ -16,8 +17,10 @@ const setup = async () => {
     // await device.setCleanParam({ cleanType: 'SWEEP_ONLY' });
     // await device.sceneClean(0);
     // await device.sceneClean
+    // setTimeout(async () => {
+    //     await device.goHome();
+    // }, 60 * 1000);
     // await device.play();
-    await device.goHome();
 }
 
 setup();
