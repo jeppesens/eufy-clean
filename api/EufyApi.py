@@ -29,13 +29,9 @@ class EufyApi:
                 'category': 'Home',
                 'Accept': '*/*',
                 'openudid': self.openudid,
-                'Accept-Language': 'uk-SE;q=1, en-SE;q=0.9',
                 'Content-Type': 'application/json',
                 'clientType': '1',
-                'language': 'en',
                 'User-Agent': 'EufyHome-iOS-2.14.0-6',
-                'timezone': 'Europe/Stockholm',
-                'country': 'SE',
                 'Connection': 'keep-alive',
             },
             json={
@@ -59,13 +55,10 @@ class EufyApi:
             headers={
                 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 'user-agent': 'EufyHome-Android-3.1.3-753',
-                'timezone': 'Europe/Berlin',
                 'category': 'Home',
                 'token': self.session['access_token'],
                 'openudid': self.openudid,
                 'clienttype': '2',
-                'language': 'en',
-                'country': 'SE',
             }
         )
         if response.status_code == 200:
@@ -85,13 +78,10 @@ class EufyApi:
             headers={
                 'content-type': 'application/x-www-form-urlencoded; charset=UTF-8',
                 'user-agent': 'EufyHome-Android-3.1.3-753',
-                'timezone': 'Europe/Berlin',
                 'category': 'Home',
                 'token': self.session['access_token'],
                 'openudid': self.openudid,
                 'clienttype': '2',
-                'language': 'en',
-                'country': 'SE',
             }
         )
         if response.status_code == 200:
@@ -108,10 +98,7 @@ class EufyApi:
             'https://aiot-clean-api-pr.eufylife.com/app/devicerelation/get_device_list',
             headers={
                 'user-agent': 'EufyHome-Android-3.1.3-753',
-                'timezone': 'Europe/Berlin',
                 'openudid': self.openudid,
-                'language': 'en',
-                'country': 'SE',
                 'os-version': 'Android',
                 'model-type': 'PHONE',
                 'app-name': 'eufy_home',
@@ -138,10 +125,7 @@ class EufyApi:
             'https://aiot-clean-api-pr.eufylife.com/app/things/get_product_data_point',
             headers={
                 'user-agent': 'EufyHome-Android-3.1.3-753',
-                'timezone': 'Europe/Berlin',
                 'openudid': self.openudid,
-                'language': 'en',
-                'country': 'SE',
                 'os-version': 'Android',
                 'model-type': 'PHONE',
                 'app-name': 'eufy_home',
@@ -163,10 +147,7 @@ class EufyApi:
             headers={
                 'content-type': 'application/json',
                 'user-agent': 'EufyHome-Android-3.1.3-753',
-                'timezone': 'Europe/Berlin',
                 'openudid': self.openudid,
-                'language': 'en',
-                'country': 'SE',
                 'os-version': 'Android',
                 'model-type': 'PHONE',
                 'app-name': 'eufy_home',
