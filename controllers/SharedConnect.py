@@ -1,12 +1,16 @@
-import base64
 import logging
 
 from constants.devices import EUFY_CLEAN_X_SERIES
 from constants.state import (EUFY_CLEAN_CONTROL, EUFY_CLEAN_NOVEL_CLEAN_SPEED,
                              EUFY_CLEAN_WORK_MODE)
-from lib.utils import decode, encode, get_multi_data, get_proto_file
+from lib.utils import decode, encode
 
+from proto.cloud.clean_param_pb2 import (CleanExtent, CleanParamRequest,
+                                         CleanParamResponse, CleanType,
+                                         MopMode)
 from proto.cloud.control_pb2 import ModeCtrlRequest, ModeCtrlResponse
+from proto.cloud.error_code_pb2 import ErrorCode
+from proto.cloud.work_status_pb2 import WorkStatus
 
 from .Base import Base
 
@@ -60,14 +64,14 @@ class SharedConnect(Base):
     async def get_control_response(self):
         try:
             if self.novel_api:
-                m = ModeCtrlResponse()
-                v = base64.b64decode(self.robovac_data['PLAY_PAUSE'])
-                m.MergeFromString(v)
+                # m = ModeCtrlResponse()
+                # v = base64.b64decode(self.robovac_data['PLAY_PAUSE'])
+                # m.MergeFromString(v)
                 # m.ParseFromString(v)
-                print('152 - control response', m)
-                return m
-                m.ParseFromString(self.robovac_data['PLAY_PAUSE'])
-                value = await decode('./proto/cloud/control.proto', 'ModeCtrlResponse', self.robovac_data['PLAY_PAUSE'])
+                # print('152 - control response', m)
+                # return m
+                # m.ParseFromString(self.robovac_data['PLAY_PAUSE'])
+                value = await decode(ModeCtrlResponse, self.robovac_data['PLAY_PAUSE'])
                 print('152 - control response', value)
                 return value or {}
             return None
@@ -81,7 +85,7 @@ class SharedConnect(Base):
     async def get_work_mode(self):
         try:
             if self.novel_api:
-                values = await get_multi_data('./proto/cloud/work_status.proto', 'WorkStatus', self.robovac_data['WORK_MODE'])
+                values = await decode(WorkStatus, self.robovac_data['WORK_MODE'])
                 mode = next((v for v in values if v['key'] == 'Mode'), None)
                 return mode['value'].lower() if mode else 'auto'
             return self.robovac_data.get('WORK_MODE', 'auto').lower()
@@ -91,7 +95,7 @@ class SharedConnect(Base):
     async def get_work_status(self):
         try:
             if self.novel_api:
-                value = await decode('./proto/cloud/work_status.proto', 'WorkStatus', self.robovac_data['WORK_STATUS'])
+                value = await decode(WorkStatus, self.robovac_data['WORK_STATUS'])
                 return value.get('state', 'charging').lower()
             return self.robovac_data.get('WORK_STATUS', 'charging').lower()
         except Exception:
@@ -100,7 +104,7 @@ class SharedConnect(Base):
     async def get_clean_params_request(self):
         try:
             if self.novel_api:
-                value = await decode('./proto/cloud/clean_param.proto', 'CleanParamRequest', self.robovac_data.get('CLEANING_PARAMETERS'))
+                value = await decode(CleanParamRequest, self.robovac_data.get('CLEANING_PARAMETERS'))
                 return value or {}
             return self.robovac_data['WORK_STATUS']
         except Exception:
@@ -109,7 +113,7 @@ class SharedConnect(Base):
     async def get_clean_params_response(self):
         try:
             if self.novel_api:
-                value = await decode('./proto/cloud/clean_param.proto', 'CleanParamResponse', self.robovac_data.get('CLEANING_PARAMETERS'))
+                value = await decode(CleanParamResponse, self.robovac_data.get('CLEANING_PARAMETERS'))
                 return value or {}
             return None
         except Exception:
@@ -124,7 +128,7 @@ class SharedConnect(Base):
     async def get_error_code(self):
         try:
             if self.novel_api:
-                value = await decode('./proto/cloud/error_code.proto', 'ErrorCode', self.robovac_data['ERROR_CODE'])
+                value = await decode(ErrorCode, self.robovac_data['ERROR_CODE'])
                 if value.get('warn'):
                     return value['warn'][0]
                 return 0
@@ -146,7 +150,7 @@ class SharedConnect(Base):
     async def auto_clean(self):
         value = True
         if self.novel_api:
-            value = await encode('proto/cloud/control.proto', 'ModeCtrlRequest', {'autoClean': {'cleanTimes': 1}})
+            value = await encode(ModeCtrlRequest, {'autoClean': {'cleanTimes': 1}})
             return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
         await self.send_command({self.dps_map['WORK_MODE']: EUFY_CLEAN_WORK_MODE.AUTO})
         return await self.play()
@@ -156,41 +160,41 @@ class SharedConnect(Base):
         value = True
         increment = 3
         if self.novel_api:
-            value = await encode('proto/cloud/control.proto', 'ModeCtrlRequest', {'method': EUFY_CLEAN_CONTROL.START_SCENE_CLEAN, 'sceneClean': {'sceneId': id + increment}})
+            value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SCENE_CLEAN, 'sceneClean': {'sceneId': id + increment}})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def play(self):
         value = True
         if self.novel_api:
-            value = await encode('proto/cloud/control.proto', 'ModeCtrlRequest', {'method': EUFY_CLEAN_CONTROL.RESUME_TASK})
+            value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.RESUME_TASK})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def pause(self):
         value = False
         if self.novel_api:
-            value = await encode('proto/cloud/control.proto', 'ModeCtrlRequest', {'method': EUFY_CLEAN_CONTROL.PAUSE_TASK})
+            value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.PAUSE_TASK})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def stop(self):
         value = False
         if self.novel_api:
-            value = await encode('proto/cloud/control.proto', 'ModeCtrlRequest', {'method': EUFY_CLEAN_CONTROL.STOP_TASK})
+            value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.STOP_TASK})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def go_home(self):
         if self.novel_api:
-            value = await encode('proto/cloud/control.proto', 'ModeCtrlRequest', {'method': EUFY_CLEAN_CONTROL.START_GOHOME})
+            value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_GOHOME})
             return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
         return await self.send_command({self.dps_map['GO_HOME']: True})
 
     async def spot_clean(self):
         if self.novel_api:
-            value = await encode('proto/cloud/control.proto', 'ModeCtrlRequest', {'method': EUFY_CLEAN_CONTROL.START_SPOT_CLEAN})
+            value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SPOT_CLEAN})
             return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def room_clean(self):
         if self.novel_api:
-            value = await encode('proto/cloud/control.proto', 'ModeCtrlRequest', {'method': EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN})
+            value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN})
             return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
         if self.device_model in EUFY_CLEAN_X_SERIES:
             await self.send_command({self.dps_map['WORK_MODE']: EUFY_CLEAN_WORK_MODE.SMALL_ROOM})
@@ -201,11 +205,11 @@ class SharedConnect(Base):
     async def set_clean_param(self, config):
         if not self.novel_api:
             return
-        clean_param_proto = await get_proto_file('proto/cloud/clean_param.proto')
+        # clean_param_proto = await get_proto_file('proto/cloud/clean_param.proto')
         clean_params = {
-            'cleanType': clean_param_proto.lookup_type('CleanType').Value,
-            'cleanExtent': clean_param_proto.lookup_type('CleanExtent').Value,
-            'mopMode': clean_param_proto.lookup_type('MopMode').Level,
+            'cleanType': CleanType.Value,
+            'cleanExtent': CleanExtent.Value,
+            'mopMode': MopMode.Level,
         }
         is_mop = config['cleanType'] in ['SWEEP_AND_MOP', 'MOP_ONLY']
         request_params = {
@@ -218,7 +222,7 @@ class SharedConnect(Base):
             }
         }
         print('setCleanParam - requestParams', request_params)
-        value = await encode('proto/cloud/clean_param.proto', 'CleanParamRequest', request_params)
+        value = await encode(CleanParamRequest, request_params)
         await self.send_command({self.dps_map['CLEANING_PARAMETERS']: value})
 
     def format_status(self):
