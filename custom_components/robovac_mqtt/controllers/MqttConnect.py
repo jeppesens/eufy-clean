@@ -1,12 +1,14 @@
+import asyncio
 import json
 import ssl
 import time
 from os import path
 
-from controllers.Login import EufyLogin
-from lib.utils import sleep
+from google.protobuf.message import Message
 from paho.mqtt import client as mqtt
 
+from ..controllers.Login import EufyLogin
+from ..utils import sleep
 from .SharedConnect import SharedConnect
 
 
@@ -24,7 +26,7 @@ class MqttConnect(SharedConnect):
 
     async def connect(self):
         await self.eufyCleanApi.login({'mqtt': True})
-        await self.connectMqtt(self.eufyCleanApi.mqttCredentials)
+        await self.connectMqtt(self.eufyCleanApi.mqtt_credentials)
         await self.updateDevice(True)
         await sleep(2000)
 
@@ -81,16 +83,18 @@ class MqttConnect(SharedConnect):
         print(f"Subscribe to cmd/eufy_home/{self.deviceModel}/{self.deviceId}/res")
         self.mqttClient.subscribe(f"cmd/eufy_home/{self.deviceModel}/{self.deviceId}/res")
 
-    def on_message(self, client, userdata, msg):
+    def on_message(self, client, userdata, msg: Message):
         messageParsed = json.loads(msg.payload.decode())
         print(f"Received message on {msg.topic}: ", messageParsed.get('payload', {}).get('data'))
-        self.map_data(messageParsed.get('payload', {}).get('data'))
+        asyncio.run(
+            self.map_data(messageParsed.get('payload', {}).get('data'))
+        )
 
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
             print('Unexpected MQTT disconnection. Will auto-reconnect')
 
-    async def sendCommand(self, dataPayload):
+    async def send_command(self, dataPayload):
         try:
             payload = json.dumps({
                 'account_id': self.mqttCredentials['user_id'],
@@ -111,7 +115,7 @@ class MqttConnect(SharedConnect):
                     'timestamp': int(time.time()) * 1000,
                     'version': '1.0.0.1'
                 },
-                'payload': payload
+                'payload': payload,
             }
             if self.debugLog:
                 print(json.dumps(mqttVal))

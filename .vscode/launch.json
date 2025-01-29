@@ -8,7 +8,8 @@
             "type": "node",
             "request": "launch",
             "name": "TS: Launch Program",
-            "program": "${workspaceFolder}/src/app.ts",
+            // "program": "${workspaceFolder}/src/app.ts",
+            "program": "${workspaceFolder}/src/main.ts",
             "preLaunchTask": "tsc: build - tsconfig.json",
             "sourceMaps": true,
             "outFiles": ["${workspaceFolder}/out/**/*.js"]

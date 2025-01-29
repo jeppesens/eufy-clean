@@ -1,0 +1,1 @@
+DOMAIN = 'robovac_mqtt'

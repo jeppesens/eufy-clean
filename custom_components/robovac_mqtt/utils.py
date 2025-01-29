@@ -1,6 +1,6 @@
 import time
-from base64 import b64decode
-from typing import Type, TypeVar
+from base64 import b64decode, b64encode
+from typing import Any, Type, TypeVar
 
 from google.protobuf.message import Message
 
@@ -20,10 +20,11 @@ async def decode(to_type: T, b64_data: str, has_length: bool = True) -> T:
     return to_type().FromString(data)
 
 
-async def encode(data: Message, has_length: bool = True) -> bytes:
-    out = data.SerializeToString()
+async def encode(message: Type[Message], data: dict[str, Any], has_length: bool = True) -> str:
+    m = message(**data)
+    out = m.SerializeToString(deterministic=False)
 
     if has_length:
         out = bytes([len(out)]) + out
 
-    return out
+    return b64encode(out).decode('utf-8')

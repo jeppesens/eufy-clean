@@ -5,7 +5,7 @@ services:
     restart: unless-stopped
     build:
       context: .
-      dockerfile: node.Dockerfile
+      dockerfile: python.Dockerfile
     ports:
       - "3000:3000"
     volumes:

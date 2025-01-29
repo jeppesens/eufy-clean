@@ -15,7 +15,7 @@ const setup = async () => {
     await device.connect();
     console.log(device);
     // await device.setCleanParam({ cleanType: 'SWEEP_ONLY' });
-    // await device.sceneClean(0);
+    await device.sceneClean(3);
     // await device.sceneClean
     // setTimeout(async () => {
     //     await device.goHome();

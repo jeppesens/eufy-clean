@@ -88,7 +88,7 @@ class EUFY_CLEAN_WORK_MODE(str, Enum):
     SPOT = 'Spot'
 
 
-class EUFY_CLEAN_CONTROL(str, Enum):
+class EUFY_CLEAN_CONTROL(int, Enum):
     START_AUTO_CLEAN = 0
     START_SELECT_ROOMS_CLEAN = 1
     START_SELECT_ZONES_CLEAN = 2
