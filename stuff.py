@@ -20,6 +20,7 @@ async def setup():
     print(status)
     battery_level = await device.get_battery_level()
     print(battery_level)
+    await device.go_home()
     # await device.set_clean_param({'clean_type': 'SWEEP_ONLY'})
     """
     // full home daily clean: 1

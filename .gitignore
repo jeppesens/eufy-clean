@@ -11,3 +11,4 @@ node_modules
 # proto/cloud/*.py
 **/__pycache__
 *.env
+config/

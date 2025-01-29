@@ -1,12 +1,8 @@
 services:
-  service:
-    env_file:
-      - .env
+  ha:
+    image: homeassistant/home-assistant:2025.1
     restart: unless-stopped
-    build:
-      context: .
-      dockerfile: python.Dockerfile
     ports:
-      - "3000:3000"
+      - "8123:8123"
     volumes:
-      - .:/app
+      - ./config:/config

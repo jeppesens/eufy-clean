@@ -1,4 +1,6 @@
 import logging
+import random
+import string
 from typing import Any, Optional
 
 import homeassistant.helpers.config_validation as cv
@@ -33,8 +35,11 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(step_id="user", data_schema=USER_SCHEMA)
         errors = {}
         try:
-            unique_id = user_input[CONF_USERNAME]
-            eufy_api = EufyApi(self["username"], self["password"])
+            openudid = ''.join(random.choices(string.hexdigits, k=32))
+            username = user_input[CONF_USERNAME]
+            _LOGGER.info("Trying to login with username: {}".format(username))
+            unique_id = username
+            eufy_api = EufyApi(username, user_input[CONF_PASSWORD], openudid)
             login_resp = eufy_api.login()
             if not login_resp.get('user'):
                 errors["base"] = "invalid_auth"
