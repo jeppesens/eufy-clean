@@ -1,5 +1,6 @@
 import asyncio
 import json
+import logging
 import ssl
 import time
 from os import path
@@ -10,6 +11,8 @@ from paho.mqtt import client as mqtt
 from ..controllers.Login import EufyLogin
 from ..utils import sleep
 from .SharedConnect import SharedConnect
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MqttConnect(SharedConnect):
@@ -39,15 +42,15 @@ class MqttConnect(SharedConnect):
                 await self.check_api_type(device.get('dps'))
             await self.map_data(device.get('dps'))
         except Exception as error:
-            print(error)
+            _LOGGER.error(error)
 
     async def connectMqtt(self, mqttCredentials):
         if mqttCredentials:
-            print('MQTT Credentials found')
+            _LOGGER.debug('MQTT Credentials found')
             self.mqttCredentials = mqttCredentials
             username = self.mqttCredentials['thing_name']
             client_id = f"android-{self.mqttCredentials['app_name']}-eufy_android_{self.openudid}_{self.mqttCredentials['user_id']}-{int(time.time() * 1000)}"
-            print('Setup MQTT Connection', {
+            _LOGGER.debug('Setup MQTT Connection', {
                 'clientId': client_id,
                 'username': username,
             })
@@ -79,20 +82,20 @@ class MqttConnect(SharedConnect):
         self.mqttClient.on_disconnect = self.on_disconnect
 
     def on_connect(self, client, userdata, flags, rc):
-        print('Connected to MQTT')
-        print(f"Subscribe to cmd/eufy_home/{self.deviceModel}/{self.deviceId}/res")
+        _LOGGER.debug('Connected to MQTT')
+        _LOGGER.info(f"Subscribe to cmd/eufy_home/{self.deviceModel}/{self.deviceId}/res")
         self.mqttClient.subscribe(f"cmd/eufy_home/{self.deviceModel}/{self.deviceId}/res")
 
     def on_message(self, client, userdata, msg: Message):
         messageParsed = json.loads(msg.payload.decode())
-        print(f"Received message on {msg.topic}: ", messageParsed.get('payload', {}).get('data'))
+        _LOGGER.debug(f"Received message on {msg.topic}: ", messageParsed.get('payload', {}).get('data'))
         asyncio.run(
             self.map_data(messageParsed.get('payload', {}).get('data'))
         )
 
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:
-            print('Unexpected MQTT disconnection. Will auto-reconnect')
+            _LOGGER.warning('Unexpected MQTT disconnection. Will auto-reconnect')
 
     async def send_command(self, dataPayload):
         try:
@@ -118,8 +121,8 @@ class MqttConnect(SharedConnect):
                 'payload': payload,
             }
             if self.debugLog:
-                print(json.dumps(mqttVal))
-            print(f"Sending command to device {self.deviceId}", payload)
+                _LOGGER.debug(json.dumps(mqttVal))
+            _LOGGER.debug(f"Sending command to device {self.deviceId}", payload)
             self.mqttClient.publish(f"cmd/eufy_home/{self.deviceModel}/{self.deviceId}/req", json.dumps(mqttVal))
         except Exception as error:
-            print(error)
+            _LOGGER.error(error)

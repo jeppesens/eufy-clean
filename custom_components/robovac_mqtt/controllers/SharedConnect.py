@@ -1,5 +1,6 @@
+import asyncio
 import logging
-from typing import Any
+from typing import Any, Callable
 
 from homeassistant.components.vacuum import VacuumActivity
 
@@ -24,6 +25,9 @@ class SharedConnect(Base):
         self.device_id = config['deviceId']
         self.device_model = config.get('deviceModel', '')
         self.config = {}
+        self._update_listeners = []
+
+    _update_listeners: list[Callable[[], None]]
 
     async def check_api_type(self, dps: dict[str, Any]):
         if any(k in dps for k in self.robovac_data.values()):
@@ -41,6 +45,15 @@ class SharedConnect(Base):
             _LOGGER.debug('mappedData', self.robovac_data)
 
         await self.get_control_response()
+        for listener in self._update_listeners:
+            try:
+                _LOGGER.debug(f'Calling listener {listener.__name__}')
+                await listener()
+            except Exception as error:
+                _LOGGER.error(error)
+
+    def add_listener(self, listener: Callable[[], asyncio.Future[None]]):
+        self._update_listeners.append(listener)
 
     async def get_robovac_data(self):
         return self.robovac_data
@@ -123,8 +136,9 @@ class SharedConnect(Base):
     async def get_clean_params_request(self):
         try:
             value = await decode(CleanParamRequest, self.robovac_data.get('CLEANING_PARAMETERS'))
-            return value or CleanParamRequest()
-        except Exception:
+            return value
+        except Exception as e:
+            _LOGGER.error('Error getting clean params', exc_info=e)
             return CleanParamRequest()
 
     async def get_clean_params_response(self):
