@@ -1,8 +1,8 @@
 import asyncio
 import json
 import logging
-import ssl
 import time
+from functools import partial
 from os import path
 
 from google.protobuf.message import Message
@@ -13,6 +13,25 @@ from ..utils import sleep
 from .SharedConnect import SharedConnect
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def get_blocking_mqtt_client(client_id: str, username: str, certificate_pem: str, private_key: str):
+    client = mqtt.Client(
+        client_id=client_id,
+        transport='tcp',
+    )
+    client.username_pw_set(username)
+
+    with open('ca.pem', 'w') as f:
+        f.write(certificate_pem)
+    with open('key.key', 'w') as f:
+        f.write(private_key)
+
+    client.tls_set(
+        certfile=path.abspath('ca.pem'),
+        keyfile=path.abspath('key.key'),
+    )
+    return client
 
 
 class MqttConnect(SharedConnect):
@@ -38,8 +57,6 @@ class MqttConnect(SharedConnect):
             if not checkApiType:
                 return
             device = await self.eufyCleanApi.getMqttDevice(self.deviceId)
-            if checkApiType:
-                await self.check_api_type(device.get('dps'))
             await self.map_data(device.get('dps'))
         except Exception as error:
             _LOGGER.error(error)
@@ -56,24 +73,19 @@ class MqttConnect(SharedConnect):
             })
             if self.mqttClient:
                 self.mqttClient.disconnect()
-            self.mqttClient = mqtt.Client(
+            # When calling a blocking function in your library code
+            loop = asyncio.get_running_loop()
+            self.mqttClient = await loop.run_in_executor(None, partial(
+                get_blocking_mqtt_client,
                 client_id=client_id,
-                transport='tcp',
-            )
-            self.mqttClient.username_pw_set(username)
-            with open('ca.pem', 'w') as f:
-                f.write(self.mqttCredentials['certificate_pem'])
-            with open('key.key', 'w') as f:
-                f.write(self.mqttCredentials['private_key'])
-            self.mqttClient.tls_set(
-                certfile=path.abspath('ca.pem'),
-                keyfile=path.abspath('key.key'),
-                cert_reqs=ssl.CERT_OPTIONAL,
-            )
+                username=username,
+                certificate_pem=self.mqttCredentials['certificate_pem'],
+                private_key=self.mqttCredentials['private_key'],
+            ))
             self.mqttClient.connect_timeout = 30
 
             self.setupListeners()
-            self.mqttClient.connect(self.mqttCredentials['endpoint_addr'], port=8883)
+            self.mqttClient.connect_async(self.mqttCredentials['endpoint_addr'], port=8883)
             self.mqttClient.loop_start()
 
     def setupListeners(self):

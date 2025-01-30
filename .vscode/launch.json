@@ -5,20 +5,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "type": "node",
-            "request": "launch",
-            "name": "TS: Launch Program",
-            // "program": "${workspaceFolder}/src/app.ts",
-            "program": "${workspaceFolder}/src/main.ts",
-            "preLaunchTask": "tsc: build - tsconfig.json",
-            "sourceMaps": true,
-            "outFiles": ["${workspaceFolder}/out/**/*.js"]
-        },
-        {
-            "name": "Python Debugger: stuff.py",
+            "name": "Python Debugger: example.py",
             "type": "debugpy",
             "request": "launch",
-            "program": "stuff.py",
+            "program": "example.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "envFile": "${workspaceFolder}/.env"

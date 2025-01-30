@@ -34,3 +34,6 @@ class EufyClean:
             raise Exception('Device is not a MQTT device')
 
         return MqttConnect(device, self.openudid, self.eufyCleanApi)
+
+    async def get_user_info(self):
+        return await self.eufyCleanApi.eufyApi.get_user_info()

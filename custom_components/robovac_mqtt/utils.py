@@ -1,4 +1,4 @@
-import time
+import asyncio
 from base64 import b64decode, b64encode
 from typing import Any, Type, TypeVar
 
@@ -6,7 +6,7 @@ from google.protobuf.message import Message
 
 
 async def sleep(ms: int):
-    time.sleep(ms / 1000)
+    await asyncio.sleep(ms / 1000)
 
 T = TypeVar("T", bound=Type[Message])
 

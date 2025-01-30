@@ -4,6 +4,7 @@ from typing import Any, Callable
 
 from homeassistant.components.vacuum import VacuumActivity
 
+from ..constants.devices import EUFY_CLEAN_DEVICES
 from ..constants.state import (EUFY_CLEAN_CLEAN_SPEED, EUFY_CLEAN_CONTROL,
                                EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 from ..proto.cloud.clean_param_pb2 import (CleanExtent, CleanParamRequest,
@@ -24,16 +25,11 @@ class SharedConnect(Base):
         self.debug_log = config.get('debug', False)
         self.device_id = config['deviceId']
         self.device_model = config.get('deviceModel', '')
+        self.device_model_desc = EUFY_CLEAN_DEVICES.get(self.device_model, '') or self.device_model
         self.config = {}
         self._update_listeners = []
 
     _update_listeners: list[Callable[[], None]]
-
-    async def check_api_type(self, dps: dict[str, Any]):
-        if any(k in dps for k in self.robovac_data.values()):
-            print('Novel API detected')
-        else:
-            _LOGGER.error('Error checking API type')
 
     async def map_data(self, dps):
         for key, value in dps.items():
@@ -205,7 +201,6 @@ class SharedConnect(Base):
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def set_clean_param(self, config: dict[str, Any]):
-
         is_mop = False
         if ct := config.get('clean_type'):
             if ct not in CleanType.Value.keys():

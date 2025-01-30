@@ -1,19 +1,19 @@
 import logging
 
-from homeassistant.components.vacuum import StateVacuumEntity
+from homeassistant.components.vacuum import (StateVacuumEntity,
+                                             VacuumEntityFeature)
 from homeassistant.components.vacuum.const import VacuumActivity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import (CONF_DESCRIPTION, CONF_ID, CONF_NAME,
-                                 CONF_PASSWORD, CONF_USERNAME)
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .constants.hass import DOMAIN
+from .constants.hass import DOMAIN, VACS
 from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
                               EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 from .controllers.MqttConnect import MqttConnect
-from .main import EufyClean
+from .EufyClean import EufyClean
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -25,56 +25,69 @@ async def async_setup_entry(
 ) -> None:
     """Initialize my test integration 2 config entry."""
 
-    username = config_entry[CONF_USERNAME]
-    password = config_entry[CONF_PASSWORD]
+    username = config_entry.data[CONF_USERNAME]
+    password = config_entry.data[CONF_PASSWORD]
 
     eufy_clean = EufyClean(username, password)
     await eufy_clean.init()
 
-    async for vacuum in eufy_clean.get_devices():
+    for vacuum in await eufy_clean.get_devices():
         device = await eufy_clean.init_device(vacuum['deviceId'])
+        await device.connect()
+        _LOGGER.info("Adding vacuum %s", device.device_id)
         entity = RoboVacMQTTEntity(device)
-        hass.data[DOMAIN]['vacuums'][vacuum[device.device_id]] = entity
+        hass.data[DOMAIN][VACS][device.device_id] = entity
         async_add_entities([entity])
+        await entity.pushed_update_handler()
 
 
 class RoboVacMQTTEntity(StateVacuumEntity):
     """Representation of a vacuum cleaner."""
 
-    _state: VacuumActivity = None
-
-    @property
-    def state(self) -> str | None:
-        return self._state
-
     def __init__(self, item: MqttConnect) -> None:
         """Initialize Eufy Robovac"""
         super().__init__()
-        self._attr_battery_level = 0
-        self._attr_name = item[CONF_NAME]
+        self._battery_level = 0
+        self._state: VacuumActivity = None
         self._attr_unique_id = item.device_id
+        self._attr_name = item.device_model_desc
         self._attr_model_code = item.device_model
 
         self.vacuum = item
 
-        item.add_listener(self.pushed_update_handler)
-
-        self.update_failures = 0
-
-        self._attr_supported_features = self.vacuum.getHomeAssistantFeatures()
-        self._attr_robovac_supported = self.vacuum.getRoboVacFeatures()
         self._attr_fan_speed_list = EUFY_CLEAN_NOVEL_CLEAN_SPEED
 
         self._attr_mode = None
-        self._attr_consumables = None
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, item[CONF_ID])},
-            name=item[CONF_NAME],
+            identifiers={(DOMAIN, item.device_id)},
+            name=self._attr_name,
             manufacturer="Eufy",
-            model=item[CONF_DESCRIPTION],
+            model=self._attr_model_code,
         )
 
         self.error_code = None
+
+        item.add_listener(self.pushed_update_handler)
+
+    @property
+    def activity(self) -> VacuumActivity:
+        return self._state
+
+    @property
+    def supported_features(self) -> VacuumEntityFeature:
+        """Flag supported features."""
+        supported_features = (
+            VacuumEntityFeature.START
+            | VacuumEntityFeature.PAUSE
+            | VacuumEntityFeature.STOP
+            | VacuumEntityFeature.STATUS
+            | VacuumEntityFeature.STATE
+            | VacuumEntityFeature.BATTERY
+            | VacuumEntityFeature.FAN_SPEED
+            | VacuumEntityFeature.RETURN_HOME
+        )
+
+        return supported_features
 
     async def pushed_update_handler(self):
         await self.update_entity_values()
@@ -82,14 +95,9 @@ class RoboVacMQTTEntity(StateVacuumEntity):
 
     async def update_entity_values(self):
         self._attr_battery_level = await self.vacuum.get_battery_level()
-        self.tuya_state = await self.vacuum.get_work_status()
-        # self._attr_mode = await self.vacuum.get_work_mode()
-        # self._attr_fan_speed = await self.vacuum.get_fan_speed()
-
-    async def async_locate(self, **kwargs):
-        """Locate the vacuum cleaner."""
-        _LOGGER.info("Locate Pressed")
-        await self.vacuum.get_find_robot()
+        self._state = await self.vacuum.get_work_status()
+        self._attr_mode = await self.vacuum.get_work_mode()
+        self._attr_fan_speed = await self.vacuum.get_clean_speed()
 
     async def async_return_to_base(self, **kwargs):
         """Set the vacuum cleaner to return to the dock."""
@@ -97,7 +105,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
         await self.vacuum.go_home()
 
     async def async_start(self, **kwargs):
-        await self.vacuum.play()
+        await self.vacuum.auto_clean()
 
     async def async_pause(self, **kwargs):
         await self.vacuum.pause()
@@ -110,9 +118,11 @@ class RoboVacMQTTEntity(StateVacuumEntity):
         _LOGGER.info("Spot Clean Pressed")
         await self.vacuum.spot_clean()
 
-    async def async_set_fan_speed(self, fan_speed: EUFY_CLEAN_CLEAN_SPEED, **kwargs):
+    async def async_set_fan_speed(self, fan_speed: str, **kwargs):
         """Set fan speed."""
-        _LOGGER.info("Fan Speed Selected")
+        if fan_speed not in EUFY_CLEAN_CLEAN_SPEED:
+            raise ValueError(f"Invalid fan speed: {fan_speed}")
+        _LOGGER.info(f"Fan Speed {fan_speed} Selected")
         await self.vacuum.set_clean_speed(fan_speed)
 
     async def async_send_command(

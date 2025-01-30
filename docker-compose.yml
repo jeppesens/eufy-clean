@@ -6,3 +6,4 @@ services:
       - "8123:8123"
     volumes:
       - ./config:/config
+      - ./custom_components/robovac_mqtt:/config/custom_components/robovac_mqtt

@@ -23,7 +23,7 @@ class EufyLogin(Base):
         if not config['mqtt']:
             raise Exception('MQTT login is required')
 
-        eufyLogin = self.eufyApi.login()
+        eufyLogin = await self.eufyApi.login()
 
         if not eufyLogin:
             raise Exception('Login failed')
@@ -38,8 +38,8 @@ class EufyLogin(Base):
             await self.login({'mqtt': True})
 
     async def getDevices(self) -> None:
-        self.eufy_api_devices = self.eufyApi.get_cloud_device_list()
-        devices = self.eufyApi.get_device_list()
+        self.eufy_api_devices = await self.eufyApi.get_cloud_device_list()
+        devices = await self.eufyApi.get_device_list()
         devices = [
             {
                 **self.findModel(device['device_sn']),
@@ -52,7 +52,7 @@ class EufyLogin(Base):
         self.mqtt_devices = [d for d in devices if not d['invalid']]
 
     async def getMqttDevice(self, deviceId: str):
-        return self.eufyApi.get_device_list(deviceId)
+        return await self.eufyApi.get_device_list(deviceId)
 
     def checkApiType(self, dps: dict):
         if any(k in dps for k in self.dps_map.values()):

@@ -9,7 +9,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
 from voluptuous import Required, Schema
 
-from .constants.hass import DOMAIN
+from .constants.hass import DOMAIN, VACS
 from .EufyApi import EufyApi
 
 _LOGGER = logging.getLogger(__name__)
@@ -40,9 +40,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             _LOGGER.info("Trying to login with username: {}".format(username))
             unique_id = username
             eufy_api = EufyApi(username, user_input[CONF_PASSWORD], openudid)
-            login_resp = eufy_api.login()
-            if not login_resp.get('user'):
+            login_resp = await eufy_api.login(validate_only=True)
+            if not login_resp.get('session'):
                 errors["base"] = "invalid_auth"
+            else:
+                data = user_input.copy()
+                data[VACS] = {}
+                return self.async_create_entry(title=unique_id, data=user_input)
         except Exception as e:
             _LOGGER.exception("Unexpected exception: {}".format(e))
             errors["base"] = "unknown"

@@ -1,7 +1,7 @@
 import asyncio
 import os
 
-from custom_components.robovac_mqtt.main import EufyClean
+from custom_components.robovac_mqtt.EufyClean import EufyClean
 
 
 async def setup():
