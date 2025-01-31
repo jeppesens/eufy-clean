@@ -55,9 +55,12 @@ class SharedConnect(Base):
         return self.robovac_data
 
     async def get_clean_speed(self):
-        if isinstance(self.robovac_data.get('CLEAN_SPEED'), (int, list)) and len(self.robovac_data['CLEAN_SPEED']) == 1:
-            clean_speeds = list(EUFY_CLEAN_NOVEL_CLEAN_SPEED.values())
-            return clean_speeds[int(self.robovac_data['CLEAN_SPEED'])].lower()
+        if isinstance(self.robovac_data.get('CLEAN_SPEED'), list) and len(self.robovac_data['CLEAN_SPEED']) == 1:
+            speed = int(self.robovac_data['CLEAN_SPEED'])
+            return EUFY_CLEAN_NOVEL_CLEAN_SPEED[speed].lower()
+        elif isinstance(self.robovac_data.get('CLEAN_SPEED'), str) and self.robovac_data['CLEAN_SPEED'].isdigit():
+            speed = int(self.robovac_data['CLEAN_SPEED'])
+            return EUFY_CLEAN_NOVEL_CLEAN_SPEED[speed].lower()
         return self.robovac_data.get('CLEAN_SPEED', 'standard').lower()
 
     async def get_control_response(self) -> ModeCtrlResponse | None:
@@ -161,8 +164,8 @@ class SharedConnect(Base):
 
     async def set_clean_speed(self, clean_speed: EUFY_CLEAN_CLEAN_SPEED):
         try:
-            set_clean_speed = list(EUFY_CLEAN_NOVEL_CLEAN_SPEED.values()).index(clean_speed.lower())
-            print('Setting clean speed to:', set_clean_speed, list(EUFY_CLEAN_NOVEL_CLEAN_SPEED.values()), clean_speed)
+            set_clean_speed = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED].index(clean_speed.lower())
+            _LOGGER.debug('Setting clean speed to:', set_clean_speed, EUFY_CLEAN_NOVEL_CLEAN_SPEED, clean_speed)
             return await self.send_command({self.dps_map['CLEAN_SPEED']: set_clean_speed})
         except Exception as error:
             _LOGGER.error(error)

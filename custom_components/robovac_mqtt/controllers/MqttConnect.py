@@ -100,10 +100,13 @@ class MqttConnect(SharedConnect):
 
     def on_message(self, client, userdata, msg: Message):
         messageParsed = json.loads(msg.payload.decode())
-        _LOGGER.debug(f"Received message on {msg.topic}: ", messageParsed.get('payload', {}).get('data'))
-        asyncio.run(
-            self.map_data(messageParsed.get('payload', {}).get('data'))
-        )
+        _LOGGER.debug(f"Received message on {msg.topic}: ", messageParsed)
+        try:
+            asyncio.run(
+                self.map_data(messageParsed.get('payload', {}).get('data'))
+            )
+        except Exception as error:
+            _LOGGER.error('Could not parse data', exc_info=error)
 
     def on_disconnect(self, client, userdata, rc):
         if rc != 0:

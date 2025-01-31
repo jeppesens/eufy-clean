@@ -13,14 +13,14 @@ async def setup():
     device_id = next((d['deviceId'] for d in devices if d), None)
     if not device_id:
         return
-    device = await eufy_clean.init_device(device_id)
-    await device.connect()
-    print(device)
-    status = await device.get_work_status()
+    vacuum = await eufy_clean.init_device(device_id)
+    await vacuum.connect()
+    print(vacuum)
+    status = await vacuum.get_work_status()
     print(status)
-    battery_level = await device.get_battery_level()
+    battery_level = await vacuum.get_battery_level()
     print(battery_level)
-    await device.go_home()
+    await vacuum.go_home()
     # await device.set_clean_param({'clean_type': 'SWEEP_ONLY'})
     """
     // full home daily clean: 1
@@ -31,11 +31,13 @@ async def setup():
     afternoon: 5,
     weekly: 6,
     """
-    await device.scene_clean(4)
+    # await device.scene_clean(4)
     # await device.play()
     # await device.go_home()
-    status = await device.get_work_status()
-    mode = await device.get_work_mode()
+    speed = await vacuum.get_clean_speed()
+    print(speed)
+    status = await vacuum.get_work_status()
+    mode = await vacuum.get_work_mode()
     print(status, mode)
 
 

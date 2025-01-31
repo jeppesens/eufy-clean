@@ -1,4 +1,5 @@
 import logging
+from typing import Literal
 
 from homeassistant.components.vacuum import (StateVacuumEntity,
                                              VacuumEntityFeature)
@@ -85,6 +86,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             | VacuumEntityFeature.BATTERY
             | VacuumEntityFeature.FAN_SPEED
             | VacuumEntityFeature.RETURN_HOME
+            | VacuumEntityFeature.SEND_COMMAND
         )
 
         return supported_features
@@ -126,8 +128,14 @@ class RoboVacMQTTEntity(StateVacuumEntity):
         await self.vacuum.set_clean_speed(fan_speed)
 
     async def async_send_command(
-        self, command: str, params: dict | list | None = None, **kwargs
+        self, command: Literal['scene_clean'], params: dict | list | None = None, **kwargs
     ) -> None:
         """Send a command to a vacuum cleaner."""
         _LOGGER.info("Send Command %s Pressed", command)
-        raise NotImplementedError()
+        if command == "scene_clean":
+            if not params or not isinstance(params, dict) or "scene" not in params:
+                raise ValueError("params is required for scene_clean command")
+            scene = params["scene"]
+            await self.vacuum.scene_clean(scene)
+        else:
+            raise NotImplementedError()
