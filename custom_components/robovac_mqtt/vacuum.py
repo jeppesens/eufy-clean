@@ -128,14 +128,19 @@ class RoboVacMQTTEntity(StateVacuumEntity):
         await self.vacuum.set_clean_speed(fan_speed)
 
     async def async_send_command(
-        self, command: Literal['scene_clean'], params: dict | list | None = None, **kwargs
+        self, command: Literal['scene_clean'] | Literal['room_clean'], params: dict | list | None = None, **kwargs
     ) -> None:
         """Send a command to a vacuum cleaner."""
         _LOGGER.info("Send Command %s Pressed", command)
         if command == "scene_clean":
             if not params or not isinstance(params, dict) or "scene" not in params:
-                raise ValueError("params is required for scene_clean command")
+                raise ValueError("params[scene] is required for scene_clean command")
             scene = params["scene"]
             await self.vacuum.scene_clean(scene)
+        elif command == "room_clean":
+            if not params or not isinstance(params, dict) or not isinstance(params.get("rooms"), list):
+                raise ValueError("params[rooms] is required for room_clean command")
+            rooms = [int(r) for r in params['rooms']]
+            await self.vacuum.room_clean(rooms)
         else:
             raise NotImplementedError()

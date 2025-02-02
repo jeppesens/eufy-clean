@@ -57,7 +57,7 @@ class MqttConnect(SharedConnect):
             if not checkApiType:
                 return
             device = await self.eufyCleanApi.getMqttDevice(self.deviceId)
-            await self.map_data(device.get('dps'))
+            await self._map_data(device.get('dps'))
         except Exception as error:
             _LOGGER.error(error)
 
@@ -103,7 +103,7 @@ class MqttConnect(SharedConnect):
         _LOGGER.debug(f"Received message on {msg.topic}: ", messageParsed)
         try:
             asyncio.run(
-                self.map_data(messageParsed.get('payload', {}).get('data'))
+                self._map_data(messageParsed.get('payload', {}).get('data'))
             )
         except Exception as error:
             _LOGGER.error('Could not parse data', exc_info=error)
@@ -112,7 +112,7 @@ class MqttConnect(SharedConnect):
         if rc != 0:
             _LOGGER.warning('Unexpected MQTT disconnection. Will auto-reconnect')
 
-    async def send_command(self, dataPayload):
+    async def send_command(self, dataPayload) -> None:
         try:
             payload = json.dumps({
                 'account_id': self.mqttCredentials['user_id'],

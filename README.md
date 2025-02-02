@@ -28,6 +28,19 @@ target:
 worth noting that the `scene` parameter is the scene number, which I have just guessed based on the app.
 Seems like there is 3 default scenes end then your scenes start from 4 and increments one in the order you created them.
 
+To clean a specific room, you can use the following service call:
+```yaml
+action: vacuum.send_command
+target:
+  entity_id: vacuum.robovac_x10_pro_omni
+data:
+  command: room_clean
+  params:
+    rooms:
+      - 3
+      - 4
+```
+So which IDs are your rooms? Seems like when mapping it goes to the next room to the left, so leaving the room with the base station and going to the left it will be 1, then 2, and so on. And your basestation is located in the last room. I mapped the ids by using `vacuum.room_clean` service and looking at the app. Is there a better way? I hope so, but I don't know it.
 
 ### Example
 If you want to use this code without using Home Assistant, you can use the `EufyClean` class directly. Here's a simple example of how to use it:

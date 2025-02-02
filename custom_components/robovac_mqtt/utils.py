@@ -13,7 +13,7 @@ async def sleep(ms: int):
 T = TypeVar("T", bound=Type[Message])
 
 
-async def decode(to_type: T, b64_data: str, has_length: bool = True) -> T:
+def decode(to_type: T, b64_data: str, has_length: bool = True) -> T:
     data = b64decode(b64_data)
 
     if has_length:
@@ -22,9 +22,13 @@ async def decode(to_type: T, b64_data: str, has_length: bool = True) -> T:
     return to_type().FromString(data)
 
 
-async def encode(message: Type[Message], data: dict[str, Any], has_length: bool = True) -> str:
+def encode(message: Type[Message], data: dict[str, Any], has_length: bool = True) -> str:
     m = message(**data)
-    out = m.SerializeToString(deterministic=False)
+    return encode_message(m, has_length)
+
+
+def encode_message(message: Type[Message], has_length: bool = True) -> str:
+    out = message.SerializeToString(deterministic=False)
 
     if has_length:
         out = bytes([len(out)]) + out

@@ -20,7 +20,21 @@ async def setup():
     print(status)
     battery_level = await vacuum.get_battery_level()
     print(battery_level)
+    params = await vacuum.get_clean_params_response()
+    print(params)
+
+    # dining room - 1
+    # tv room - 2
+    # entrance - 3
+    # playroom - 4
+    # kitchen - 6
+    # downstairs bathroom - 7
+    await vacuum.room_clean([7])
+    status = await vacuum.get_work_status()
     await vacuum.go_home()
+    print(status)
+
+    # await vacuum.go_home()
     # await device.set_clean_param({'clean_type': 'SWEEP_ONLY'})
     """
     // full home daily clean: 1

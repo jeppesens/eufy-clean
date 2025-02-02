@@ -10,10 +10,11 @@ from ..constants.state import (EUFY_CLEAN_CLEAN_SPEED, EUFY_CLEAN_CONTROL,
 from ..proto.cloud.clean_param_pb2 import (CleanExtent, CleanParamRequest,
                                            CleanParamResponse, CleanType,
                                            MopMode)
-from ..proto.cloud.control_pb2 import ModeCtrlRequest, ModeCtrlResponse
+from ..proto.cloud.control_pb2 import (ModeCtrlRequest, ModeCtrlResponse,
+                                       SelectRoomsClean)
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.work_status_pb2 import WorkStatus
-from ..utils import decode, encode
+from ..utils import decode, encode, encode_message
 from .Base import Base
 
 _LOGGER = logging.getLogger(__name__)
@@ -31,7 +32,7 @@ class SharedConnect(Base):
 
     _update_listeners: list[Callable[[], None]]
 
-    async def map_data(self, dps):
+    async def _map_data(self, dps):
         for key, value in dps.items():
             mapped_keys = [k for k, v in self.dps_map.items() if v == key]
             for mapped_key in mapped_keys:
@@ -65,7 +66,7 @@ class SharedConnect(Base):
 
     async def get_control_response(self) -> ModeCtrlResponse | None:
         try:
-            value = await decode(ModeCtrlResponse, self.robovac_data['PLAY_PAUSE'])
+            value = decode(ModeCtrlResponse, self.robovac_data['PLAY_PAUSE'])
             print('152 - control response', value)
             return value or ModeCtrlResponse()
         except Exception as error:
@@ -77,7 +78,7 @@ class SharedConnect(Base):
 
     async def get_work_mode(self) -> str:
         try:
-            value = await decode(WorkStatus, self.robovac_data['WORK_MODE'])
+            value = decode(WorkStatus, self.robovac_data['WORK_MODE'])
             mode = value.mode
             if not mode:
                 return 'auto'
@@ -90,7 +91,7 @@ class SharedConnect(Base):
 
     async def get_work_status(self) -> str:
         try:
-            value = await decode(WorkStatus, self.robovac_data['WORK_STATUS'])
+            value = decode(WorkStatus, self.robovac_data['WORK_STATUS'])
 
             """
                 STANDBY = 0
@@ -134,7 +135,7 @@ class SharedConnect(Base):
 
     async def get_clean_params_request(self):
         try:
-            value = await decode(CleanParamRequest, self.robovac_data.get('CLEANING_PARAMETERS'))
+            value = decode(CleanParamRequest, self.robovac_data.get('CLEANING_PARAMETERS'))
             return value
         except Exception as e:
             _LOGGER.error('Error getting clean params', exc_info=e)
@@ -142,7 +143,7 @@ class SharedConnect(Base):
 
     async def get_clean_params_response(self):
         try:
-            value = await decode(CleanParamResponse, self.robovac_data.get('CLEANING_PARAMETERS'))
+            value = decode(CleanParamResponse, self.robovac_data.get('CLEANING_PARAMETERS'))
             return value or {}
         except Exception:
             return {}
@@ -155,7 +156,7 @@ class SharedConnect(Base):
 
     async def get_error_code(self):
         try:
-            value = await decode(ErrorCode, self.robovac_data['ERROR_CODE'])
+            value = decode(ErrorCode, self.robovac_data['ERROR_CODE'])
             if value.get('warn'):
                 return value['warn'][0]
             return 0
@@ -171,36 +172,43 @@ class SharedConnect(Base):
             _LOGGER.error(error)
 
     async def auto_clean(self):
-        value = await encode(ModeCtrlRequest, {'auto_clean': {'clean_times': 1}})
+        value = encode(ModeCtrlRequest, {'auto_clean': {'clean_times': 1}})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def scene_clean(self, id: int):
         increment = 3
-        value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SCENE_CLEAN, 'scene_clean': {'scene_id': id + increment}})
+        value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SCENE_CLEAN, 'scene_clean': {'scene_id': id + increment}})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def play(self):
-        value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.RESUME_TASK})
+        value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.RESUME_TASK})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def pause(self):
-        value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.PAUSE_TASK})
+        value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.PAUSE_TASK})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def stop(self):
-        value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.STOP_TASK})
+        value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.STOP_TASK})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def go_home(self):
-        value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_GOHOME})
+        value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_GOHOME})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def spot_clean(self):
-        value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SPOT_CLEAN})
+        value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SPOT_CLEAN})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
-    async def room_clean(self):
-        value = await encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN})
+    async def room_clean(self, room_ids: list[int]):
+        rooms_clean = SelectRoomsClean(
+            rooms=[SelectRoomsClean.Room(id=id, order=i + 1) for i, id in enumerate(room_ids)],
+            mode=SelectRoomsClean.Mode.DESCRIPTOR.values_by_name['GENERAL'].number,
+            clean_times=1,
+            # TODO: get map id, currently hardcoded to whatever was the ID for my first and only map....
+            map_id=3,
+        )
+        value = encode_message(ModeCtrlRequest(method=EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN, select_rooms_clean=rooms_clean))
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def set_clean_param(self, config: dict[str, Any]):
@@ -240,11 +248,8 @@ class SharedConnect(Base):
             }
         }
         print('setCleanParam - requestParams', request_params)
-        value = await encode(CleanParamRequest, request_params)
+        value = encode(CleanParamRequest, request_params)
         await self.send_command({self.dps_map['CLEANING_PARAMETERS']: value})
 
-    def format_status(self):
-        print('formatted status:', self.robovac_data)
-
-    async def send_command(self, data):
+    async def send_command(self, data) -> None:
         raise NotImplementedError('Method not implemented.')
