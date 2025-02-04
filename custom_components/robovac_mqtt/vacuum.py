@@ -141,6 +141,10 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             if not params or not isinstance(params, dict) or not isinstance(params.get("rooms"), list):
                 raise ValueError("params[rooms] is required for room_clean command")
             rooms = [int(r) for r in params['rooms']]
-            await self.vacuum.room_clean(rooms)
+            if mid := params.get("map_id"):
+                map_id = int(mid)
+                await self.vacuum.room_clean(rooms, map_id)
+            else:
+                await self.vacuum.room_clean(rooms)
         else:
             raise NotImplementedError()

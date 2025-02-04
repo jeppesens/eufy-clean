@@ -200,13 +200,13 @@ class SharedConnect(Base):
         value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SPOT_CLEAN})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
-    async def room_clean(self, room_ids: list[int]):
+    async def room_clean(self, room_ids: list[int], map_id: int = 3):
+        _LOGGER.debug(f'Room clean: {room_ids}, map_id: {map_id}')
         rooms_clean = SelectRoomsClean(
             rooms=[SelectRoomsClean.Room(id=id, order=i + 1) for i, id in enumerate(room_ids)],
             mode=SelectRoomsClean.Mode.DESCRIPTOR.values_by_name['GENERAL'].number,
             clean_times=1,
-            # TODO: get map id, currently hardcoded to whatever was the ID for my first and only map....
-            map_id=3,
+            map_id=map_id,
         )
         value = encode_message(ModeCtrlRequest(method=EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN, select_rooms_clean=rooms_clean))
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
