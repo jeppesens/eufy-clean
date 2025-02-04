@@ -93,7 +93,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
 
     async def pushed_update_handler(self):
         await self.update_entity_values()
-        self.async_write_ha_state()
+        self.schedule_update_ha_state()
 
     async def update_entity_values(self):
         self._attr_battery_level = await self.vacuum.get_battery_level()

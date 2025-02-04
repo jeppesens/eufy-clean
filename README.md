@@ -95,10 +95,12 @@ if __name__ == '__main__':
 
 ## Development
 There is things left to do here, like adding more commands and testing on other devices. If you want to help, feel free to open a PR.
-- Clean rooms
+- Clean room(s) with custom cleaning mode
 - Track consumables, water, dustbin, and filter etc
 - Track errors
 - Map management
+- Locate device
+- Current position
 - Many more...
 
 ## Contact
