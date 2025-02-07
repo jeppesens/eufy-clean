@@ -196,6 +196,11 @@ class SharedConnect(Base):
         value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_GOHOME})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
+    async def collect_dust(self):
+        ...
+        # What to send here?
+        # return await self.send_command({self.dps_map['FIND_ROBOT']: 0})
+
     async def spot_clean(self):
         value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SPOT_CLEAN})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
@@ -252,4 +257,5 @@ class SharedConnect(Base):
         await self.send_command({self.dps_map['CLEANING_PARAMETERS']: value})
 
     async def send_command(self, data) -> None:
+        print('send comand')
         raise NotImplementedError('Method not implemented.')
