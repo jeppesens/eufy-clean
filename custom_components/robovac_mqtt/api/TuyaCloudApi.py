@@ -1,5 +1,3 @@
-"""Original Work from here: Andre Borie https://gitlab.com/Rjevski/eufy-device-id-and-local-key-grabber"""
-
 import hmac
 import json
 import logging
@@ -11,7 +9,7 @@ import uuid
 from hashlib import md5, sha256
 from typing import Any
 
-import requests
+import aiohttp
 from cryptography.hazmat.backends.openssl import backend as openssl_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
@@ -95,8 +93,8 @@ class TuyaCloudApi:
     session_id = None
 
     def __init__(self, username: str, region: str, timezone: int, phone_code: str):
-        self.session = requests.session()
-        self.session.headers = DEFAULT_TUYA_HEADERS.copy()
+        self.session = aiohttp.ClientSession()
+        self.session.headers.update(DEFAULT_TUYA_HEADERS.copy())
         self.default_query_params = DEFAULT_TUYA_QUERY_PARAMS.copy()
         self.default_query_params["deviceId"] = self.generate_new_device_id()
         self.username = username
@@ -139,7 +137,7 @@ class TuyaCloudApi:
             key=EUFY_HMAC_KEY, msg=message.encode("utf-8"), digestmod=sha256
         ).hexdigest()
 
-    def _request(
+    async def _request(
         self,
         action: str,
         version: str = "1.0",
@@ -148,7 +146,7 @@ class TuyaCloudApi:
         _requires_session: bool = True,
     ):
         if not self.session_id and _requires_session:
-            self.acquire_session()
+            await self.acquire_session()
 
         current_time = time.time()
         request_id = uuid.uuid4()
@@ -162,24 +160,24 @@ class TuyaCloudApi:
         }
         query_params = {**self.default_query_params, **extra_query_params}
         encoded_post_data = json.dumps(data, separators=(",", ":")) if data else ""
-        resp = self.session.post(
+        async with self.session.post(
             self.base_url + "/api.json",
             params={
                 **query_params,
                 "sign": self.get_signature(query_params, encoded_post_data),
             },
             data={"postData": encoded_post_data} if encoded_post_data else None,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if "result" not in data:
-            raise Exception(
-                f"No 'result' key in the response - the entire response is {data}."
-            )
-        return data["result"]
+        ) as resp:
+            resp.raise_for_status()
+            data = await resp.json()
+            if "result" not in data:
+                raise Exception(
+                    f"No 'result' key in the response - the entire response is {data}."
+                )
+            return data["result"]
 
-    def request_token(self, username, country_code):
-        return self._request(
+    async def request_token(self, username, country_code):
+        return await self._request(
             action="tuya.m.user.uid.token.create",
             data={"uid": username, "countryCode": country_code},
             _requires_session=False,
@@ -194,8 +192,8 @@ class TuyaCloudApi:
         encrypted_uid += encryptor.finalize()
         return md5(encrypted_uid.hex().upper().encode("utf-8")).hexdigest()
 
-    def request_session(self, username, password, country_code):
-        token_response = self.request_token(username, country_code)
+    async def request_session(self, username, password, country_code):
+        token_response = await self.request_token(username, country_code)
         encrypted_password = unpadded_rsa(
             key_exponent=int(token_response["exponent"]),
             key_n=int(token_response["publicKey"]),
@@ -212,7 +210,7 @@ class TuyaCloudApi:
         }
 
         try:
-            return self._request(
+            return await self._request(
                 action="tuya.m.user.uid.password.login.reg",
                 data=data,
                 _requires_session=False,
@@ -221,13 +219,13 @@ class TuyaCloudApi:
             error_password = md5("12345678".encode("utf8")).hexdigest()
 
             if password != error_password:
-                return self.request_session(username, error_password, country_code)
+                return await self.request_session(username, error_password, country_code)
             else:
                 raise e
 
-    def acquire_session(self):
+    async def acquire_session(self):
         password = self.determine_password(self.username)
-        session_response = self.request_session(
+        session_response = await self.request_session(
             self.username, password, self.country_code
         )
         self.session_id = self.default_query_params["sid"] = session_response["sid"]
@@ -238,28 +236,31 @@ class TuyaCloudApi:
             else self.getCountryCode(session_response["domain"]["regionCode"])
         )
 
-    def list_homes(self):
-        return self._request(action="tuya.m.location.list", version="2.1")
+    async def list_homes(self):
+        return await self._request(action="tuya.m.location.list", version="2.1")
 
-    def get_device(self, devId: str):
-        return self._request(
+    async def get_device(self, devId: str):
+        return await self._request(
             action="tuya.m.device.get", version="1.0", data={"devId": devId}
         )
 
-    def get_device_list(self) -> list:
-        groups = self._request(action='tuya.m.location.list')
+    async def get_device_list(self) -> list:
+        groups = await self._request(action='tuya.m.location.list')
         all_devices = []
         for group in groups:
             group_id = group['groupId']
-            devices = self._request(action='tuya.m.my.group.device.list', query_params=dict(gid=group_id))
+            devices = await self._request(action='tuya.m.my.group.device.list', query_params=dict(gid=group_id))
             _LOGGER.debug(f'Found {len(devices)} devices in group {group_id} via Tuya Cloud')
             all_devices += devices
-        shared_devices = self._request(action='tuya.m.my.shared.device.list')
+        shared_devices = await self._request(action='tuya.m.my.shared.device.list')
         _LOGGER.debug(f'Found {len(shared_devices)} shared devices via Tuya Cloud')
         all_devices += shared_devices
         _LOGGER.info(f'Found {len(all_devices)} devices via Tuya Cloud')
         return all_devices
 
-    def send_command(self, device_id: str, dps: dict) -> None:
+    async def send_command(self, device_id: str, dps: dict) -> None:
         _LOGGER.info(f'Sending command to device {device_id}', {'action': 'tuya.m.device.dp.publish', 'deviceID': device_id, 'data': dps})
-        self._request(action='tuya.m.device.dp.publish', query_params=dict(deviceID=device_id), data={'dps': dps, 'devId': device_id, 'gwId': device_id})
+        await self._request(action='tuya.m.device.dp.publish', query_params=dict(deviceID=device_id), data={'dps': dps, 'devId': device_id, 'gwId': device_id})
+
+    async def close(self):
+        await self.session.close()
