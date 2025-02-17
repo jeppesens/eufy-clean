@@ -95,6 +95,9 @@ class EufyApi:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
+                    if data['data']['devices'] != 'None':
+                        print(f'Found 0 devices via Eufy MQTT')
+                        return []
                     device_array = [device['device'] for device in data['data']['devices']]
                     if device_sn:
                         return next((device for device in device_array if device['device_sn'] == device_sn), None)

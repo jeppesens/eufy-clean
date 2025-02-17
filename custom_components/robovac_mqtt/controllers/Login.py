@@ -37,8 +37,13 @@ class EufyLogin(Base):
         if not self.mqtt_credentials:
             _LOGGER.warning('No MQTT credentials found')
 
-        self.tuya_api = TuyaCloudApi(self.username, self.password, eufyLogin['session']['user_id'], self.region)
-        self.sid = await self.tuya_api.login()
+        #self.tuya_api = TuyaCloudApi(self.username, self.password, eufyLogin['session']['user_id'], self.region)
+        #self.sid = await self.tuya_api.login()
+
+
+        self.tuya_api = TuyaCloudApi(self.username, self.region, 0, '44')
+        self.sid = self.tuya_api.acquire_session()
+        
 
     async def checkLogin(self):
         if not self.sid:
@@ -63,7 +68,7 @@ class EufyLogin(Base):
 
     async def get_cloud_device(self, deviceId: str):
         try:
-            await self.checkLogin()
+            #await self.checkLogin()
             return await self.tuya_api.get_device(deviceId)
         except Exception as e:
             self.sid = None
