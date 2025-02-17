@@ -15,6 +15,7 @@ dnspython = "^2.7.0"
 python-dotenv = "^1.0.1"
 setuptools = "^75.8.0"
 homeassistant = "^2025.1.4"
+pycryptodome = "^3.21.0"
 
 
 [build-system]

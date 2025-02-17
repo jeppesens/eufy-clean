@@ -1,16 +1,16 @@
 import logging
 import random
 import string
-from typing import Any, Optional
+from typing import Any
 
 import homeassistant.helpers.config_validation as cv
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
-from voluptuous import Required, Schema
+from voluptuous import Optional, Required, Schema
 
 from .constants.hass import DOMAIN, VACS
-from .EufyApi import EufyApi
+from .api.EufyApi import EufyApi
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -18,6 +18,7 @@ USER_SCHEMA = Schema(
     {
         Required(CONF_USERNAME): cv.string,
         Required(CONF_PASSWORD): cv.string,
+        Optional('region', default='EU'): cv.string,
     }
 )
 
@@ -25,7 +26,7 @@ USER_SCHEMA = Schema(
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Eufy Robovac."""
 
-    data: Optional[dict[str, Any]]
+    data: dict[str, Any] | None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
