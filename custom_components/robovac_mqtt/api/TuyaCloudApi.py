@@ -1,18 +1,19 @@
 """Original Work from here: Andre Borie https://gitlab.com/Rjevski/eufy-device-id-and-local-key-grabber"""
 
-import logging
-from hashlib import md5, sha256
 import hmac
 import json
+import logging
 import math
 import random
 import string
 import time
 import uuid
+from hashlib import md5, sha256
+from typing import Any
 
+import requests
 from cryptography.hazmat.backends.openssl import backend as openssl_backend
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-import requests
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -87,12 +88,13 @@ DEFAULT_TUYA_QUERY_PARAMS = {
     "sdkVersion": "3.0.8cAnker",
 }
 
+
 class TuyaCloudApi:
     username = None
     country_code = None
     session_id = None
 
-    def __init__(self, username, region, timezone, phone_code):
+    def __init__(self, username: str, region: str, timezone: int, phone_code: str):
         self.session = requests.session()
         self.session.headers = DEFAULT_TUYA_HEADERS.copy()
         self.default_query_params = DEFAULT_TUYA_QUERY_PARAMS.copy()
@@ -107,9 +109,6 @@ class TuyaCloudApi:
         }.get(region, "https://a1.tuyaeu.com")
 
         DEFAULT_TUYA_QUERY_PARAMS["timeZoneId"] = timezone
-
-
-
 
     @staticmethod
     def generate_new_device_id():
@@ -143,16 +142,17 @@ class TuyaCloudApi:
     def _request(
         self,
         action: str,
-        version="1.0",
-        data: dict = None,
-        query_params: dict = None,
-        _requires_session=True,
+        version: str = "1.0",
+        data: dict[str, Any] | None = None,
+        query_params: dict[str, Any] | None = None,
+        _requires_session: bool = True,
     ):
         if not self.session_id and _requires_session:
             self.acquire_session()
 
         current_time = time.time()
         request_id = uuid.uuid4()
+        _LOGGER.debug(f'Performing request to {self.base_url} with action {action} and data {data}')
         extra_query_params = {
             "time": str(int(current_time)),
             "requestId": str(request_id),
@@ -241,32 +241,25 @@ class TuyaCloudApi:
     def list_homes(self):
         return self._request(action="tuya.m.location.list", version="2.1")
 
-    def get_device(self, devId):
+    def get_device(self, devId: str):
         return self._request(
             action="tuya.m.device.get", version="1.0", data={"devId": devId}
         )
 
-
-
-
-    async def get_device_list(self) -> list:
-        groups = await self.tuya_cloud.request(action='tuya.m.location.list')
+    def get_device_list(self) -> list:
+        groups = self._request(action='tuya.m.location.list')
+        all_devices = []
         for group in groups:
-            devices = await self.tuya_cloud.request(action='tuya.m.my.group.device.list', gid=group['groupId'])
-            shared_devices = await self.tuya_cloud.request(action='tuya.m.my.shared.device.list')
+            group_id = group['groupId']
+            devices = self._request(action='tuya.m.my.group.device.list', query_params=dict(gid=group_id))
+            _LOGGER.debug(f'Found {len(devices)} devices in group {group_id} via Tuya Cloud')
+            all_devices += devices
+        shared_devices = self._request(action='tuya.m.my.shared.device.list')
+        _LOGGER.debug(f'Found {len(shared_devices)} shared devices via Tuya Cloud')
+        all_devices += shared_devices
+        _LOGGER.info(f'Found {len(all_devices)} devices via Tuya Cloud')
+        return all_devices
 
-            print(f'Found {len(devices)} devices and {len(shared_devices)} sharedDevices via Tuya Cloud')
-
-            return devices + shared_devices
-
-    async def get_device(self, device_id: str) -> dict:
-        groups = await self.tuya_cloud.request(action='tuya.m.location.list')
-        for group in groups:
-            devices = await self.tuya_cloud.request(action='tuya.m.my.group.device.list', gid=group['groupId'])
-            shared_devices = await self.tuya_cloud.request(action='tuya.m.my.shared.device.list')
-
-            return next((device for device in devices + shared_devices if device['devId'] == device_id), None)
-
-    async def send_command(self, device_id: str, dps: dict) -> None:
-        print(f'Sending command to device {device_id}', {'action': 'tuya.m.device.dp.publish', 'deviceID': device_id, 'data': dps})
-        await self.tuya_cloud.request(action='tuya.m.device.dp.publish', deviceID=device_id, data={'dps': dps, 'devId': device_id, 'gwId': device_id})
+    def send_command(self, device_id: str, dps: dict) -> None:
+        _LOGGER.info(f'Sending command to device {device_id}', {'action': 'tuya.m.device.dp.publish', 'deviceID': device_id, 'data': dps})
+        self._request(action='tuya.m.device.dp.publish', query_params=dict(deviceID=device_id), data={'dps': dps, 'devId': device_id, 'gwId': device_id})

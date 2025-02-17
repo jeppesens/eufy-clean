@@ -13,7 +13,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from .constants.hass import DOMAIN, VACS
 from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
                               EUFY_CLEAN_NOVEL_CLEAN_SPEED)
-from .controllers.MqttConnect import MqttConnect
+from .controllers import SharedConnect
 from .EufyClean import EufyClean
 
 _LOGGER = logging.getLogger(__name__)
@@ -37,16 +37,16 @@ async def async_setup_entry(
         device = await eufy_clean.init_device(vacuum['deviceId'])
         await device.connect()
         _LOGGER.info('Adding vacuum %s', device.device_id)
-        entity = RoboVacMQTTEntity(device)
+        entity = RoboVacMQTTCloudEntity(device)
         hass.data[DOMAIN][VACS][device.device_id] = entity
         async_add_entities([entity])
         await entity.pushed_update_handler()
 
 
-class RoboVacMQTTEntity(StateVacuumEntity):
+class RoboVacMQTTCloudEntity(StateVacuumEntity):
     """Representation of a vacuum cleaner."""
 
-    def __init__(self, item: MqttConnect) -> None:
+    def __init__(self, item: SharedConnect) -> None:
         """Initialize Eufy Robovac"""
         super().__init__()
         self._battery_level = 0

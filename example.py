@@ -22,6 +22,14 @@ async def setup():
     print(battery_level)
     params = await vacuum.get_clean_params_response()
     print(params)
+    x = eufy_clean.eufyCleanApi.tuya_api.list_homes()
+    print(x)
+    y = eufy_clean.eufyCleanApi.tuya_api.get_device_list()
+
+    for device in y:
+        print(device)
+        z = eufy_clean.eufyCleanApi.tuya_api.get_device(device['devId'])
+        print(z)
 
     # dining room - 1
     # tv room - 2
