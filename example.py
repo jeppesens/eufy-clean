@@ -30,6 +30,7 @@ async def setup():
     # kitchen - 6
     # downstairs bathroom - 7
     await vacuum.room_clean([7])
+    await vacuum.pause()
     status = await vacuum.get_work_status()
     await vacuum.go_home()
     print(status)

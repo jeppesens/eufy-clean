@@ -89,10 +89,14 @@ class SharedConnect(Base):
         except Exception:
             return 'auto'
 
-    async def get_work_status(self) -> str:
-        try:
-            value = decode(WorkStatus, self.robovac_data['WORK_STATUS'])
+    def _get_work_status(self) -> WorkStatus:
+        # TODO: WorkStatus has a lot of fields, should be able to get more info from this
+        # e.g current scene
+        return decode(WorkStatus, self.robovac_data['WORK_STATUS'])
 
+    async def get_work_status(self) -> VacuumActivity:
+        try:
+            value = self._get_work_status()
             """
                 STANDBY = 0
                 SLEEP = 1
@@ -119,6 +123,8 @@ class SharedConnect(Base):
                     if 'DRYING' in str(value.go_wash):
                         # drying up after a cleaning session
                         return VacuumActivity.DOCKED
+                    elif 'PAUSED' in str(value.cleaning):
+                        return VacuumActivity.PAUSED
                     return VacuumActivity.CLEANING
                 case 6:
                     return VacuumActivity.CLEANING
