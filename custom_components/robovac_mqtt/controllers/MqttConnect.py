@@ -22,14 +22,18 @@ def get_blocking_mqtt_client(client_id: str, username: str, certificate_pem: str
     )
     client.username_pw_set(username)
 
-    with open('ca.pem', 'w') as f:
+    current_dir = path.dirname(path.abspath(__file__))
+    ca_path = path.join(current_dir, 'ca.pem')
+    key_path = path.join(current_dir, 'key.key')
+
+    with open(ca_path, 'w') as f:
         f.write(certificate_pem)
-    with open('key.key', 'w') as f:
+    with open(key_path, 'w') as f:
         f.write(private_key)
 
     client.tls_set(
-        certfile=path.abspath('ca.pem'),
-        keyfile=path.abspath('key.key'),
+        certfile=path.abspath(ca_path),
+        keyfile=path.abspath(key_path),
     )
     return client
 

@@ -13,6 +13,7 @@ It is originally based on [eufy-clean](https://github.com/martijnpoppen/eufy-cle
 
 ### Home Assistant
 If you want to use this code with Home Assistant, you should be able to install it with HACS by adding this repo.
+Login with credentials from the app and you should be able to see your devices in Home Assistant.
 
 To clean scenes, you can use the following service call:
 ```yaml
