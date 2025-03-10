@@ -41,7 +41,7 @@ class EufyLogin(Base):
         # self.sid = await self.tuya_api.login()
 
         self.tuya_api = TuyaCloudApi(self.username, self.region, 0, 44)
-        self.sid = self.tuya_api.acquire_session()
+        self.sid = await self.tuya_api.acquire_session()
 
     async def checkLogin(self):
         if not self.sid:

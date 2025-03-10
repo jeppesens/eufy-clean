@@ -95,7 +95,7 @@ class EufyApi:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    if data['data']['devices'] == None:
+                    if data['data']['devices'] is None:
                         _LOGGER.info('Found 0 devices via Eufy MQTT')
                         return []
                     device_array = [device['device'] for device in data['data']['devices']]
@@ -122,6 +122,7 @@ class EufyApi:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
+                    _LOGGER.debug(data['devices'])
                     _LOGGER.info(f'Found {len(data["devices"])} devices via Eufy Cloud')
                     return data['devices']
                 _LOGGER.warning('get device list failed')

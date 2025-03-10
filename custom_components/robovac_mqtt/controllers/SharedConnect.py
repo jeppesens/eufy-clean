@@ -23,9 +23,8 @@ _LOGGER = logging.getLogger(__name__)
 class SharedConnect(Base):
     def __init__(self, config) -> None:
         super().__init__()
-        self.debug_log = config.get('debug', False)
-        self.device_id = config['deviceId']
-        self.device_model = config.get('deviceModel', '')
+        self.device_id: str = config['deviceId']
+        self.device_model: str = config.get('deviceModel', '')
         self.device_model_desc = EUFY_CLEAN_DEVICES.get(self.device_model, '') or self.device_model
         self.config = {}
         self._update_listeners = []
@@ -38,8 +37,7 @@ class SharedConnect(Base):
             for mapped_key in mapped_keys:
                 self.robovac_data[mapped_key] = value
 
-        if self.debug_log:
-            _LOGGER.debug('mappedData', self.robovac_data)
+        _LOGGER.debug('mappedData', self.robovac_data)
 
         await self.get_control_response()
         for listener in self._update_listeners:

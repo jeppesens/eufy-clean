@@ -34,7 +34,12 @@ async def async_setup_entry(
     await eufy_clean.init()
 
     for vacuum in await eufy_clean.get_devices():
-        device = await eufy_clean.init_device(vacuum['deviceId'])
+        if device_id := vacuum.get('deviceId'):
+            logging.debug('Adding vacuum %s', vacuum)
+        else:
+            logging.debug('Skipping vacuum %s', vacuum)
+            continue
+        device = await eufy_clean.init_device(device_id)
         await device.connect()
         _LOGGER.info('Adding vacuum %s', device.device_id)
         entity = RoboVacMQTTCloudEntity(device)

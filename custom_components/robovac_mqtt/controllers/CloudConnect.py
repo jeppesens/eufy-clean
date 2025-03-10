@@ -8,12 +8,11 @@ class CloudConnect(SharedConnect):
     def __init__(self, config: dict[str, Any], eufy_clean_api: EufyLogin):
         super().__init__(config)
 
-        self.device_id = config['deviceId']
-        self.device_model = config['deviceModel']
+        self.device_id: str = config['deviceId']
+        self.device_model: str = config['deviceModel']
         self.config = config
 
         self.auto_update = config.get('autoUpdate', 0)
-        self.debug_log = config.get('debug', False)
         self.eufy_clean_api = eufy_clean_api
 
     async def connect(self):
