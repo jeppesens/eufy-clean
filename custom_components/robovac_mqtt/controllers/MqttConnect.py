@@ -51,7 +51,7 @@ class MqttConnect(SharedConnect):
         self.mqttCredentials = None
 
     async def connect(self):
-        await self.eufyCleanApi.login({'mqtt': True})
+        await self.eufyCleanApi.login()
         await self.connectMqtt(self.eufyCleanApi.mqtt_credentials)
         await self.updateDevice(True)
         await sleep(2000)

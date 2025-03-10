@@ -4,6 +4,7 @@
         "Eufy",
         "mqtt",
         "Mqtt",
+        "openssl",
         "paho",
         "robovac",
         "sess",
