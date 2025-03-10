@@ -48,18 +48,25 @@ class EufyLogin(Base):
             await self.login({'mqtt': True})
 
     async def getDevices(self) -> None:
-        self.eufy_api_devices = await self.eufyApi.get_cloud_device_list()
-        devices = await self.eufyApi.get_mqtt_device_list()
-        devices = [
+        eufy_api_devices = await self.eufyApi.get_cloud_device_list()
+
+        self.eufy_api_devices = [
+            {**ead, 'deviceid': ead.get('devId'), 'mqtt': False, 'dps': ead.get('dps', {})}
+            for ead in eufy_api_devices
+            if not ead['invalid']
+        ]
+
+        mqtt_devices = await self.eufyApi.get_mqtt_device_list()
+        mqtt_devices = [
             {
                 **self.findModel(device['device_sn']),
                 'apiType': self.checkApiType(device.get('dps', {})),
                 'mqtt': True,
                 'dps': device.get('dps', {})
             }
-            for device in devices
+            for device in mqtt_devices
         ]
-        self.mqtt_devices = [d for d in devices if not d['invalid']]
+        self.mqtt_devices = [d for d in mqtt_devices if not d['invalid']]
 
     async def getMqttDevice(self, deviceId: str):
         return await self.eufyApi.get_mqtt_device_list(deviceId)
