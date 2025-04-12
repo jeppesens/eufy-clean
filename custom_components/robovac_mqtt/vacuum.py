@@ -10,7 +10,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .constants.hass import DOMAIN, VACS
+from .constants.hass import DOMAIN, VACS, DEVICES
 from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
                               EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 from .controllers.MqttConnect import MqttConnect
@@ -26,18 +26,10 @@ async def async_setup_entry(
 ) -> None:
     """Initialize my test integration 2 config entry."""
 
-    username = config_entry.data[CONF_USERNAME]
-    password = config_entry.data[CONF_PASSWORD]
-
-    eufy_clean = EufyClean(username, password)
-    await eufy_clean.init()
-
-    for vacuum in await eufy_clean.get_devices():
-        device = await eufy_clean.init_device(vacuum['deviceId'])
-        await device.connect()
-        _LOGGER.info("Adding vacuum %s", device.device_id)
+    for device_id, device in hass.data[DOMAIN][DEVICES].items():
+        _LOGGER.info("Adding vacuum %s", device_id)
         entity = RoboVacMQTTEntity(device)
-        hass.data[DOMAIN][VACS][device.device_id] = entity
+        hass.data[DOMAIN][VACS][device_id] = entity
         async_add_entities([entity])
         await entity.pushed_update_handler()
 

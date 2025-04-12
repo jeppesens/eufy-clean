@@ -12,6 +12,7 @@ from ..proto.cloud.clean_param_pb2 import (CleanExtent, CleanParamRequest,
                                            MopMode)
 from ..proto.cloud.control_pb2 import (ModeCtrlRequest, ModeCtrlResponse,
                                        SelectRoomsClean)
+from ..proto.cloud.station_pb2 import (StationRequest, ManualActionCmd)
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.work_status_pb2 import WorkStatus
 from ..utils import decode, encode, encode_message
@@ -89,14 +90,10 @@ class SharedConnect(Base):
         except Exception:
             return 'auto'
 
-    def _get_work_status(self) -> WorkStatus:
-        # TODO: WorkStatus has a lot of fields, should be able to get more info from this
-        # e.g current scene
-        return decode(WorkStatus, self.robovac_data['WORK_STATUS'])
-
-    async def get_work_status(self) -> VacuumActivity:
+    async def get_work_status(self) -> str:
         try:
-            value = self._get_work_status()
+            value = decode(WorkStatus, self.robovac_data['WORK_STATUS'])
+
             """
                 STANDBY = 0
                 SLEEP = 1
@@ -123,8 +120,6 @@ class SharedConnect(Base):
                     if 'DRYING' in str(value.go_wash):
                         # drying up after a cleaning session
                         return VacuumActivity.DOCKED
-                    elif 'PAUSED' in str(value.cleaning):
-                        return VacuumActivity.PAUSED
                     return VacuumActivity.CLEANING
                 case 6:
                     return VacuumActivity.CLEANING
@@ -201,6 +196,14 @@ class SharedConnect(Base):
     async def go_home(self):
         value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_GOHOME})
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
+
+    async def go_dry(self):
+        value = encode(ManualActionCmd, {"go_dry" : True})
+        return await self.send_command({self.dps_map['GO_HOME']: value})
+
+    async def collect_dust(self):
+        value = encode(ManualActionCmd, {"go_collect_dust" : True})
+        return await self.send_command({self.dps_map['GO_HOME']: value})
 
     async def spot_clean(self):
         value = encode(ModeCtrlRequest, {'method': EUFY_CLEAN_CONTROL.START_SPOT_CLEAN})
