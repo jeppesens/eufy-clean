@@ -3,6 +3,8 @@ import logging
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from .EufyClean import EufyClean
 
 from .constants.hass import DOMAIN, VACS, DEVICES
 
@@ -11,7 +13,7 @@ _LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup(hass: HomeAssistant, _) -> bool:
-    hass.data.setdefault(DOMAIN, {VACS: {}}, DEVICES: {})
+    hass.data.setdefault(DOMAIN, {VACS: {}, DEVICES: {}})
     return True
 
 
@@ -30,7 +32,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await device.connect()
         _LOGGER.info("Adding %s", device.device_id)
         hass.data[DOMAIN][DEVICES][device.device_id] = device
-        
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
