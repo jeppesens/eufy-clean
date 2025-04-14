@@ -198,11 +198,15 @@ class SharedConnect(Base):
         return await self.send_command({self.dps_map['PLAY_PAUSE']: value})
 
     async def go_dry(self):
-        value = encode(ManualActionCmd, {"go_dry" : True})
+        value = encode(StationRequest, {'manual_cmd': {'go_dry': True}})
+        return await self.send_command({self.dps_map['GO_HOME']: value})
+
+    async def go_selfcleaning(self):
+        value = encode(StationRequest, {'manual_cmd': {'go_selfcleaning': True}})
         return await self.send_command({self.dps_map['GO_HOME']: value})
 
     async def collect_dust(self):
-        value = encode(ManualActionCmd, {"go_collect_dust" : True})
+        value = encode(StationRequest, {'manual_cmd': {'go_collect_dust': True}})
         return await self.send_command({self.dps_map['GO_HOME']: value})
 
     async def spot_clean(self):
