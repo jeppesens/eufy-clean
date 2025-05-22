@@ -1,4 +1,5 @@
 {
   "name": "Eufy Robovac MQTT",
-  "render_readme": true
+  "render_readme": true,
+  "icon": "icon.png"
 }
