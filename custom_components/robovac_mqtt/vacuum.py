@@ -1,7 +1,11 @@
 import logging
 from typing import Literal
 
-from homeassistant.components.vacuum import StateVacuumEntity, VacuumEntityFeature
+from homeassistant.components.vacuum import (
+    StateVacuumEntity,
+    VacuumEntityFeature,
+    VacuumActivity,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
@@ -30,7 +34,7 @@ async def async_setup_entry(
         device = await eufy_clean.init_device(vacuum['deviceId'])
         await device.connect()
         _LOGGER.info("Adding vacuum %s", device.device_id)
-        entity = RoboVacMQTTEntity(device)
+        entity = RoboVacMQTTEntity(device, hass)
         hass.data[DOMAIN][VACS][device.device_id] = entity
         async_add_entities([entity])
 
@@ -63,9 +67,10 @@ class RobovacBatterySensor(Entity):
         return "battery"
 
 class RoboVacMQTTEntity(StateVacuumEntity):
-    def __init__(self, item: MqttConnect) -> None:
+    def __init__(self, item: MqttConnect, hass: HomeAssistant) -> None:
         super().__init__()
         self.vacuum = item
+        self.hass = hass
         self._attr_unique_id = item.device_id
         self._attr_name = item.device_model_desc
         self._attr_model = item.device_model
@@ -91,11 +96,35 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             | VacuumEntityFeature.RETURN_HOME
             | VacuumEntityFeature.SEND_COMMAND
         )
-        item.add_listener(self.pushed_update_handler)
+
+        def _threadsafe_update():
+            self.hass.loop.call_soon_threadsafe(
+                lambda: self.hass.async_create_task(self.pushed_update_handler())
+            )
+
+        item.add_listener(_threadsafe_update)
 
     @property
-    def state(self):
-        return self._state or "idle"
+    def activity(self) -> VacuumActivity | None:
+        if not self._state:
+            return None
+
+        state = self._state.lower()
+
+        if state in ("docked", "charging"):
+            return VacuumActivity.DOCKED
+        elif state in ("cleaning", "auto_cleaning", "spot_cleaning"):
+            return VacuumActivity.CLEANING
+        elif state in ("paused",):
+            return VacuumActivity.PAUSED
+        elif state in ("returning", "returning_to_base"):
+            return VacuumActivity.RETURNING
+        elif state in ("error", "stuck"):
+            return VacuumActivity.ERROR
+        elif state in ("idle", "standby"):
+            return VacuumActivity.IDLE
+        else:
+            return None
 
     @property
     def extra_state_attributes(self):
@@ -111,6 +140,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
         self._attr_battery_level = await self.vacuum.get_battery_level()
         self._state = await self.vacuum.get_work_status()
         self._attr_fan_speed = await self.vacuum.get_clean_speed()
+        _LOGGER.debug("Vacuum state: %s", self._state)
 
     async def async_return_to_base(self, **kwargs):
         await self.vacuum.go_home()
