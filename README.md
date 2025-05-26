@@ -93,6 +93,8 @@ if __name__ == '__main__':
     dotenv.load_dotenv()
     asyncio.run(setup())
 ```
+Added a battery charge sensor so I can quicky find out the charge level of the vac since we now have access to offpek charging so the vac can be recharged on cheap electric if you have access to it from you domestic electricity supplier
+![Screenshot](assets/eufy-battery.png)
 
 ## Development
 There is things left to do here, like adding more commands and testing on other devices. If you want to help, feel free to open a PR.
