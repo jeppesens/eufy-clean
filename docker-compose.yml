@@ -1,9 +1,9 @@
 services:
   ha:
-    image: homeassistant/home-assistant:2025.1
+    image: homeassistant/home-assistant:latest
     restart: unless-stopped
     ports:
       - "8123:8123"
     volumes:
-      # - ./config:/config
+      - ./config:/config
       - ./custom_components/robovac_mqtt:/config/custom_components/robovac_mqtt
