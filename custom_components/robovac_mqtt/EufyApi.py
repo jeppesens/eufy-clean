@@ -1,7 +1,10 @@
 import hashlib
+import logging
 from typing import Any
 
 import aiohttp
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class EufyApi:
@@ -43,10 +46,10 @@ class EufyApi:
                 if response.status == 200:
                     response_json = await response.json()
                     if response_json.get('access_token'):
-                        print('eufyLogin successful')
+                        _LOGGER.debug('eufyLogin successful')
                         self.session = response_json
                         return response_json
-                print(f'Login failed: {await response.json()}')
+                _LOGGER.error(f'Login failed: {await response.json()}')
                 return None
 
     async def get_user_info(self) -> dict[str, Any]:
@@ -65,12 +68,12 @@ class EufyApi:
                 if response.status == 200:
                     self.user_info = await response.json()
                     if not self.user_info.get('user_center_id'):
-                        print('No user_center_id found')
+                        _LOGGER.error('No user_center_id found')
                         return None
                     self.user_info['gtoken'] = hashlib.md5(self.user_info['user_center_id'].encode()).hexdigest()
                     return self.user_info
-                print('get user center info failed')
-                print(await response.json())
+                _LOGGER.error('get user center info failed')
+                _LOGGER.error(await response.json())
                 return None
 
     async def get_device_list(self, device_sn=None) -> list[dict[str, Any]]:
@@ -91,13 +94,17 @@ class EufyApi:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    device_array = [device['device'] for device in data['data']['devices']]
+                    devices = data.get('data', {}).get('devices')
+                    if not devices:
+                        _LOGGER.warning('No devices found in response: %s', data)
+                        return []
+                    device_array = [device['device'] for device in devices]
                     if device_sn:
                         return next((device for device in device_array if device['device_sn'] == device_sn), None)
-                    print(f'Found {len(device_array)} devices via Eufy MQTT')
+                    _LOGGER.info('Found %s devices via Eufy MQTT', len(device_array))
                     return device_array
-                print('update device failed')
-                print(await response.json())
+                _LOGGER.error('update device failed')
+                _LOGGER.error(await response.json())
                 return []
 
     async def get_cloud_device_list(self):
