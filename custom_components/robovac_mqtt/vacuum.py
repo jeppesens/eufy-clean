@@ -130,6 +130,8 @@ class RoboVacMQTTEntity(StateVacuumEntity):
     def extra_state_attributes(self):
         return {
             "battery_level": self._attr_battery_level,
+            "fan_speed": self._attr_fan_speed,
+            "status": self._state,
         }
 
     async def pushed_update_handler(self):
@@ -139,7 +141,19 @@ class RoboVacMQTTEntity(StateVacuumEntity):
     async def update_entity_values(self):
         self._attr_battery_level = await self.vacuum.get_battery_level()
         self._state = await self.vacuum.get_work_status()
-        self._attr_fan_speed = await self.vacuum.get_clean_speed()
+
+        try:
+            fan_speed = await self.vacuum.get_clean_speed()
+            if isinstance(fan_speed, str):
+                self._attr_fan_speed = fan_speed.lower()
+            elif isinstance(fan_speed, int):
+                self._attr_fan_speed = str(fan_speed)
+            else:
+                self._attr_fan_speed = None
+        except Exception as e:
+            _LOGGER.warning("Failed to get fan speed: %s", e)
+            self._attr_fan_speed = None
+
         _LOGGER.debug("Vacuum state: %s", self._state)
 
     async def async_return_to_base(self, **kwargs):
@@ -181,3 +195,4 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             await self.vacuum.room_clean(rooms, map_id)
         else:
             raise NotImplementedError(f"Command {command} not implemented")
+
