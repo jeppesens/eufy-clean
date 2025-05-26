@@ -9,16 +9,14 @@ from homeassistant.components.vacuum import (
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import Entity, DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.entity import DeviceInfo
 
 from .constants.hass import DOMAIN, VACS
 from .constants.state import EUFY_CLEAN_CLEAN_SPEED, EUFY_CLEAN_NOVEL_CLEAN_SPEED
-from .constants.hass import DOMAIN, VACS, DEVICES
-from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
-                              EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 from .controllers.MqttConnect import MqttConnect
 from .EufyClean import EufyClean
+from .sensor import RobovacBatterySensor  # ✅ Imported here
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -27,42 +25,25 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    username = config_entry.data[CONF_USERNAME]
+    password = config_entry.data[CONF_PASSWORD]
 
-    """Initialize my test integration 2 config entry."""
+    eufy_clean = EufyClean(username, password)
+    await eufy_clean.init()
 
-    for device_id, device in hass.data[DOMAIN][DEVICES].items():
-        _LOGGER.info("Adding vacuum %s", device_id)
-        entity = RoboVacMQTTEntity(device)
-        hass.data[DOMAIN][VACS][device_id] = entity
+    for vacuum in await eufy_clean.get_devices():
+        device = await eufy_clean.init_device(vacuum['deviceId'])
+        await device.connect()
+        _LOGGER.info("Adding vacuum %s", device.device_id)
+        entity = RoboVacMQTTEntity(device, hass)
+        hass.data[DOMAIN][VACS][device.device_id] = entity
         async_add_entities([entity])
 
+        # ✅ Add battery sensor
         battery_sensor = RobovacBatterySensor(device)
         async_add_entities([battery_sensor])
 
         await entity.pushed_update_handler()
-
-class RobovacBatterySensor(Entity):
-    def __init__(self, robovac):
-        self.robovac = robovac
-        self._attr_unique_id = f"{robovac.device_id}_battery"
-        self._attr_name = f"{robovac.device_model_desc} Battery Level"
-        self._state = None
-
-    async def async_update(self):
-        if hasattr(self.robovac, "get_battery_level"):
-            self._state = await self.robovac.get_battery_level()
-
-    @property
-    def state(self):
-        return self._state
-
-    @property
-    def unit_of_measurement(self):
-        return "%"
-
-    @property
-    def device_class(self):
-        return "battery"
 
 class RoboVacMQTTEntity(StateVacuumEntity):
     def __init__(self, item: MqttConnect, hass: HomeAssistant) -> None:
@@ -96,9 +77,8 @@ class RoboVacMQTTEntity(StateVacuumEntity):
         )
 
         def _threadsafe_update():
-            self.hass.loop.call_soon_threadsafe(
-                lambda: self.hass.async_create_task(self.pushed_update_handler())
-            )
+            if self.hass:
+                self.hass.create_task(self.pushed_update_handler())
 
         item.add_listener(_threadsafe_update)
 
@@ -193,4 +173,3 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             await self.vacuum.room_clean(rooms, map_id)
         else:
             raise NotImplementedError(f"Command {command} not implemented")
-
