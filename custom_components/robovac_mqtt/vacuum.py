@@ -1,20 +1,14 @@
 import logging
 from typing import Literal
 
-from homeassistant.components.vacuum import (
-    StateVacuumEntity,
-    VacuumEntityFeature,
-    VacuumActivity,
-)
+from homeassistant.components.vacuum import (StateVacuumEntity, VacuumActivity,
+                                             VacuumEntityFeature)
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import Entity, DeviceInfo
+from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .constants.hass import DOMAIN, VACS
-from .constants.state import EUFY_CLEAN_CLEAN_SPEED, EUFY_CLEAN_NOVEL_CLEAN_SPEED
-from .constants.hass import DOMAIN, VACS, DEVICES
+from .constants.hass import DEVICES, DOMAIN, VACS
 from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
                               EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 from .controllers.MqttConnect import MqttConnect
@@ -32,37 +26,12 @@ async def async_setup_entry(
 
     for device_id, device in hass.data[DOMAIN][DEVICES].items():
         _LOGGER.info("Adding vacuum %s", device_id)
-        entity = RoboVacMQTTEntity(device)
+        entity = RoboVacMQTTEntity(device, hass)
         hass.data[DOMAIN][VACS][device_id] = entity
         async_add_entities([entity])
 
-        battery_sensor = RobovacBatterySensor(device)
-        async_add_entities([battery_sensor])
-
         await entity.pushed_update_handler()
 
-class RobovacBatterySensor(Entity):
-    def __init__(self, robovac):
-        self.robovac = robovac
-        self._attr_unique_id = f"{robovac.device_id}_battery"
-        self._attr_name = f"{robovac.device_model_desc} Battery Level"
-        self._state = None
-
-    async def async_update(self):
-        if hasattr(self.robovac, "get_battery_level"):
-            self._state = await self.robovac.get_battery_level()
-
-    @property
-    def state(self):
-        return self._state
-
-    @property
-    def unit_of_measurement(self):
-        return "%"
-
-    @property
-    def device_class(self):
-        return "battery"
 
 class RoboVacMQTTEntity(StateVacuumEntity):
     def __init__(self, item: MqttConnect, hass: HomeAssistant) -> None:
@@ -172,7 +141,8 @@ class RoboVacMQTTEntity(StateVacuumEntity):
     async def async_set_fan_speed(self, fan_speed: str, **kwargs):
         if fan_speed not in EUFY_CLEAN_CLEAN_SPEED:
             raise ValueError(f"Invalid fan speed: {fan_speed}")
-        await self.vacuum.set_clean_speed(fan_speed)
+        enum_value = next(x for x in EUFY_CLEAN_CLEAN_SPEED if x.value == fan_speed)
+        await self.vacuum.set_clean_speed(enum_value)
 
     async def async_send_command(
         self,
