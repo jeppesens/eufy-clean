@@ -4,6 +4,7 @@ import logging
 import time
 from functools import partial
 from os import path
+from threading import Thread
 
 from google.protobuf.message import Message
 from paho.mqtt import client as mqtt
@@ -49,8 +50,12 @@ class MqttConnect(SharedConnect):
         self.eufyCleanApi = eufyCleanApi
         self.mqttClient = None
         self.mqttCredentials = None
+        self._loop = None  # Store reference to the event loop
 
     async def connect(self):
+        # Store the current event loop for later use
+        self._loop = asyncio.get_running_loop()
+        
         await self.eufyCleanApi.login({'mqtt': True})
         await self.connectMqtt(self.eufyCleanApi.mqtt_credentials)
         await self.updateDevice(True)
@@ -61,9 +66,10 @@ class MqttConnect(SharedConnect):
             if not checkApiType:
                 return
             device = await self.eufyCleanApi.getMqttDevice(self.deviceId)
-            await self._map_data(device.get('dps'))
+            if device and device.get('dps'):
+                await self._map_data(device.get('dps'))
         except Exception as error:
-            _LOGGER.error(error)
+            _LOGGER.error(f"Error updating device: {error}")
 
     async def connectMqtt(self, mqttCredentials):
         if mqttCredentials:
@@ -103,12 +109,22 @@ class MqttConnect(SharedConnect):
         self.mqttClient.subscribe(f"cmd/eufy_home/{self.deviceModel}/{self.deviceId}/res")
 
     def on_message(self, client, userdata, msg: Message):
+        """Fixed: Properly handle async message processing from sync callback"""
         messageParsed = json.loads(msg.payload.decode())
         _LOGGER.debug(f"Received message on {msg.topic}: ", messageParsed)
+        
         try:
-            asyncio.run(
-                self._map_data(messageParsed.get('payload', {}).get('data'))
-            )
+            # Get the payload data
+            payload_data = messageParsed.get('payload', {}).get('data')
+            if payload_data:
+                # Schedule the async function to run in the event loop
+                if self._loop and not self._loop.is_closed():
+                    asyncio.run_coroutine_threadsafe(
+                        self._map_data(payload_data), 
+                        self._loop
+                    )
+                else:
+                    _LOGGER.warning("Event loop not available for message processing")
         except Exception as error:
             _LOGGER.error('Could not parse data', exc_info=error)
 
@@ -118,6 +134,10 @@ class MqttConnect(SharedConnect):
 
     async def send_command(self, dataPayload) -> None:
         try:
+            if not self.mqttCredentials:
+                _LOGGER.error("No MQTT credentials available")
+                return
+                
             payload = json.dumps({
                 'account_id': self.mqttCredentials['user_id'],
                 'data': dataPayload,
@@ -142,6 +162,10 @@ class MqttConnect(SharedConnect):
             if self.debugLog:
                 _LOGGER.debug(json.dumps(mqttVal))
             _LOGGER.debug(f"Sending command to device {self.deviceId}", payload)
-            self.mqttClient.publish(f"cmd/eufy_home/{self.deviceModel}/{self.deviceId}/req", json.dumps(mqttVal))
+            
+            if self.mqttClient and self.mqttClient.is_connected():
+                self.mqttClient.publish(f"cmd/eufy_home/{self.deviceModel}/{self.deviceId}/req", json.dumps(mqttVal))
+            else:
+                _LOGGER.error("MQTT client not connected")
         except Exception as error:
-            _LOGGER.error(error)
+            _LOGGER.error(f"Error sending command: {error}")
