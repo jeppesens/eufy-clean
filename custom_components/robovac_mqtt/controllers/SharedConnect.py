@@ -45,25 +45,56 @@ class SharedConnect(Base):
         await self.get_control_response()
         for listener in self._update_listeners:
             try:
-                _LOGGER.debug(f'Calling listener {listener.__name__}')
-                await listener()
+                _LOGGER.debug(f'Calling listener {listener.__name__ if hasattr(listener, "__name__") else "anonymous"}')
+                # Fixed: Handle both sync and async listeners
+                if asyncio.iscoroutinefunction(listener):
+                    await listener()
+                else:
+                    listener()
             except Exception as error:
                 _LOGGER.error(error)
 
-    def add_listener(self, listener: Callable[[], asyncio.Future[None]]):
+    def add_listener(self, listener: Callable[[], None]):
+        """Fixed: Changed type annotation to match actual usage"""
         self._update_listeners.append(listener)
 
     async def get_robovac_data(self):
         return self.robovac_data
 
     async def get_clean_speed(self):
-        if isinstance(self.robovac_data.get('CLEAN_SPEED'), list) and len(self.robovac_data['CLEAN_SPEED']) == 1:
-            speed = int(self.robovac_data['CLEAN_SPEED'])
-            return EUFY_CLEAN_NOVEL_CLEAN_SPEED[speed].lower()
-        elif isinstance(self.robovac_data.get('CLEAN_SPEED'), str) and self.robovac_data['CLEAN_SPEED'].isdigit():
-            speed = int(self.robovac_data['CLEAN_SPEED'])
-            return EUFY_CLEAN_NOVEL_CLEAN_SPEED[speed].lower()
-        return self.robovac_data.get('CLEAN_SPEED', 'standard').lower()
+        """Fixed: Better handling of different data types for clean speed"""
+        clean_speed_raw = self.robovac_data.get('CLEAN_SPEED')
+        
+        if clean_speed_raw is None:
+            return 'standard'
+        
+        try:
+            # Handle list with single element
+            if isinstance(clean_speed_raw, list) and len(clean_speed_raw) > 0:
+                speed = int(clean_speed_raw[0])  # Fixed: use [0] instead of treating list as int
+                if 0 <= speed < len(EUFY_CLEAN_NOVEL_CLEAN_SPEED):
+                    return EUFY_CLEAN_NOVEL_CLEAN_SPEED[speed].lower()
+            
+            # Handle integer directly
+            elif isinstance(clean_speed_raw, int):
+                if 0 <= clean_speed_raw < len(EUFY_CLEAN_NOVEL_CLEAN_SPEED):
+                    return EUFY_CLEAN_NOVEL_CLEAN_SPEED[clean_speed_raw].lower()
+            
+            # Handle string that's a digit
+            elif isinstance(clean_speed_raw, str) and clean_speed_raw.isdigit():
+                speed = int(clean_speed_raw)
+                if 0 <= speed < len(EUFY_CLEAN_NOVEL_CLEAN_SPEED):
+                    return EUFY_CLEAN_NOVEL_CLEAN_SPEED[speed].lower()
+            
+            # Handle string that's already a speed name
+            elif isinstance(clean_speed_raw, str):
+                return clean_speed_raw.lower()
+            
+        except (IndexError, ValueError, TypeError) as e:
+            _LOGGER.warning(f"Error processing clean speed {clean_speed_raw}: {e}")
+        
+        # Default fallback
+        return 'standard'
 
     async def get_control_response(self) -> ModeCtrlResponse | None:
         try:
@@ -85,8 +116,7 @@ class SharedConnect(Base):
                 return 'auto'
             else:
                 _LOGGER.debug(f"Work mode: {mode}")
-
-            # return mode.lower() if mode else 'auto'
+                return mode.lower() if mode else 'auto'  # Fixed: actually return the mode
         except Exception:
             return 'auto'
 
@@ -128,10 +158,18 @@ class SharedConnect(Base):
                 case 8:
                     return VacuumActivity.CLEANING
                 case _:
-                    state_val = value.State.DESCRIPTOR.values_by_number[value.state]
-                    _LOGGER.warning(f"Unknown state: {state_val.name}")
+                    # Fixed: Handle case where state is not in the known values
+                    if hasattr(value, 'State') and hasattr(value.State, 'DESCRIPTOR'):
+                        state_val = value.State.DESCRIPTOR.values_by_number.get(value.state)
+                        if state_val:
+                            _LOGGER.warning(f"Unknown state: {state_val.name}")
+                        else:
+                            _LOGGER.warning(f"Unknown state number: {value.state}")
+                    else:
+                        _LOGGER.warning(f"Unknown state: {value.state}")
                     return VacuumActivity.IDLE
-        except Exception:
+        except Exception as e:
+            _LOGGER.error(f"Error getting work status: {e}")
             return VacuumActivity.ERROR
 
     async def get_clean_params_request(self):
