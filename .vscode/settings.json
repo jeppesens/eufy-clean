@@ -13,4 +13,5 @@
     "files.exclude": {
         "**/__pycache__": true
     },
+    "github.copilot.chat.codeGeneration.useInstructionFiles": true,
 }
