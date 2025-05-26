@@ -14,6 +14,9 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .constants.hass import DOMAIN, VACS
 from .constants.state import EUFY_CLEAN_CLEAN_SPEED, EUFY_CLEAN_NOVEL_CLEAN_SPEED
+from .constants.hass import DOMAIN, VACS, DEVICES
+from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
+                              EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 from .controllers.MqttConnect import MqttConnect
 from .EufyClean import EufyClean
 
@@ -24,18 +27,13 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    username = config_entry.data[CONF_USERNAME]
-    password = config_entry.data[CONF_PASSWORD]
 
-    eufy_clean = EufyClean(username, password)
-    await eufy_clean.init()
+    """Initialize my test integration 2 config entry."""
 
-    for vacuum in await eufy_clean.get_devices():
-        device = await eufy_clean.init_device(vacuum['deviceId'])
-        await device.connect()
-        _LOGGER.info("Adding vacuum %s", device.device_id)
-        entity = RoboVacMQTTEntity(device, hass)
-        hass.data[DOMAIN][VACS][device.device_id] = entity
+    for device_id, device in hass.data[DOMAIN][DEVICES].items():
+        _LOGGER.info("Adding vacuum %s", device_id)
+        entity = RoboVacMQTTEntity(device)
+        hass.data[DOMAIN][VACS][device_id] = entity
         async_add_entities([entity])
 
         battery_sensor = RobovacBatterySensor(device)
