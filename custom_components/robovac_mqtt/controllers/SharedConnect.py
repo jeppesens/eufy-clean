@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Any, Callable
+import time
 
 from homeassistant.components.vacuum import VacuumActivity
 
@@ -30,10 +31,15 @@ class SharedConnect(Base):
         self.device_model_desc = EUFY_CLEAN_DEVICES.get(self.device_model, '') or self.device_model
         self.config = {}
         self._update_listeners = []
+        
+        # Add simple state change detection
+        self._last_listener_call = 0
+        self._min_listener_interval = 30  # Minimum 30 seconds between listener calls
 
     _update_listeners: list[Callable[[], None]]
 
     async def _map_data(self, dps):
+        # Update the data first
         for key, value in dps.items():
             mapped_keys = [k for k, v in self.dps_map.items() if v == key]
             for mapped_key in mapped_keys:
@@ -43,16 +49,24 @@ class SharedConnect(Base):
             _LOGGER.debug('mappedData', self.robovac_data)
 
         await self.get_control_response()
-        for listener in self._update_listeners:
-            try:
-                _LOGGER.debug(f'Calling listener {listener.__name__ if hasattr(listener, "__name__") else "anonymous"}')
-                # Fixed: Handle both sync and async listeners
-                if asyncio.iscoroutinefunction(listener):
-                    await listener()
-                else:
-                    listener()
-            except Exception as error:
-                _LOGGER.error(error)
+        
+        # Only call listeners if enough time has passed
+        current_time = time.time()
+        if current_time - self._last_listener_call >= self._min_listener_interval:
+            self._last_listener_call = current_time
+            
+            for listener in self._update_listeners:
+                try:
+                    _LOGGER.debug(f'Calling listener {listener.__name__ if hasattr(listener, "__name__") else "anonymous"}')
+                    # Fixed: Handle both sync and async listeners
+                    if asyncio.iscoroutinefunction(listener):
+                        await listener()
+                    else:
+                        listener()
+                except Exception as error:
+                    _LOGGER.error(error)
+        else:
+            _LOGGER.debug(f"Skipping listener calls - only {current_time - self._last_listener_call:.1f}s since last call")
 
     def add_listener(self, listener: Callable[[], None]):
         """Fixed: Changed type annotation to match actual usage"""
