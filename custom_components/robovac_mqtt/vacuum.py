@@ -13,6 +13,8 @@ from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
                               EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 from .controllers.MqttConnect import MqttConnect
 from .EufyClean import EufyClean
+from .sensor import RobovacBatterySensor  # ✅ Imported here
+
 
 _LOGGER = logging.getLogger(__name__)
 
