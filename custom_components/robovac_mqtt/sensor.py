@@ -7,10 +7,30 @@ from homeassistant.components.sensor import (
 )
 from homeassistant.const import PERCENTAGE
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .constants.hass import DOMAIN
+from .constants.hass import DOMAIN, DEVICES
 
 _LOGGER = logging.getLogger(__name__)
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Set up the Robovac battery sensors."""
+    
+    sensors = []
+    
+    for device_id, device in hass.data[DOMAIN][DEVICES].items():
+        _LOGGER.info("Adding battery sensor for device %s", device_id)
+        battery_sensor = RobovacBatterySensor(device)
+        sensors.append(battery_sensor)
+    
+    if sensors:
+        async_add_entities(sensors, True)
 
 class RobovacBatterySensor(SensorEntity):
     """Battery sensor for Eufy Robovac."""
