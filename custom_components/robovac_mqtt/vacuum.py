@@ -13,7 +13,7 @@ from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
                               EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 from .controllers.MqttConnect import MqttConnect
 from .EufyClean import EufyClean
-from .sensor import RobovacBatterySensor  # ✅ Imported here
+# Battery sensor is now handled by the sensor platform
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -165,4 +165,3 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             await self.vacuum.room_clean(rooms, map_id)
         else:
             raise NotImplementedError(f"Command {command} not implemented")
-
