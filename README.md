@@ -36,8 +36,8 @@ target:
   entity_id: vacuum.robovac_x10_pro_omni
 data:
   command: room_clean
-  map_id: 4
   params:
+    map_id: 4
     rooms:
       - 3
       - 4
