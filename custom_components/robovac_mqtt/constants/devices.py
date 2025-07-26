@@ -38,6 +38,8 @@ EUFY_CLEAN_DEVICES = {
    'T2276': 'Robovac X8 Pro SES',
    'T2277': 'Robovac L60 SES',
    'T2278': 'Robovac L60 Hybrid SES',
+   'T2280': 'Robovac Omni C20',
+   'T2292': 'Robovac AE C10',
    'T2320': 'Robovac X9 Pro',
    'T2351': 'Robovac X10 Pro Omni',
    'T2080': 'Robovac S1'
@@ -84,7 +86,9 @@ EUFY_CLEAN_C_SERIES = [
    'T2128',
    'T2130',
    'T2132',
-   'T2120'
+   'T2120',
+   'T2280',
+   'T2292'
 ]
 
 EUFY_CLEAN_S_SERIES = [
