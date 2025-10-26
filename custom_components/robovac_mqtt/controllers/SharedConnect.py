@@ -269,7 +269,7 @@ class SharedConnect(Base):
                 raise ValueError(f'Invalid clean type: {ct}, allowed values: {CleanType.Value.keys()}')
             if ct in ['SWEEP_AND_MOP', 'MOP_ONLY']:
                 is_mop = True
-            clean_type = {'value': CleanType.Value.DESCRIPTOR.values_by_name['SWEEP_AND_MOP'].number}
+            clean_type = {'value': CleanType.Value.DESCRIPTOR.values_by_name[ct].number}
         else:
             clean_type = {}
 
