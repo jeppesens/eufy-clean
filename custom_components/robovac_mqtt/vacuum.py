@@ -162,14 +162,11 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             map_id = int(params.get("map_id", 0))
             await self.vacuum.room_clean(rooms, map_id)
         elif command == "set_clean_param":
-            if not params or not isinstance(params, dict):
+            # Allow full flexible param dict — multiple nested keys supported
+            # Needs to be hardened before merging back | For testing purposes only
+            if not isinstance(params, dict):
                 raise ValueError("params must be a dict for set_clean_param")
-            # Pass only provided keys through
-            payload: dict[str, Any] = {}
-            for k in ("clean_type", "clean_extent", "mop_mode"):
-                if k in params and params[k] is not None:
-                    payload[k] = params[k]
-            await self.vacuum.set_clean_param(payload)
+            await self.vacuum.set_clean_param(params)
         else:
             raise NotImplementedError(f"Command {command} not implemented")
 
