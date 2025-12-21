@@ -116,8 +116,14 @@ class RoboVacSensor(SensorEntity):
 
         try:
             value = await getter()
+            _LOGGER.debug("Getter %s returned %r for %s", self._getter_name, value, self._attr_unique_id)
         except Exception:
             _LOGGER.exception("Failed to update %s for %s", self._getter_name, getattr(self.vacuum, "device_id", "unknown"))
             return
 
-        self._attr_native_value = value
+        # Only update entity state when getter returns a real value.
+        # If getter returns None (unknown / not present), preserve last known value.
+        if value is not None:
+            self._attr_native_value = value
+        else:
+            _LOGGER.debug("Getter %s returned None for %s — keeping last known value %r", self._getter_name, self._attr_unique_id, self._attr_native_value)

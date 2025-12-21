@@ -304,7 +304,8 @@ class SharedConnect(Base):
     async def get_water_level(self) -> int | None:
         """
         Return water level as an integer percentage or None.
-        Prefers station.clean_water.value if present, otherwise maps the enum clean_level.
+        Only use clean_water / clean_level if those fields are actually present
+        in the decoded StationResponse (avoid using protobuf defaults).
         """
         station = await self.get_station_response()
         _LOGGER.debug("get_water_level: station object -> %r (type=%s)", station, type(station).__name__ if station is not None else None)
@@ -312,69 +313,60 @@ class SharedConnect(Base):
             _LOGGER.debug("get_water_level: no station response available")
             return None
 
-        # dump all present protobuf fields and their types/values
+        # Determine which fields are actually present (ListFields lists set fields)
         try:
-            if hasattr(station, "ListFields"):
-                for f, v in station.ListFields():
-                    _LOGGER.debug("Station field present: %s -> %r (type=%s)", f.name, v, type(v).__name__)
-            else:
-                _LOGGER.debug("station has no ListFields(): full repr -> %r", station)
+            present_fields = {f.name for f, _ in station.ListFields()} if hasattr(station, "ListFields") else set()
         except Exception:
-            _LOGGER.exception("Error enumerating station fields")
+            present_fields = set()
 
-        # numeric value (common_pb2.Numerical likely has a `.value` field)
-        try:
-            num = getattr(station, "clean_water", None)
-            _LOGGER.debug("station.clean_water raw -> %r (type=%s)", num, type(num).__name__ if num is not None else None)
-            if num is not None and hasattr(num, "value"):
-                _LOGGER.debug("station.clean_water.value -> %r", num.value)
-                return int(num.value)
-        except Exception:
-            _LOGGER.exception("Error extracting clean_water.value from station")
+        _LOGGER.debug("get_water_level: present station fields -> %r", present_fields)
 
-        # fallback: map enum clean_level -> approximate percentage
-        level = getattr(station, "clean_level", None)
-        try:
-            level_name = None
-            if level is not None:
-                try:
-                    level_name = StationResponse.WaterLevel.Name(level)
-                except Exception:
-                    # if level is an enum object rather than int, try to get name via descriptor
-                    try:
-                        level_name = getattr(level, "name", None)
-                    except Exception:
-                        level_name = str(level)
-        except Exception:
-            level_name = None
-        _LOGGER.debug("station.clean_level -> %r (%r)", level, level_name)
-
-        mapping = {
-            StationResponse.EMPTY: 0,
-            StationResponse.VERY_LOW: 5,
-            StationResponse.LOW: 25,
-            StationResponse.MEDIUM: 50,
-            StationResponse.HIGH: 100,
-        }
-        mapped = mapping.get(level)
-        _LOGGER.debug("Mapped clean_level -> %r", mapped)
-
-        # final fallback: scan station for any numeric-like field that might represent water
-        if mapped is None:
+        # Prefer numeric clean_water only if present
+        if "clean_water" in present_fields:
             try:
-                for f, v in station.ListFields():
-                    # check for numeric wrappers or plain ints
-                    if hasattr(v, "value") and isinstance(getattr(v, "value"), (int, float)):
-                        _LOGGER.debug("Found numeric wrapper in field %s -> %r", f.name, v.value)
-                        return int(v.value)
-                    if isinstance(v, (int, float)):
-                        _LOGGER.debug("Found numeric value in field %s -> %r", f.name, v)
-                        return int(v)
+                num = getattr(station, "clean_water", None)
+                _LOGGER.debug("station.clean_water raw -> %r (type=%s)", num, type(num).__name__ if num is not None else None)
+                if num is not None and hasattr(num, "value"):
+                    _LOGGER.debug("station.clean_water.value -> %r", num.value)
+                    return int(num.value)
             except Exception:
-                _LOGGER.exception("Fallback scanning of station fields failed")
+                _LOGGER.exception("Error extracting clean_water.value from station")
 
-        return mapped
-        
+        # Fallback: use enum clean_level only if present
+        if "clean_level" in present_fields:
+            level = getattr(station, "clean_level", None)
+            try:
+                level_name = StationResponse.WaterLevel.Name(level) if level is not None else None
+            except Exception:
+                level_name = getattr(level, "name", None) if level is not None else None
+            _LOGGER.debug("station.clean_level -> %r (%r)", level, level_name)
+
+            mapping = {
+                StationResponse.EMPTY: 0,
+                StationResponse.VERY_LOW: 5,
+                StationResponse.LOW: 25,
+                StationResponse.MEDIUM: 50,
+                StationResponse.HIGH: 100,
+            }
+            mapped = mapping.get(level)
+            _LOGGER.debug("Mapped clean_level -> %r", mapped)
+            return mapped
+
+        # final fallback: scan for any numeric-like field that is actually present
+        try:
+            for f, v in station.ListFields():
+                if hasattr(v, "value") and isinstance(getattr(v, "value"), (int, float)):
+                    _LOGGER.debug("Found numeric wrapper in field %s -> %r", f.name, v.value)
+                    return int(v.value)
+                if isinstance(v, (int, float)):
+                    _LOGGER.debug("Found numeric value in field %s -> %r", f.name, v)
+                    return int(v)
+        except Exception:
+            _LOGGER.exception("Fallback scanning of station fields failed")
+
+        # If nothing present, return None (unknown)
+        _LOGGER.debug("get_water_level: no water info present in station response")
+        return None        
     async def get_error_code(self):
         try:
             value = decode(ErrorCode, self.robovac_data['ERROR_CODE'])
