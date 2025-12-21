@@ -50,7 +50,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             model=item.device_model,
         )
         self._state = None
-        self._attr_battery_level = None
+        #self._attr_battery_level = None
         self._attr_fan_speed = None
         self._attr_supported_features = (
             VacuumEntityFeature.START
@@ -58,7 +58,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             | VacuumEntityFeature.STOP
             | VacuumEntityFeature.STATUS
             | VacuumEntityFeature.STATE
-            | VacuumEntityFeature.BATTERY
+            #| VacuumEntityFeature.BATTERY
             | VacuumEntityFeature.FAN_SPEED
             | VacuumEntityFeature.RETURN_HOME
             | VacuumEntityFeature.SEND_COMMAND
@@ -96,7 +96,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
     @property
     def extra_state_attributes(self):
         return {
-            "battery_level": self._attr_battery_level,
+            #"battery_level": self._attr_battery_level,
             "fan_speed": self._attr_fan_speed,
             "status": self._state,
         }
@@ -106,7 +106,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
         self.async_write_ha_state()
 
     async def update_entity_values(self):
-        self._attr_battery_level = await self.vacuum.get_battery_level()
+        #self._attr_battery_level = await self.vacuum.get_battery_level()
         self._state = await self.vacuum.get_work_status()
 
         try:

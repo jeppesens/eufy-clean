@@ -8,7 +8,7 @@ from .EufyClean import EufyClean
 
 from .constants.hass import DOMAIN, VACS, DEVICES
 
-PLATFORMS = [Platform.VACUUM, Platform.BUTTON]
+PLATFORMS = [Platform.VACUUM, Platform.BUTTON, Platform.SENSOR]
 _LOGGER = logging.getLogger(__name__)
 
 
