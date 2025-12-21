@@ -12,7 +12,7 @@ from ..proto.cloud.clean_param_pb2 import (CleanExtent, CleanParamRequest,
                                            MopMode)
 from ..proto.cloud.control_pb2 import (ModeCtrlRequest, ModeCtrlResponse,
                                        SelectRoomsClean)
-from ..proto.cloud.station_pb2 import (StationRequest, ManualActionCmd)
+from ..proto.cloud.station_pb2 import (StationRequest, ManualActionCmd, StationResponse)
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.work_status_pb2 import WorkStatus
 from ..utils import decode, encode, encode_message
@@ -40,19 +40,37 @@ class SharedConnect(Base):
                 self.robovac_data[mapped_key] = value
 
         if self.debug_log:
-            _LOGGER.debug('mappedData', self.robovac_data)
+            _LOGGER.debug('mappedData %r', self.robovac_data)
+
+        # dump mapping / raw payloads for debugging
+        try:
+            _LOGGER.debug("dps_map -> %r", self.dps_map)
+            for k, v in self.robovac_data.items():
+                if isinstance(v, (bytes, bytearray)):
+                    _LOGGER.debug("robovac_data[%s] type=%s len=%d hex=%s", k, type(v).__name__, len(v), v.hex())
+                elif isinstance(v, str):
+                    # show repr and hex of underlying bytes (latin-1 keeps 1:1 mapping)
+                    try:
+                        hexed = v.encode('latin-1').hex()
+                    except Exception:
+                        hexed = repr(v)
+                    _LOGGER.debug("robovac_data[%s] type=str repr=%r hex=%s", k, v, hexed)
+                else:
+                    _LOGGER.debug("robovac_data[%s] type=%s repr=%r", k, type(v).__name__, v)
+        except Exception:
+            _LOGGER.exception("Failed to dump robovac_data debug info")
 
         await self.get_control_response()
         for listener in self._update_listeners:
             try:
-                _LOGGER.debug(f'Calling listener {listener.__name__ if hasattr(listener, "__name__") else "anonymous"}')
-                # Fixed: Handle both sync and async listeners
+                _LOGGER.debug("Calling listener %s", getattr(listener, "__name__", repr(listener)))
                 if asyncio.iscoroutinefunction(listener):
                     await listener()
                 else:
                     listener()
             except Exception as error:
-                _LOGGER.error(error)
+                _LOGGER.error("Listener error: %s", error)
+
 
     def add_listener(self, listener: Callable[[], None]):
         """Fixed: Changed type annotation to match actual usage"""
@@ -104,7 +122,97 @@ class SharedConnect(Base):
         except Exception as error:
             _LOGGER.error(error, exc_info=error)
             return ModeCtrlResponse()
+        
+    async def get_station_response(self) -> StationResponse | None:
+        """Decode and return StationResponse from robovac_data if available."""
+        try:
+            # Try likely DPS keys first
+            candidate_keys = [
+                'STATION',
+                'STATION_RESPONSE',
+                'STATION_STATUS',
+                'STATION_INFO',
+                'DOCK_STATUS',
+                'BASE_STATION',
+            ]
+            for key in candidate_keys:
+                if key in self.robovac_data:
+                    raw = self.robovac_data.get(key)
+                    _LOGGER.debug("Found candidate key for StationResponse: %s -> raw repr=%r", key, raw)
+                    try:
+                        value = decode(StationResponse, raw)
+                        if value:
+                            # show serialized bytes of decoded message for comparison
+                            try:
+                                ser = value.SerializeToString()
+                                _LOGGER.debug("Decoded StationResponse.SerializeToString() hex=%s", ser.hex())
+                            except Exception:
+                                _LOGGER.debug("Decoded StationResponse (no SerializeToString) repr=%r", value)
 
+                            try:
+                                if hasattr(value, "ListFields"):
+                                    fields = [(f.name, v) for f, v in value.ListFields()]
+                                    _LOGGER.debug("StationResponse.ListFields() -> %r", fields)
+                                else:
+                                    _LOGGER.debug("StationResponse has no ListFields()")
+                            except Exception:
+                                _LOGGER.exception("Error listing StationResponse fields")
+
+                            try:
+                                clean_water_val = getattr(value, "clean_water", None)
+                                clean_water_num = getattr(clean_water_val, "value", clean_water_val)
+                            except Exception:
+                                clean_water_num = getattr(value, "clean_water", None)
+                            _LOGGER.debug(
+                                "Decoded StationResponse from %s: clean_level=%r clean_water=%r (types: clean_level=%s clean_water=%s)",
+                                key,
+                                getattr(value, "clean_level", None),
+                                clean_water_num,
+                                type(getattr(value, "clean_level", None)).__name__,
+                                type(clean_water_val).__name__ if 'clean_water_val' in locals() else 'None',
+                            )
+                            return value
+                    except Exception as ex:
+                        _LOGGER.debug("Found %s but could not decode as StationResponse: %s", key, ex)
+
+            # Fallback: try to decode any value in robovac_data
+            for key, raw in self.robovac_data.items():
+                try:
+                    _LOGGER.debug("Attempting generic decode StationResponse from key %s -> raw repr=%r", key, raw)
+                    value = decode(StationResponse, raw)
+                    if value:
+                        try:
+                            ser = value.SerializeToString()
+                            _LOGGER.debug("Decoded StationResponse from key %s SerializeToString() hex=%s", key, ser.hex())
+                        except Exception:
+                            _LOGGER.debug("Decoded StationResponse from key %s repr=%r", key, value)
+
+                        try:
+                            if hasattr(value, "ListFields"):
+                                fields = [(f.name, v) for f, v in value.ListFields()]
+                                _LOGGER.debug("StationResponse.ListFields() -> %r", fields)
+                        except Exception:
+                            _LOGGER.exception("Error listing StationResponse fields")
+
+                        try:
+                            clean_water_val = getattr(value, "clean_water", None)
+                            clean_water_num = getattr(clean_water_val, "value", clean_water_val)
+                        except Exception:
+                            clean_water_num = getattr(value, "clean_water", None)
+                        _LOGGER.debug(
+                            "Decoded StationResponse from key %s: clean_level=%r clean_water=%r",
+                            key,
+                            getattr(value, "clean_level", None),
+                            clean_water_num,
+                        )
+                        return value
+                except Exception:
+                    _LOGGER.debug("Key %s could not be decoded as StationResponse", key)
+                    continue
+        except Exception:
+            _LOGGER.exception("Error while retrieving StationResponse")
+        return None
+                
     async def get_play_pause(self) -> bool:
         return bool(self.robovac_data['PLAY_PAUSE'])
 
@@ -192,7 +300,81 @@ class SharedConnect(Base):
 
     async def get_battery_level(self):
         return int(self.robovac_data['BATTERY_LEVEL'])
+    
+    async def get_water_level(self) -> int | None:
+        """
+        Return water level as an integer percentage or None.
+        Prefers station.clean_water.value if present, otherwise maps the enum clean_level.
+        """
+        station = await self.get_station_response()
+        _LOGGER.debug("get_water_level: station object -> %r (type=%s)", station, type(station).__name__ if station is not None else None)
+        if not station:
+            _LOGGER.debug("get_water_level: no station response available")
+            return None
 
+        # dump all present protobuf fields and their types/values
+        try:
+            if hasattr(station, "ListFields"):
+                for f, v in station.ListFields():
+                    _LOGGER.debug("Station field present: %s -> %r (type=%s)", f.name, v, type(v).__name__)
+            else:
+                _LOGGER.debug("station has no ListFields(): full repr -> %r", station)
+        except Exception:
+            _LOGGER.exception("Error enumerating station fields")
+
+        # numeric value (common_pb2.Numerical likely has a `.value` field)
+        try:
+            num = getattr(station, "clean_water", None)
+            _LOGGER.debug("station.clean_water raw -> %r (type=%s)", num, type(num).__name__ if num is not None else None)
+            if num is not None and hasattr(num, "value"):
+                _LOGGER.debug("station.clean_water.value -> %r", num.value)
+                return int(num.value)
+        except Exception:
+            _LOGGER.exception("Error extracting clean_water.value from station")
+
+        # fallback: map enum clean_level -> approximate percentage
+        level = getattr(station, "clean_level", None)
+        try:
+            level_name = None
+            if level is not None:
+                try:
+                    level_name = StationResponse.WaterLevel.Name(level)
+                except Exception:
+                    # if level is an enum object rather than int, try to get name via descriptor
+                    try:
+                        level_name = getattr(level, "name", None)
+                    except Exception:
+                        level_name = str(level)
+        except Exception:
+            level_name = None
+        _LOGGER.debug("station.clean_level -> %r (%r)", level, level_name)
+
+        mapping = {
+            StationResponse.EMPTY: 0,
+            StationResponse.VERY_LOW: 5,
+            StationResponse.LOW: 25,
+            StationResponse.MEDIUM: 50,
+            StationResponse.HIGH: 100,
+        }
+        mapped = mapping.get(level)
+        _LOGGER.debug("Mapped clean_level -> %r", mapped)
+
+        # final fallback: scan station for any numeric-like field that might represent water
+        if mapped is None:
+            try:
+                for f, v in station.ListFields():
+                    # check for numeric wrappers or plain ints
+                    if hasattr(v, "value") and isinstance(getattr(v, "value"), (int, float)):
+                        _LOGGER.debug("Found numeric wrapper in field %s -> %r", f.name, v.value)
+                        return int(v.value)
+                    if isinstance(v, (int, float)):
+                        _LOGGER.debug("Found numeric value in field %s -> %r", f.name, v)
+                        return int(v)
+            except Exception:
+                _LOGGER.exception("Fallback scanning of station fields failed")
+
+        return mapped
+        
     async def get_error_code(self):
         try:
             value = decode(ErrorCode, self.robovac_data['ERROR_CODE'])
