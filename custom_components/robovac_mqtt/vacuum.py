@@ -146,7 +146,7 @@ class RoboVacMQTTEntity(StateVacuumEntity):
 
     async def async_send_command(
         self,
-        command: Literal['scene_clean', 'room_clean'],
+        command: Literal['scene_clean', 'room_clean','set_clean_param'],
         params: dict | list | None = None,
         **kwargs,
     ) -> None:
@@ -161,6 +161,12 @@ class RoboVacMQTTEntity(StateVacuumEntity):
             rooms = [int(r) for r in params['rooms']]
             map_id = int(params.get("map_id", 0))
             await self.vacuum.room_clean(rooms, map_id)
+        elif command == "set_clean_param":
+            # Allow full flexible param dict — multiple nested keys supported
+            # Needs to be hardened before merging back | For testing purposes only
+            if not isinstance(params, dict):
+                raise ValueError("params must be a dict for set_clean_param")
+            await self.vacuum.set_clean_param(params)
         else:
             raise NotImplementedError(f"Command {command} not implemented")
 
