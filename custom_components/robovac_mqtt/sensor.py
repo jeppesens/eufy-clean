@@ -8,7 +8,6 @@ from homeassistant.components.sensor import (
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.const import (PERCENTAGE, EntityCategory)
 from .constants.hass import DOMAIN, DEVICES
-from .EufyClean import EufyClean
 
 _LOGGER = logging.getLogger(__name__)
 

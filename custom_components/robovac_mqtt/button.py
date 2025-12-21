@@ -3,7 +3,6 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.entity import DeviceInfo
 from .constants.hass import DOMAIN, DEVICES
-from .EufyClean import EufyClean
 
 _LOGGER = logging.getLogger(__name__)
 
