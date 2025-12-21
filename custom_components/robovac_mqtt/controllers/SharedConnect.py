@@ -238,6 +238,10 @@ class SharedConnect(Base):
     async def go_dry(self):
         value = encode(StationRequest, {'manual_cmd': {'go_dry': True}})
         return await self.send_command({self.dps_map['GO_HOME']: value})
+    
+    async def stop_dry_mop(self):
+        value = encode(StationRequest, {'manual_cmd': {'go_dry': False}})
+        return await self.send_command({self.dps_map['GO_HOME']: value})
 
     async def go_selfcleaning(self):
         value = encode(StationRequest, {'manual_cmd': {'go_selfcleaning': True}})
