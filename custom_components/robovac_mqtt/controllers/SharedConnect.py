@@ -358,7 +358,7 @@ class SharedConnect(Base):
                 'clean_times': 1
             }
         }
-        print('setCleanParam - requestParams', request_params)
+        _LOGGER.debug('setCleanParam - requestParams', request_params)
         value = encode(CleanParamRequest, request_params)
         await self.send_command({self.dps_map['CLEANING_PARAMETERS']: value})
 

@@ -122,10 +122,10 @@ class EufyApi:
             ) as response:
                 if response.status == 200:
                     data = await response.json()
-                    print(f'Found {len(data["devices"])} devices via Eufy Cloud')
+                    _LOGGER.info(f'Found {len(data["devices"])} devices via Eufy Cloud')
                     return data['devices']
-                print('get device list failed')
-                print(await response.json())
+                _LOGGER.error('get device list failed')
+                _LOGGER.error(await response.json())
                 return []
 
     async def get_device_properties(self, device_model):
@@ -145,10 +145,10 @@ class EufyApi:
                 json={'code': device_model}
             ) as response:
                 if response.status == 200:
-                    print(await response.json())
+                    _LOGGER.info(await response.json())
                 else:
-                    print('get product data point failed')
-                    print(await response.json())
+                    _LOGGER.error('get product data point failed')
+                    _LOGGER.error(await response.json())
 
     async def get_mqtt_credentials(self):
         async with aiohttp.ClientSession() as session:
@@ -167,6 +167,6 @@ class EufyApi:
             ) as response:
                 if response.status == 200:
                     return (await response.json()).get('data')
-                print('get mqtt failed')
-                print(await response.json())
+                _LOGGER.error('get mqtt failed')
+                _LOGGER.error(await response.json())
                 return None
