@@ -37,7 +37,18 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             state_class=SensorStateClass.MEASUREMENT,
         )
 
-        async_add_entities([battery, water])
+        # dock status sensor
+        dock_status = RoboVacSensor(
+            device,
+            "dock_status",
+            "_dock_status",
+            getter_name="get_dock_status",
+            device_class=None,  # no standard device class for dock status
+            unit=None,
+            state_class=None,
+        )
+
+        async_add_entities([battery, water, dock_status])
 
 class RoboVacSensor(SensorEntity):
     def __init__(

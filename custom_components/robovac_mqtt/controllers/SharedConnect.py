@@ -216,64 +216,38 @@ class SharedConnect(Base):
     async def get_battery_level(self):
         return int(self.robovac_data['BATTERY_LEVEL'])
     
-    def _bytes_from_mapped(self, raw: Any) -> bytes:
-        if raw is None:
-            return b""
-        if isinstance(raw, (bytes, bytearray)):
-            return bytes(raw)
-        if isinstance(raw, str):
-            try:
-                return base64.b64decode(raw, validate=False)
-            except Exception:
-                return raw.encode("latin1", errors="ignore")
-        if isinstance(raw, int):
-            return raw.to_bytes((raw.bit_length() + 7) // 8 or 1, "big")
+    async def get_dock_status(self) -> str:
         try:
-            return bytes(raw)
-        except Exception:
-            return str(raw).encode("latin1", errors="ignore")
+            value = decode(StationResponse, self.robovac_data['STATION_STATUS'])
+            _LOGGER.debug("173 - dock status: %r", value)
+            ## These are separate booleans rather than being part of the state enum ¯\_(ツ)_/¯
+            if value.status.collecting_dust:
+                return "Emptying dust"
+            if value.status.clear_water_adding:
+                return "Adding clean water"
+            if value.status.waste_water_recycling:            
+                return "Recycling waste water"
+            if value.status.disinfectant_making:            
+                return "Making disinfectant"
+            if value.status.cutting_hair:            
+                return "Cutting hair"
 
-    async def get_water_level(self) -> int | None:
-        """
-        Deterministic extraction of water level from GO_HOME only.
-        We have observed the correct percent as a tag0x08 varint at byte offsets
-        49 or 51 in the GO_HOME payload. Do NOT use any fallback parsing.
-        """
-        raw = self.robovac_data.get("GO_HOME")
-        if raw is None:
-            _LOGGER.debug("get_water_level: GO_HOME not present")
+            state = value.status.state
+            state_name = StationResponse.StationStatus.State.Name(state)
+            state_string = state_name.strip().lower().replace('_', ' ')
+            return state_string[:1].upper() + state_string[1:]
+        except Exception as e:
+            _LOGGER.error(f"Error getting dock status: {e}")
             return None
 
-        b = self._bytes_from_mapped(raw)
-        if not b:
-            _LOGGER.debug("get_water_level: GO_HOME payload empty")
+    async def get_water_level(self) -> int:
+        try:
+            value = decode(StationResponse, self.robovac_data['STATION_STATUS'])
+            _LOGGER.debug("173 - dock status: %r", value)
+            return value.clean_water.value
+        except Exception as e:
+            _LOGGER.error(f"Error getting dock water level: {e}")
             return None
-
-        def _read_varint(buf: bytes, pos: int):
-            val = 0
-            shift = 0
-            while pos < len(buf):
-                byte = buf[pos]
-                pos += 1
-                val |= (byte & 0x7F) << shift
-                if not (byte & 0x80):
-                    break
-                shift += 7
-            return val, pos
-
-        # Only check exact observed positions where tag 0x08 precedes the percent
-        for pos in (49, 51):
-            if pos < len(b) and b[pos] == 0x08:
-                try:
-                    v, _ = _read_varint(b, pos + 1)
-                    if 0 <= v <= 100:
-                        _LOGGER.debug("get_water_level: extracted value %s from GO_HOME at pos %d", v, pos)
-                        return int(v)
-                except Exception:
-                    _LOGGER.exception("get_water_level: failed reading varint at GO_HOME pos %d", pos)
-
-        _LOGGER.debug("get_water_level: no value at fixed positions (49/51) in GO_HOME")
-        return None
     
     async def get_error_code(self):
         try:
