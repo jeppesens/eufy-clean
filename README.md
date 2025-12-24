@@ -43,10 +43,6 @@ All dock settings are organized under the **Configuration** category in your dev
 - Charging status
 - Work status and mode
 
-## Features
-
-This custom component provides comprehensive control over your Eufy robot vacuum and its cleaning station:
-
 ### Vacuum Control
 - **Start/Stop/Pause** cleaning operations
 - **Return to dock** command
