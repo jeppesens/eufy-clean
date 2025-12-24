@@ -74,7 +74,8 @@ Included in this repository is a `docker-compose.yml` file to facilitate local t
 1.  Ensure you have Docker and Docker Compose installed.
 2.  Run `docker compose up` in the root directory.
 3.  This will start a local Home Assistant instance accessible at `http://localhost:8123`.
-4.  The `custom_components/robovac_mqtt` directory is mounted into the container, allowing you to make changes and restart the container to test them immediately.
+4.  The `custom_components/robovac_mqtt` directory is mounted into the container, making the custom component available in Home Assistant.
+5.  You will have to follow the steps mentioned in ### configuration to add your device to home assistant the first time you start the container. After that, you can stop the container and restart it whenever you want to make changes to the custom component.
 
 ## Contact
 For any questions or issues, please open an issue on the GitHub repository.
