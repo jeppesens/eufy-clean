@@ -10,6 +10,72 @@ This project provides an interface to interact with Eufy cleaning devices via MQ
 - This code was ported and tested on a Robovac X10 Pro Omni, but it should work on other models as well 🤞🏼
 - This is a personal project maintained for Home Assistant users. Contributions are welcome!
 
+## Features
+
+This custom component provides comprehensive control over your Eufy robot vacuum and its cleaning station:
+
+### Vacuum Control
+- **Start/Stop/Pause** cleaning operations
+- **Return to dock** command
+- **Scene cleaning** - Trigger pre-configured cleaning scenes from the Eufy app
+- **Room-specific cleaning** - Clean individual rooms or combinations of rooms
+- **Battery monitoring** - Track battery level and charging status
+
+### Dock Configuration
+All dock settings are organized under the **Configuration** category in your device settings:
+
+#### Mop Washing Settings
+- **Wash Frequency Mode**: Choose between `ByRoom` (wash after each room) or `ByTime` (wash after set duration)
+- **Wash Frequency Value**: Set wash interval from 15-25 minutes (when using ByTime mode)
+- **Auto Mop Washing**: Enable/disable automatic mop washing
+
+#### Drying Settings
+- **Dry Duration**: Choose drying time - `2h`, `3h`, or `4h`
+
+#### Auto-Empty Settings
+- **Auto Empty**: Enable/disable the auto-empty feature
+- **Auto Empty Mode**: Configure emptying frequency:
+  - `Smart`: Intelligent auto-detection
+  - `15 min`, `30 min`, `45 min`, `60 min`: Fixed time intervals
+
+### Sensors
+- Battery level percentage
+- Charging status
+- Work status and mode
+
+## Features
+
+This custom component provides comprehensive control over your Eufy robot vacuum and its cleaning station:
+
+### Vacuum Control
+- **Start/Stop/Pause** cleaning operations
+- **Return to dock** command
+- **Scene cleaning** - Trigger pre-configured cleaning scenes from the Eufy app
+- **Room-specific cleaning** - Clean individual rooms or combinations of rooms
+- **Battery monitoring** - Track battery level and charging status
+
+### Dock Configuration
+All dock settings are organized under the **Configuration** category in your device settings:
+
+#### Mop Washing Settings
+- **Wash Frequency Mode**: Choose between `ByRoom` (wash after each room) or `ByTime` (wash after set duration)
+- **Wash Frequency Value**: Set wash interval from 15-25 minutes (when using ByTime mode)
+- **Auto Mop Washing**: Enable/disable automatic mop washing
+
+#### Drying Settings
+- **Dry Duration**: Choose drying time - `2h`, `3h`, or `4h`
+
+#### Auto-Empty Settings
+- **Auto Empty**: Enable/disable the auto-empty feature
+- **Auto Empty Mode**: Configure emptying frequency:
+  - `Smart`: Intelligent auto-detection
+  - `15 min`, `30 min`, `45 min`, `60 min`: Fixed time intervals
+
+### Sensors
+- Battery level percentage
+- Charging status
+- Work status and mode
+
 ## Usage
 
 ### Installation via HACS
