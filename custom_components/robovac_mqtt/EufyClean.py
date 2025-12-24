@@ -1,14 +1,16 @@
 import random
 import string
+import logging
 from typing import Any
 
 from .controllers.Login import EufyLogin
 from .controllers.MqttConnect import MqttConnect
+_LOGGER = logging.getLogger(__name__)
 
 
 class EufyClean:
     def __init__(self, username: str, password: str):
-        print('EufyClean constructor')
+        _LOGGER.debug('EufyClean constructor')
 
         self.username = username
         self.password = password

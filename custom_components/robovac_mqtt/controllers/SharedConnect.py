@@ -1,6 +1,7 @@
 import asyncio
 import logging
 from typing import Any, Callable
+import base64
 
 from homeassistant.components.vacuum import VacuumActivity
 
@@ -12,7 +13,7 @@ from ..proto.cloud.clean_param_pb2 import (CleanExtent, CleanParamRequest,
                                            MopMode)
 from ..proto.cloud.control_pb2 import (ModeCtrlRequest, ModeCtrlResponse,
                                        SelectRoomsClean)
-from ..proto.cloud.station_pb2 import (StationRequest, ManualActionCmd)
+from ..proto.cloud.station_pb2 import (StationRequest, ManualActionCmd, StationResponse)
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.work_status_pb2 import WorkStatus
 from ..utils import decode, encode, encode_message
@@ -40,19 +41,37 @@ class SharedConnect(Base):
                 self.robovac_data[mapped_key] = value
 
         if self.debug_log:
-            _LOGGER.debug('mappedData', self.robovac_data)
+            _LOGGER.debug('mappedData %r', self.robovac_data)
+
+        # dump mapping / raw payloads for debugging
+        try:
+            _LOGGER.debug("dps_map -> %r", self.dps_map)
+            for k, v in self.robovac_data.items():
+                if isinstance(v, (bytes, bytearray)):
+                    _LOGGER.debug("robovac_data[%s] type=%s len=%d hex=%s", k, type(v).__name__, len(v), v.hex())
+                elif isinstance(v, str):
+                    # show repr and hex of underlying bytes (latin-1 keeps 1:1 mapping)
+                    try:
+                        hexed = v.encode('latin-1').hex()
+                    except Exception:
+                        hexed = repr(v)
+                    _LOGGER.debug("robovac_data[%s] type=str repr=%r hex=%s", k, v, hexed)
+                else:
+                    _LOGGER.debug("robovac_data[%s] type=%s repr=%r", k, type(v).__name__, v)
+        except Exception:
+            _LOGGER.exception("Failed to dump robovac_data debug info")
 
         await self.get_control_response()
         for listener in self._update_listeners:
             try:
-                _LOGGER.debug(f'Calling listener {listener.__name__ if hasattr(listener, "__name__") else "anonymous"}')
-                # Fixed: Handle both sync and async listeners
+                _LOGGER.debug("Calling listener %s", getattr(listener, "__name__", repr(listener)))
                 if asyncio.iscoroutinefunction(listener):
                     await listener()
                 else:
                     listener()
             except Exception as error:
-                _LOGGER.error(error)
+                _LOGGER.error("Listener error: %s", error)
+
 
     def add_listener(self, listener: Callable[[], None]):
         """Fixed: Changed type annotation to match actual usage"""
@@ -98,13 +117,17 @@ class SharedConnect(Base):
 
     async def get_control_response(self) -> ModeCtrlResponse | None:
         try:
-            value = decode(ModeCtrlResponse, self.robovac_data['PLAY_PAUSE'])
-            print('152 - control response', value)
+            raw = self.robovac_data.get('PLAY_PAUSE')
+            if raw is None:
+                _LOGGER.debug("get_control_response: PLAY_PAUSE missing from robovac_data")
+                return ModeCtrlResponse()
+            value = decode(ModeCtrlResponse, raw)
+            _LOGGER.info("152 - control response: %r", value)
             return value or ModeCtrlResponse()
         except Exception as error:
-            _LOGGER.error(error, exc_info=error)
-            return ModeCtrlResponse()
-
+             _LOGGER.error(error, exc_info=error)
+             return ModeCtrlResponse()
+                
     async def get_play_pause(self) -> bool:
         return bool(self.robovac_data['PLAY_PAUSE'])
 
@@ -192,7 +215,40 @@ class SharedConnect(Base):
 
     async def get_battery_level(self):
         return int(self.robovac_data['BATTERY_LEVEL'])
+    
+    async def get_dock_status(self) -> str:
+        try:
+            value = decode(StationResponse, self.robovac_data['STATION_STATUS'])
+            _LOGGER.debug("173 - dock status: %r", value)
+            ## These are separate booleans rather than being part of the state enum ¯\_(ツ)_/¯
+            if value.status.collecting_dust:
+                return "Emptying dust"
+            if value.status.clear_water_adding:
+                return "Adding clean water"
+            if value.status.waste_water_recycling:            
+                return "Recycling waste water"
+            if value.status.disinfectant_making:            
+                return "Making disinfectant"
+            if value.status.cutting_hair:            
+                return "Cutting hair"
 
+            state = value.status.state
+            state_name = StationResponse.StationStatus.State.Name(state)
+            state_string = state_name.strip().lower().replace('_', ' ')
+            return state_string[:1].upper() + state_string[1:]
+        except Exception as e:
+            _LOGGER.error(f"Error getting dock status: {e}")
+            return None
+
+    async def get_water_level(self) -> int:
+        try:
+            value = decode(StationResponse, self.robovac_data['STATION_STATUS'])
+            _LOGGER.debug("173 - dock status: %r", value)
+            return value.clean_water.value
+        except Exception as e:
+            _LOGGER.error(f"Error getting dock water level: {e}")
+            return None
+    
     async def get_error_code(self):
         try:
             value = decode(ErrorCode, self.robovac_data['ERROR_CODE'])
@@ -205,7 +261,7 @@ class SharedConnect(Base):
     async def set_clean_speed(self, clean_speed: EUFY_CLEAN_CLEAN_SPEED):
         try:
             set_clean_speed = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED].index(clean_speed.lower())
-            _LOGGER.debug('Setting clean speed to:', set_clean_speed, EUFY_CLEAN_NOVEL_CLEAN_SPEED, clean_speed)
+            _LOGGER.debug("Setting clean speed to: %r %r %r", set_clean_speed, EUFY_CLEAN_NOVEL_CLEAN_SPEED, clean_speed)
             return await self.send_command({self.dps_map['CLEAN_SPEED']: set_clean_speed})
         except Exception as error:
             _LOGGER.error(error)
@@ -238,6 +294,10 @@ class SharedConnect(Base):
     async def go_dry(self):
         value = encode(StationRequest, {'manual_cmd': {'go_dry': True}})
         return await self.send_command({self.dps_map['GO_HOME']: value})
+    
+    async def stop_dry_mop(self):
+        value = encode(StationRequest, {'manual_cmd': {'go_dry': False}})
+        return await self.send_command({self.dps_map['GO_HOME']: value})
 
     async def go_selfcleaning(self):
         value = encode(StationRequest, {'manual_cmd': {'go_selfcleaning': True}})
@@ -269,7 +329,7 @@ class SharedConnect(Base):
                 raise ValueError(f'Invalid clean type: {ct}, allowed values: {CleanType.Value.keys()}')
             if ct in ['SWEEP_AND_MOP', 'MOP_ONLY']:
                 is_mop = True
-            clean_type = {'value': CleanType.Value.DESCRIPTOR.values_by_name['SWEEP_AND_MOP'].number}
+            clean_type = {'value': CleanType.Value.DESCRIPTOR.values_by_name[ct].number}
         else:
             clean_type = {}
 
@@ -298,7 +358,7 @@ class SharedConnect(Base):
                 'clean_times': 1
             }
         }
-        print('setCleanParam - requestParams', request_params)
+        _LOGGER.debug('setCleanParam - requestParams', request_params)
         value = encode(CleanParamRequest, request_params)
         await self.send_command({self.dps_map['CLEANING_PARAMETERS']: value})
 
