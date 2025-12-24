@@ -1,20 +1,30 @@
-# Eufy-Clean
+# Eufy-Clean (Home Assistant Custom Component)
+
 ## Overview
-This Eufy Clean repo provides an interface to interact with Eufy cleaning devices. It includes functionalities to login, pair new devices, and manage cleaning operations through cloud and MQTT connections.
-It is originally based on [eufy-clean](https://github.com/martijnpoppen/eufy-clean) by [martijnpoppen](https://github.com/martijnpoppen) but has been rewritten to use Python and adding support for Home Assistant.
+This repository is a maintained fork of [eufy-clean](https://github.com/jeppesens/eufy-clean) by [jeppesens](https://github.com/jeppesens), which was originally based on [eufy-clean](https://github.com/martijnpoppen/eufy-clean) by martijnpoppen.
+
+This project provides an interface to interact with Eufy cleaning devices via MQTT, with a specific focus on maintaining a robust **Home Assistant Custom Component**. It allows you to control cleaning scenes, specific rooms, and manage station configurations (wash frequency, auto-empty, etc.) directly from your smart home dashboard.
 
 ## FAQ
 - This repo only has support for MQTT enabled Eufy Vacuums, which means you need to have a device that supports MQTT. E.g the Robovac X10 Pro Omni.
 - This code was ported and tested on a Robovac X10 Pro Omni, but it should work on other models as well 🤞🏼
-- This code is written by me for me, feel free to use it and open issues, and PRs. I will try to help as much as I can, but I can't guarantee anything.
-
+- This is a personal project maintained for Home Assistant users. Contributions are welcome!
 
 ## Usage
 
-### Home Assistant
-If you want to use this code with Home Assistant, you should be able to install it with HACS by adding this repo.
-Login with credentials from the app and you should be able to see your devices in Home Assistant.
+### Installation via HACS
+1.  Open HACS in Home Assistant.
+2.  Add this repository as a custom repository.
+3.  Install "Eufy Robovac MQTT".
+4.  Restart Home Assistant.
 
+### Configuration
+1.  Go to Settings -> Devices & Services.
+2.  Click "Add Integration".
+3.  Search for "Eufy Robovac MQTT" and follow the setup flow.
+4.  Login with your Eufy App credentials.
+
+### Cleaning Scenes
 To clean scenes, you can use the following service call:
 ```yaml
 action: vacuum.send_command
@@ -26,9 +36,9 @@ data:
 target:
     entity_id: vacuum.robovac_x10_pro_omni
 ```
-worth noting that the `scene` parameter is the scene number, which I have just guessed based on the app.
-Seems like there is 3 default scenes end then your scenes start from 4 and increments one in the order you created them.
+*Note: The `scene` parameter corresponds to scene numbers. Default scenes are typically 1-3, with custom scenes starting from 4.*
 
+### Cleaning Specific Rooms
 To clean a specific room, you can use the following service call:
 ```yaml
 action: vacuum.send_command
@@ -47,69 +57,25 @@ So which IDs are your rooms? Seems like when mapping it goes to the next room to
 > [!TIP]
 > If you need get an issue like "Unable to identify position" most likely, there's not a bug in this repo, but you have had many maps, and your default map is higher. Keep trying, 20 is not an abnormally high number!
 
-
-### Example
-If you want to use this code without using Home Assistant, you can use the `EufyClean` class directly. Here's a simple example of how to use it:
-
-```py
-import asyncio
-import os
-
-from custom_components.robovac_mqtt.EufyClean import EufyClean
-
-
-async def setup():
-    eufy_clean = EufyClean(os.getenv('EUFY_USERNAME'), os.getenv('EUFY_PASSWORD'))
-    await eufy_clean.init()
-    devices = await eufy_clean.get_devices()
-    print(devices)
-
-    device_id = next((d['deviceId'] for d in devices if d), None)
-    if not device_id:
-        return
-    device = await eufy_clean.init_device(device_id)
-    await device.connect()
-    print(device)
-    status = await device.get_work_status()
-    print(status)
-    battery_level = await device.get_battery_level()
-    print(battery_level)
-    await device.go_home()
-    # await device.set_clean_param({'clean_type': 'SWEEP_ONLY'})
-    """
-    // full home daily clean: 1
-    home: 1,
-    // full home deep clean: 2
-    // Post-Meal Clean: 3
-    morning: 4,
-    afternoon: 5,
-    weekly: 6,
-    """
-    await device.scene_clean(4)
-    # await device.play()
-    # await device.go_home()
-    status = await device.get_work_status()
-    mode = await device.get_work_mode()
-    print(status, mode)
-
-
-if __name__ == '__main__':
-    import dotenv
-    dotenv.load_dotenv()
-    asyncio.run(setup())
-```
-Added a battery charge sensor so I can quicky find out the charge level of the vac since we now have access to offpek charging so the vac can be recharged on cheap electric if you have access to it from you domestic electricity supplier
-![Screenshot](assets/eufy-battery.png)
-
 ## Development
-There is things left to do here, like adding more commands and testing on other devices. If you want to help, feel free to open a PR.
+This project is maintained as a Home Assistant component. Issues and PRs should be relevant to the integration's functionality within Home Assistant.
+
+### Pending Features
 - Clean room(s) with custom cleaning mode
-- Track consumables, water, dustbin, and filter etc
+- Track consumables (dustbin, filter, etc.)
 - Track errors
 - Map management
 - Locate device
 - Current position
-- Many more...
+
+### Local Development & Testing
+Included in this repository is a `docker-compose.yml` file to facilitate local testing of the integration.
+
+1.  Ensure you have Docker and Docker Compose installed.
+2.  Run `docker compose up` in the root directory.
+3.  This will start a local Home Assistant instance accessible at `http://localhost:8123`.
+4.  The `custom_components/robovac_mqtt` directory is mounted into the container, making the custom component available in Home Assistant.
+5.  You will have to follow the steps mentioned in ### configuration to add your device to home assistant the first time you start the container. After that, you can stop the container and restart it whenever you want to make changes to the custom component.
 
 ## Contact
 For any questions or issues, please open an issue on the GitHub repository.
