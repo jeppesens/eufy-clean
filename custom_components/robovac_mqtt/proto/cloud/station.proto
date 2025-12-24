@@ -32,6 +32,7 @@ message CollectDustCfgV2 {    // 集尘配置新版协议
         enum Value {
             BY_TASK = 0;  // 按次数
             BY_TIME = 1;  // 按时间
+            SMART = 2;    // 智能托管
         }
         Value value = 1;
 

@@ -13,7 +13,11 @@ from ..proto.cloud.clean_param_pb2 import (CleanExtent, CleanParamRequest,
                                            MopMode)
 from ..proto.cloud.control_pb2 import (ModeCtrlRequest, ModeCtrlResponse,
                                        SelectRoomsClean)
-from ..proto.cloud.station_pb2 import (StationRequest, ManualActionCmd, StationResponse)
+from ..proto.cloud.station_pb2 import (
+    StationRequest, ManualActionCmd, StationResponse, AutoActionCfg,
+    WashCfg, DryCfg, CollectDustCfg, CollectDustCfgV2
+)
+from ..proto.cloud.common_pb2 import Switch
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.work_status_pb2 import WorkStatus
 from ..utils import decode, encode, encode_message
@@ -257,6 +261,21 @@ class SharedConnect(Base):
             return 0
         except Exception as error:
             _LOGGER.error(error)
+
+    async def get_auto_action_cfg(self):
+        try:
+            value = decode(StationResponse, self.robovac_data['STATION_STATUS'])
+            return value.auto_cfg_status
+        except Exception as e:
+            _LOGGER.error(f"Error getting auto action cfg: {e}")
+            return None
+
+    async def set_auto_action_cfg(self, cfg: dict):
+        try:
+            value = encode(StationRequest, {'auto_cfg': cfg})
+            return await self.send_command({self.dps_map['GO_HOME']: value})
+        except Exception as e:
+            _LOGGER.error(f"Error setting auto action cfg: {e}")
 
     async def set_clean_speed(self, clean_speed: EUFY_CLEAN_CLEAN_SPEED):
         try:
