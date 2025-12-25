@@ -14,6 +14,7 @@ class Base:
             'BATTERY_LEVEL': '163',
             'STATION_STATUS': '173',
             'ERROR_CODE': '177',
+            'SCENE_INFO': '180',
         }
         self.robovac_data = {}
 

@@ -20,6 +20,7 @@ from ..proto.cloud.station_pb2 import (
 from ..proto.cloud.common_pb2 import Switch
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.work_status_pb2 import WorkStatus
+from ..proto.cloud.scene_pb2 import SceneResponse
 from ..utils import decode, encode, encode_message
 from .Base import Base
 
@@ -276,6 +277,41 @@ class SharedConnect(Base):
             return await self.send_command({self.dps_map['GO_HOME']: value})
         except Exception as e:
             _LOGGER.error(f"Error setting auto action cfg: {e}")
+            raise
+
+    async def get_scene_list(self) -> list[dict[str, Any]]:
+        """Get list of available cleaning scenes from DPS 180."""
+        try:
+            # DPS 180 contains SceneResponse protobuf
+            scene_data = self.robovac_data.get('SCENE_INFO')
+            if not scene_data:
+                _LOGGER.warning("No scene data available (DPS 180)")
+                return []
+            
+            # Try decoding with has_length=True (like other DPS data)
+            _LOGGER.debug(f"Attempting to decode scene data (length: {len(scene_data)})")
+            scene_response = decode(SceneResponse, scene_data, has_length=True)
+            
+            if not scene_response or not scene_response.infos:
+                _LOGGER.debug("SceneResponse decoded but no infos found")
+                return []
+            
+            _LOGGER.debug(f"SceneResponse has {len(scene_response.infos)} scene infos")
+            scenes = []
+            for scene_info in scene_response.infos:
+                # Only include valid scenes with names (mirroring official app)
+                if scene_info.name and scene_info.valid:
+                    scenes.append({
+                        'id': scene_info.id.value if scene_info.HasField('id') else 0,
+                        'name': scene_info.name,
+                        'type': scene_info.type,
+                    })
+            
+            _LOGGER.debug(f"Found {len(scenes)} valid scenes from DPS 180")
+            return scenes
+        except Exception as e:
+            _LOGGER.error(f"Error getting scene list: {e}", exc_info=True)
+            return []
 
     async def set_clean_speed(self, clean_speed: EUFY_CLEAN_CLEAN_SPEED):
         try:
