@@ -17,7 +17,7 @@ This custom component provides comprehensive control over your Eufy robot vacuum
 ### Vacuum Control
 - **Start/Stop/Pause** cleaning operations
 - **Return to dock** command
-- **Scene cleaning** - Trigger pre-configured cleaning scenes from the Eufy app
+- **Scene Selection** - Trigger pre-configured cleaning scenes (e.g., "Full Home Deep Clean") directly via a dynamic select entity or service call
 - **Room-specific cleaning** - Clean individual rooms or combinations of rooms
 - **Battery monitoring** - Track battery level and charging status
 
@@ -64,7 +64,9 @@ All dock settings are organized under the **Configuration** category in your dev
 4.  Login with your Eufy App credentials.
 
 ### Cleaning Scenes
-To clean scenes, you can use the following service call:
+The integration provides a dynamic **Scene** select entity (under the Configuration category) that automatically populates with all **valid** scenes from your Eufy app. Selecting an option in the UI will immediately trigger that cleaning routine.
+
+Alternatively, you can use the following service call:
 ```yaml
 action: vacuum.send_command
 metadata: {}

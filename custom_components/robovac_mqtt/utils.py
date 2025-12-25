@@ -17,7 +17,12 @@ def decode(to_type: T, b64_data: str, has_length: bool = True) -> T:
     data = b64decode(b64_data)
 
     if has_length:
-        data = data[1:]
+        # Skip varint length prefix
+        pos = 0
+        while data[pos] & 0x80:
+            pos += 1
+        pos += 1
+        data = data[pos:]
 
     return to_type().FromString(data)
 
@@ -27,10 +32,20 @@ def encode(message: Type[Message], data: dict[str, Any], has_length: bool = True
     return encode_message(m, has_length)
 
 
+def encode_varint(n: int) -> bytes:
+    """Encode an integer as a protobuf varint."""
+    out = bytearray()
+    while n >= 0x80:
+        out.append((n & 0x7f) | 0x80)
+        n >>= 7
+    out.append(n & 0x7f)
+    return bytes(out)
+
+
 def encode_message(message: Type[Message], has_length: bool = True) -> str:
     out = message.SerializeToString(deterministic=False)
 
     if has_length:
-        out = bytes([len(out)]) + out
+        out = encode_varint(len(out)) + out
 
     return b64encode(out).decode('utf-8')

@@ -96,6 +96,9 @@ async def async_setup_entry(
             "mdi:delete-restore"
         ))
 
+        # Scene Selection
+        entities.append(SceneSelectEntity(device))
+
     async_add_entities(entities)
 
 
@@ -178,3 +181,81 @@ class DockSelectEntity(SelectEntity):
             self.async_write_ha_state()
         except Exception as e:
             _LOGGER.error(f"Error setting {self._attr_name}: {e}")
+
+
+class SceneSelectEntity(SelectEntity):
+    """Select entity for choosing and triggering cleaning scenes."""
+    
+    def __init__(self, device: SharedConnect) -> None:
+        super().__init__()
+        self.vacuum = device
+        self._attr_unique_id = f"{device.device_id}_scene_select"
+        self._attr_name = "Scene"
+        self._attr_icon = "mdi:play-circle-outline"
+        self._attr_options = []
+        self._scene_list = []
+        
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.device_id)},
+            name=device.device_model_desc,
+            manufacturer="Eufy",
+            model=device.device_model,
+        )
+        self._attr_current_option = None
+
+    async def async_added_to_hass(self):
+        await self.async_update()
+        self.async_write_ha_state()
+        try:
+            self.vacuum.add_listener(self._handle_update)
+        except Exception:
+            _LOGGER.exception("Failed to add update listener for %s", self._attr_unique_id)
+
+    async def async_will_remove_from_hass(self):
+        try:
+            if hasattr(self.vacuum, "_update_listeners"):
+                try:
+                    self.vacuum._update_listeners.remove(self._handle_update)
+                except ValueError:
+                    pass
+        except Exception:
+             _LOGGER.exception("Failed to remove update listener for %s", self._attr_unique_id)
+    
+    async def _handle_update(self):
+        await self.async_update()
+        self.async_write_ha_state()
+
+    async def async_update(self):
+        """Update the available scenes list."""
+        try:
+            scenes = await self.vacuum.get_scene_list()
+            if scenes:
+                self._scene_list = scenes
+                self._attr_options = [scene['name'] for scene in scenes]
+                
+                # Reset current option if it's not in the new list
+                if self._attr_current_option and self._attr_current_option not in self._attr_options:
+                    self._attr_current_option = None
+            else:
+                self._attr_options = []
+                self._attr_current_option = None
+        except Exception as e:
+            _LOGGER.error(f"Error updating scene list: {e}")
+
+    async def async_select_option(self, option: str) -> None:
+        """Trigger the selected scene."""
+        try:
+            # Find scene ID by name
+            scene = next((s for s in self._scene_list if s['name'] == option), None)
+            if not scene:
+                _LOGGER.error(f"Scene '{option}' not found in scene list")
+                return
+            
+            scene_id = scene['id']
+            _LOGGER.info(f"Triggering scene '{option}' (ID: {scene_id})")
+            await self.vacuum.scene_clean(scene_id)
+            
+            # Don't set current option as this is an action trigger, not a state
+            # The entity will remain unset until the user selects another scene
+        except Exception as e:
+            _LOGGER.error(f"Error triggering scene {option}: {e}")
