@@ -28,13 +28,12 @@ from .Base import Base
 _LOGGER = logging.getLogger(__name__)
 
 class SharedConnect(Base):
-    def __init__(self, config, eufyCleanApi=None) -> None:
+    def __init__(self, config) -> None:
         super().__init__()
         self.debug_log = config.get('debug', False)
         self.device_id = config['deviceId']
         self.device_model = config.get('deviceModel', '')
         self.device_model_desc = EUFY_CLEAN_DEVICES.get(self.device_model, '') or self.device_model
-        self.eufyCleanApi = eufyCleanApi
         self.config = {}
         self._update_listeners = []
         self.rooms = []
