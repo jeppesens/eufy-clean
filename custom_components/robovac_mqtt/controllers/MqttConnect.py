@@ -111,7 +111,7 @@ class MqttConnect(SharedConnect):
     def on_message(self, client, userdata, msg: Message):
         """Fixed: Properly handle async message processing from sync callback"""
         messageParsed = json.loads(msg.payload.decode())
-        _LOGGER.debug(f"Received message on {msg.topic}: ", messageParsed)
+        _LOGGER.debug(f"Received message on {msg.topic}: %s", messageParsed)
         
         try:
             # Get the payload data
@@ -161,7 +161,7 @@ class MqttConnect(SharedConnect):
             }
             if self.debugLog:
                 _LOGGER.debug(json.dumps(mqttVal))
-            _LOGGER.debug(f"Sending command to device {self.deviceId}", payload)
+            _LOGGER.debug(f"Sending command to device {self.deviceId}: %s", payload)
             
             if self.mqttClient and self.mqttClient.is_connected():
                 self.mqttClient.publish(f"cmd/eufy_home/{self.deviceModel}/{self.deviceId}/req", json.dumps(mqttVal))
