@@ -80,7 +80,12 @@ target:
 *Note: The `scene` parameter corresponds to scene numbers. Default scenes are typically 1-3, with custom scenes starting from 4.*
 
 ### Cleaning Specific Rooms
-To clean a specific room, you can use the following service call:
+
+The integration provides two ways to clean specific rooms:
+
+1.  **Room Selection Entity**: A dynamic select entity (under the **Configuration** category) that automatically populates with all discovered rooms from your current active map. Selecting a room will trigger a clean for that specific room.
+2.  **Service Call**: For more advanced automation, you can use the following service call:
+
 ```yaml
 action: vacuum.send_command
 target:
@@ -93,10 +98,14 @@ data:
       - 3
       - 4
 ```
-So which IDs are your rooms? Seems like when mapping it goes to the next room to the left, so leaving the room with the base station and going to the left it will be 1, then 2, and so on. And your basestation is located in the last room. I mapped the ids by using `vacuum.room_clean` service and looking at the app. Is there a better way? I hope so, but I don't know it.
+
+### Map and Room Identification
+- **Active Map Sensor**: Use the `sensor.[vacuum_name]_active_map` entity to see which map the vacuum is currently on (e.g., `4`, `6`). This is useful for providing the correct `map_id` in service calls.
+- **Map Switching**: **Currently not supported.** If you need to switch the active map, you must do so within the official Eufy Clean app. Once switched, the integration will automatically update the `Active Map` sensor and `Room Selection` list.
+- **Room IDs**: If you are using service calls, you can find your room IDs directly in the **Room Selection** dropdown, where they are displayed alongside the room names (e.g., `Kitchen (ID: 3)`). This eliminates the need to dig through logs or the mobile app.
 
 > [!TIP]
-> If you need get an issue like "Unable to identify position" most likely, there's not a bug in this repo, but you have had many maps, and your default map is higher. Keep trying, 20 is not an abnormally high number!
+> If you get an error like "Unable to identify position", it's likely that the `map_id` provided in your service call doesn't match the vacuum's current hardware map. Check the **Active Map** sensor to verify.
 
 ## Development
 This project is maintained as a Home Assistant component. Issues and PRs should be relevant to the integration's functionality within Home Assistant.

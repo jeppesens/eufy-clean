@@ -48,7 +48,19 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
             state_class=None,
         )
 
-        async_add_entities([battery, water, dock_status])
+        # Active map ID sensor
+        active_map = RoboVacSensor(
+            device,
+            "active_map",
+            "_active_map",
+            getter_name="get_active_map_id",
+            device_class=None,
+            unit=None,
+            state_class=None,
+        )
+        active_map._attr_icon = "mdi:map-marker-path"
+
+        async_add_entities([battery, water, dock_status, active_map])
 
 class RoboVacSensor(SensorEntity):
     def __init__(

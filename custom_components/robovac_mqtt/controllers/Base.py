@@ -15,6 +15,12 @@ class Base:
             'STATION_STATUS': '173',
             'ERROR_CODE': '177',
             'SCENE_INFO': '180',
+            'MAP_DATA': '165',
+            'MAP_EDIT': '164',
+            'MULTI_MAP_SW': '156',
+            'MAP_STREAM': '166',
+            'UNSETTING': '176',
+            'MAP_MANAGE': '169',
         }
         self.robovac_data = {}
 
