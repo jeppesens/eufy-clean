@@ -17,25 +17,30 @@ from ..proto.cloud.station_pb2 import (
     StationRequest, ManualActionCmd, StationResponse, AutoActionCfg,
     WashCfg, DryCfg, CollectDustCfg, CollectDustCfgV2
 )
-from ..proto.cloud.common_pb2 import Switch
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.work_status_pb2 import WorkStatus
 from ..proto.cloud.scene_pb2 import SceneResponse
+from ..proto.cloud.universal_data_pb2 import UniversalDataResponse
+from ..proto.cloud.stream_pb2 import RoomParams
 from ..utils import decode, encode, encode_message
 from .Base import Base
 
 _LOGGER = logging.getLogger(__name__)
 
-
 class SharedConnect(Base):
-    def __init__(self, config) -> None:
+    def __init__(self, config, eufyCleanApi=None) -> None:
         super().__init__()
         self.debug_log = config.get('debug', False)
         self.device_id = config['deviceId']
         self.device_model = config.get('deviceModel', '')
         self.device_model_desc = EUFY_CLEAN_DEVICES.get(self.device_model, '') or self.device_model
+        self.eufyCleanApi = eufyCleanApi
         self.config = {}
         self._update_listeners = []
+        self.rooms = []
+        self.map_id = None
+        self.releases = None
+        self.map_save_sw = False
 
     _update_listeners: list[Callable[[], None]]
 
@@ -127,7 +132,7 @@ class SharedConnect(Base):
                 _LOGGER.debug("get_control_response: PLAY_PAUSE missing from robovac_data")
                 return ModeCtrlResponse()
             value = decode(ModeCtrlResponse, raw)
-            _LOGGER.info("152 - control response: %r", value)
+            _LOGGER.debug("152 - control response: %r", value)
             return value or ModeCtrlResponse()
         except Exception as error:
              _LOGGER.error(error, exc_info=error)
@@ -312,6 +317,60 @@ class SharedConnect(Base):
         except Exception as e:
             _LOGGER.error(f"Error getting scene list: {e}", exc_info=True)
             return []
+
+    async def get_map_info(self) -> dict[str, Any] | None:
+        """Get list of available maps and rooms from DPS 165."""
+        try:
+            map_data = self.robovac_data.get('MAP_DATA')
+            if not map_data:
+                return None
+            
+            _LOGGER.debug(f"Attempting to decode map data from DPS 165 (length: {len(map_data)})")
+            
+            # UniversalDataResponse check (UniversalDataResponse has RoomTable cur_map_room)
+            try:
+                universal_data = decode(UniversalDataResponse, map_data, has_length=True)
+                if universal_data and universal_data.cur_map_room.map_id:
+                     rooms = [{'id': r.id, 'name': r.name} for r in universal_data.cur_map_room.data]
+                     _LOGGER.debug("Successfully decoded DPS 165 as UniversalDataResponse: map_id=%d, rooms=%r", 
+                                  universal_data.cur_map_room.map_id, rooms)
+                     self.map_id = universal_data.cur_map_room.map_id
+                     self.rooms = rooms
+                     return {
+                         'map_id': self.map_id,
+                         'rooms': self.rooms
+                     }
+            except Exception:
+                _LOGGER.debug("Failed to decode DPS 165 as UniversalDataResponse")
+
+            # RoomParams check (RoomParams has repeated Room rooms)
+            try:
+                room_params = decode(RoomParams, map_data, has_length=True)
+                if room_params and room_params.map_id:
+                    rooms = [{'id': r.id, 'name': r.name} for r in room_params.rooms]
+                    _LOGGER.debug("Successfully decoded DPS 165 as RoomParams: map_id=%d, releases=%d, rooms=%r", 
+                                  room_params.map_id, room_params.releases, rooms)
+                    self.map_id = room_params.map_id
+                    self.releases = room_params.releases
+                    self.rooms = rooms
+                    return {
+                        'map_id': self.map_id,
+                        'releases': self.releases,
+                        'rooms': self.rooms
+                    }
+            except Exception:
+                 _LOGGER.debug("Failed to decode DPS 165 as RoomParams")
+
+            return None
+        except Exception as e:
+            _LOGGER.error(f"Error getting map info: {e}", exc_info=True)
+            return None
+
+    async def get_active_map_id(self) -> int | None:
+        """Get the ID of the currently active map."""
+        await self.get_map_info()
+        return self.map_id
+
 
     async def set_clean_speed(self, clean_speed: EUFY_CLEAN_CLEAN_SPEED):
         try:

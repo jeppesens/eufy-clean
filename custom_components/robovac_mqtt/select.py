@@ -99,6 +99,10 @@ async def async_setup_entry(
         # Scene Selection
         entities.append(SceneSelectEntity(device))
 
+        # Room Selection
+        entities.append(RoomSelectEntity(device))
+
+
     async_add_entities(entities)
 
 
@@ -259,3 +263,90 @@ class SceneSelectEntity(SelectEntity):
             # The entity will remain unset until the user selects another scene
         except Exception as e:
             _LOGGER.error(f"Error triggering scene {option}: {e}")
+
+
+class RoomSelectEntity(SelectEntity):
+    """Select entity for choosing and triggering room cleaning."""
+    
+    def __init__(self, device: SharedConnect) -> None:
+        super().__init__()
+        self.vacuum = device
+        self._attr_unique_id = f"{device.device_id}_room_select"
+        self._attr_name = "Clean Room"
+        self._attr_icon = "mdi:door-open"
+        self._attr_options = []
+        self._room_list = []
+        
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, device.device_id)},
+            name=device.device_model_desc,
+            manufacturer="Eufy",
+            model=device.device_model,
+        )
+        self._attr_current_option = None
+
+    async def async_added_to_hass(self):
+        await self.async_update()
+        self.async_write_ha_state()
+        try:
+            self.vacuum.add_listener(self._handle_update)
+        except Exception:
+            _LOGGER.exception("Failed to add update listener for %s", self._attr_unique_id)
+
+    async def async_will_remove_from_hass(self):
+        try:
+            if hasattr(self.vacuum, "_update_listeners"):
+                try:
+                    self.vacuum._update_listeners.remove(self._handle_update)
+                except ValueError:
+                    pass
+        except Exception:
+             _LOGGER.exception("Failed to remove update listener for %s", self._attr_unique_id)
+    
+    async def _handle_update(self):
+        await self.async_update()
+        self.async_write_ha_state()
+
+    async def async_update(self):
+        """Update the available rooms list."""
+        try:
+            if self.vacuum.rooms:
+                self._room_list = self.vacuum.rooms
+                # Include ID in the name for easier identification
+                self._attr_options = [
+                    f"{room.get('name') or 'Room'} (ID: {room['id']})" 
+                    for room in self._room_list
+                ]
+                
+                # Reset current option if it's not in the new list
+                if self._attr_current_option and self._attr_current_option not in self._attr_options:
+                    self._attr_current_option = None
+            else:
+                self._attr_options = []
+                self._attr_current_option = None
+        except Exception as e:
+            _LOGGER.error(f"Error updating room list: {e}")
+
+    async def async_select_option(self, option: str) -> None:
+        """Trigger cleaning of the selected room."""
+        try:
+            # Find room ID by matching the formatted option string
+            room = next((r for r in self._room_list if f"{r.get('name') or 'Room'} (ID: {r['id']})" == option), None)
+            if not room:
+                _LOGGER.error(f"Room '{option}' not found in room list")
+                return
+            
+            room_id = room['id']
+            # Use discovered map_id if available, otherwise fallback to 1
+            map_id = self.vacuum.map_id or 1
+            _LOGGER.info(f"Triggering cleaning for room '{option}' (ID: {room_id}, Map ID: {map_id})")
+            await self.vacuum.room_clean([room_id], map_id=map_id)
+            
+            # Reset current option to allow re-selecting the same room later
+            self._attr_current_option = None
+            self.async_write_ha_state()
+            
+        except Exception as e:
+            _LOGGER.error(f"Error triggering room clean {option}: {e}")
+
+
