@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from ..const import DPS_MAP
 from .http import EufyHTTPClient
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class EufyLoginError(Exception):
@@ -51,7 +54,9 @@ class EufyLogin:
                 "apiType": self.checkApiType(device.get("dps", {})),
                 "mqtt": True,
                 "dps": device.get("dps", {}),
-                "softVersion": device.get("soft_version", ""),
+                "softVersion": device.get("main_sw_version")
+                or device.get("soft_version")
+                or "",
             }
             for device in devices
         ]
