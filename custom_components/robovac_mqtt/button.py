@@ -2,9 +2,11 @@ import logging
 
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.entity import DeviceInfo
-from .constants.hass import DOMAIN, DEVICES
+
+from .const import DEVICES, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     for device_id, device in hass.data[DOMAIN][DEVICES].items():
@@ -13,12 +15,20 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         # Dry mop button
         dry_mop_button = RoboVacButton(device, "Dry mop", "_dry_mop", device.go_dry)
         # Clean mop button
-        clean_mop_button = RoboVacButton(device, "Wash mop", "_wash_mop", device.go_selfcleaning)
+        clean_mop_button = RoboVacButton(
+            device, "Wash mop", "_wash_mop", device.go_selfcleaning
+        )
         # Empty dust bin button
-        collect_dust_button = RoboVacButton(device, "Empty dust bin", "_empty_dust_bin", device.collect_dust)
+        collect_dust_button = RoboVacButton(
+            device, "Empty dust bin", "_empty_dust_bin", device.collect_dust
+        )
         # Stop mop dry button
-        stop_dry_mop_button = RoboVacButton(device, "Stop dry mop", "_stop_dry_mop", device.stop_dry_mop)
-        async_add_entities([dry_mop_button, clean_mop_button, collect_dust_button, stop_dry_mop_button])
+        stop_dry_mop_button = RoboVacButton(
+            device, "Stop dry mop", "_stop_dry_mop", device.stop_dry_mop
+        )
+        async_add_entities(
+            [dry_mop_button, clean_mop_button, collect_dust_button, stop_dry_mop_button]
+        )
 
 
 class RoboVacButton(ButtonEntity):

@@ -10,14 +10,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .constants.hass import DEVICES, DOMAIN, VACS
+from .const import DEVICES, DOMAIN, VACS
 from .controllers.SharedConnect import SharedConnect
-from .proto.cloud.station_pb2 import (
-    AutoActionCfg,
-    WashCfg,
-    CollectDustCfgV2,
-)
 from .proto.cloud.common_pb2 import Numerical
+from .proto.cloud.station_pb2 import AutoActionCfg, CollectDustCfgV2, WashCfg
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,20 +26,24 @@ async def async_setup_entry(
     entities = []
     for device_id, device in hass.data[DOMAIN][DEVICES].items():
         _LOGGER.info("Adding number entities for %s", device_id)
-        
+
         # Wash Frequency Value
         def set_wash_freq_value(cfg, val):
             cfg.wash.wash_freq.time_or_area.value = int(val)
 
-        entities.append(DockNumberEntity(
-            device,
-            "wash_frequency_value",
-            "Wash Frequency Value (Time)",
-            15, 25, 1, # Min, Max, Step
-            lambda cfg: cfg.wash.wash_freq.time_or_area.value,
-            set_wash_freq_value,
-            "mdi:clock-time-four-outline"
-        ))
+        entities.append(
+            DockNumberEntity(
+                device,
+                "wash_frequency_value",
+                "Wash Frequency Value (Time)",
+                15,
+                25,
+                1,  # Min, Max, Step
+                lambda cfg: cfg.wash.wash_freq.time_or_area.value,
+                set_wash_freq_value,
+                "mdi:clock-time-four-outline",
+            )
+        )
 
     async_add_entities(entities)
 
@@ -72,7 +72,7 @@ class DockNumberEntity(NumberEntity):
         self._setter = setter
         if icon:
             self._attr_icon = icon
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_model_desc,
@@ -88,7 +88,9 @@ class DockNumberEntity(NumberEntity):
         try:
             self.vacuum.add_listener(self._handle_update)
         except Exception:
-            _LOGGER.exception("Failed to add update listener for %s", self._attr_unique_id)
+            _LOGGER.exception(
+                "Failed to add update listener for %s", self._attr_unique_id
+            )
 
     async def async_will_remove_from_hass(self):
         try:
@@ -98,8 +100,10 @@ class DockNumberEntity(NumberEntity):
                 except ValueError:
                     pass
         except Exception:
-             _LOGGER.exception("Failed to remove update listener for %s", self._attr_unique_id)
-    
+            _LOGGER.exception(
+                "Failed to remove update listener for %s", self._attr_unique_id
+            )
+
     async def _handle_update(self):
         await self.async_update()
         self.async_write_ha_state()
@@ -120,13 +124,14 @@ class DockNumberEntity(NumberEntity):
             cfg = await self.vacuum.get_auto_action_cfg()
             if not cfg:
                 cfg = AutoActionCfg()
-            
+
             self._setter(cfg, value)
-            
+
             from google.protobuf.json_format import MessageToDict
+
             cfg_dict = MessageToDict(cfg, preserving_proto_field_name=True)
             await self.vacuum.set_auto_action_cfg(cfg_dict)
-            
+
             self._attr_native_value = value
             self.async_write_ha_state()
         except Exception as e:

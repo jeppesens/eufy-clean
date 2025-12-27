@@ -1,14 +1,20 @@
 import logging
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+
+from .const import DEVICES, DOMAIN, VACS
 from .EufyClean import EufyClean
 
-from .constants.hass import DOMAIN, VACS, DEVICES
-
-PLATFORMS = [Platform.VACUUM, Platform.BUTTON, Platform.SENSOR, Platform.SELECT, Platform.NUMBER, Platform.SWITCH]
+PLATFORMS = [
+    Platform.VACUUM,
+    Platform.BUTTON,
+    Platform.SENSOR,
+    Platform.SELECT,
+    Platform.NUMBER,
+    Platform.SWITCH,
+]
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -28,7 +34,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Load devices
     for vacuum in await eufy_clean.get_devices():
-        device = await eufy_clean.init_device(vacuum['deviceId'])
+        device = await eufy_clean.init_device(vacuum["deviceId"])
         await device.connect()
         _LOGGER.info("Adding %s", device.device_id)
         hass.data[DOMAIN][DEVICES][device.device_id] = device

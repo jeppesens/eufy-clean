@@ -9,7 +9,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
 from voluptuous import Required, Schema
 
-from .constants.hass import DOMAIN, VACS
+from .const import DOMAIN, VACS
 from .EufyApi import EufyApi
 
 _LOGGER = logging.getLogger(__name__)
@@ -35,20 +35,20 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_show_form(step_id="user", data_schema=USER_SCHEMA)
         errors = {}
         try:
-            openudid = ''.join(random.choices(string.hexdigits, k=32))
+            openudid = "".join(random.choices(string.hexdigits, k=32))
             username = user_input[CONF_USERNAME]
-            _LOGGER.info("Trying to login with username: {}".format(username))
+            _LOGGER.info(f"Trying to login with username: {username}")
             unique_id = username
             eufy_api = EufyApi(username, user_input[CONF_PASSWORD], openudid)
             login_resp = await eufy_api.login(validate_only=True)
-            if not login_resp.get('session'):
+            if not login_resp.get("session"):
                 errors["base"] = "invalid_auth"
             else:
                 data = user_input.copy()
                 data[VACS] = {}
                 return self.async_create_entry(title=unique_id, data=user_input)
         except Exception as e:
-            _LOGGER.exception("Unexpected exception: {}".format(e))
+            _LOGGER.exception(f"Unexpected exception: {e}")
             errors["base"] = "unknown"
         else:
             await self.async_set_unique_id(unique_id)

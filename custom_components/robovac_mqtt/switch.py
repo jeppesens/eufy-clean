@@ -10,14 +10,10 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .constants.hass import DEVICES, DOMAIN, VACS
+from .const import DEVICES, DOMAIN, VACS
 from .controllers.SharedConnect import SharedConnect
-from .proto.cloud.station_pb2 import (
-    AutoActionCfg,
-    CollectDustCfgV2,
-    WashCfg,
-)
 from .proto.cloud.common_pb2 import Switch
+from .proto.cloud.station_pb2 import AutoActionCfg, CollectDustCfgV2, WashCfg
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,34 +26,36 @@ async def async_setup_entry(
     entities = []
     for device_id, device in hass.data[DOMAIN][DEVICES].items():
         _LOGGER.info("Adding switch entities for %s", device_id)
-        
-        # Detergent - Removed per user request
 
         # Collect Dust Enable (V2)
         def set_collect_dust_switch(cfg, val):
             cfg.collectdust_v2.sw.value = bool(val)
 
-        entities.append(DockSwitchEntity(
-            device,
-            "collect_dust_switch",
-            "Auto Empty",
-            lambda cfg: cfg.collectdust_v2.sw.value,
-            set_collect_dust_switch,
-            "mdi:delete-restore"
-        ))
+        entities.append(
+            DockSwitchEntity(
+                device,
+                "collect_dust_switch",
+                "Auto Empty",
+                lambda cfg: cfg.collectdust_v2.sw.value,
+                set_collect_dust_switch,
+                "mdi:delete-restore",
+            )
+        )
 
         # Auto Mop Washing
         def set_auto_mop_washing(cfg, val):
             cfg.wash.cfg = WashCfg.Cfg.STANDARD if val else WashCfg.Cfg.CLOSE
-        
-        entities.append(DockSwitchEntity(
-            device,
-            "auto_mop_washing_switch",
-            "Auto Mop Washing",
-            lambda cfg: cfg.wash.cfg == WashCfg.Cfg.STANDARD,
-            set_auto_mop_washing,
-            "mdi:water-sync"
-        ))
+
+        entities.append(
+            DockSwitchEntity(
+                device,
+                "auto_mop_washing_switch",
+                "Auto Mop Washing",
+                lambda cfg: cfg.wash.cfg == WashCfg.Cfg.STANDARD,
+                set_auto_mop_washing,
+                "mdi:water-sync",
+            )
+        )
 
     async_add_entities(entities)
 
@@ -80,7 +78,7 @@ class DockSwitchEntity(SwitchEntity):
         self._setter = setter
         if icon:
             self._attr_icon = icon
-        
+
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, device.device_id)},
             name=device.device_model_desc,
@@ -96,7 +94,9 @@ class DockSwitchEntity(SwitchEntity):
         try:
             self.vacuum.add_listener(self._handle_update)
         except Exception:
-            _LOGGER.exception("Failed to add update listener for %s", self._attr_unique_id)
+            _LOGGER.exception(
+                "Failed to add update listener for %s", self._attr_unique_id
+            )
 
     async def async_will_remove_from_hass(self):
         try:
@@ -106,8 +106,10 @@ class DockSwitchEntity(SwitchEntity):
                 except ValueError:
                     pass
         except Exception:
-             _LOGGER.exception("Failed to remove update listener for %s", self._attr_unique_id)
-    
+            _LOGGER.exception(
+                "Failed to remove update listener for %s", self._attr_unique_id
+            )
+
     async def _handle_update(self):
         await self.async_update()
         self.async_write_ha_state()
@@ -134,13 +136,14 @@ class DockSwitchEntity(SwitchEntity):
             cfg = await self.vacuum.get_auto_action_cfg()
             if not cfg:
                 cfg = AutoActionCfg()
-            
+
             self._setter(cfg, state)
-            
+
             from google.protobuf.json_format import MessageToDict
+
             cfg_dict = MessageToDict(cfg, preserving_proto_field_name=True)
             await self.vacuum.set_auto_action_cfg(cfg_dict)
-            
+
             self._attr_is_on = state
             self.async_write_ha_state()
         except Exception as e:

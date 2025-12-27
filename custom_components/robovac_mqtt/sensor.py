@@ -5,11 +5,13 @@ from homeassistant.components.sensor import (
     SensorEntity,
     SensorStateClass,
 )
+from homeassistant.const import PERCENTAGE, EntityCategory
 from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.const import (PERCENTAGE, EntityCategory)
-from .constants.hass import DOMAIN, DEVICES
+
+from .const import DEVICES, DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(hass, config_entry, async_add_entities):
     for device_id, device in hass.data[DOMAIN][DEVICES].items():
@@ -62,6 +64,7 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
 
         async_add_entities([battery, water, dock_status, active_map])
 
+
 class RoboVacSensor(SensorEntity):
     def __init__(
         self,
@@ -100,11 +103,14 @@ class RoboVacSensor(SensorEntity):
         _LOGGER.debug("Listener called for %s", self._attr_unique_id)
         try:
             await self.async_update()
-            _LOGGER.debug("Updated value for %s -> %s", self._attr_unique_id, self._attr_native_value)
+            _LOGGER.debug(
+                "Updated value for %s -> %s",
+                self._attr_unique_id,
+                self._attr_native_value,
+            )
             self.async_write_ha_state()
         except Exception:
             _LOGGER.exception("Error handling update for %s", self._attr_unique_id)
-
 
     async def async_added_to_hass(self):
         # fetch initial value when entity is added
@@ -115,7 +121,9 @@ class RoboVacSensor(SensorEntity):
         try:
             self.vacuum.add_listener(self._handle_update)
         except Exception:
-            _LOGGER.exception("Failed to add update listener for %s", self._attr_unique_id)
+            _LOGGER.exception(
+                "Failed to add update listener for %s", self._attr_unique_id
+            )
 
     async def async_will_remove_from_hass(self):
         # try to remove listener when entity is removed
@@ -126,21 +134,34 @@ class RoboVacSensor(SensorEntity):
                 except ValueError:
                     pass
         except Exception:
-            _LOGGER.exception("Failed to remove update listener for %s", self._attr_unique_id)
+            _LOGGER.exception(
+                "Failed to remove update listener for %s", self._attr_unique_id
+            )
 
     async def async_update(self):
         getter = getattr(self.vacuum, self._getter_name, None)
         if getter is None or not callable(getter):
             _LOGGER.warning(
-                "Getter %s not found for device %s", self._getter_name, getattr(self.vacuum, "device_id", "unknown")
+                "Getter %s not found for device %s",
+                self._getter_name,
+                getattr(self.vacuum, "device_id", "unknown"),
             )
             return
 
         try:
             value = await getter()
-            _LOGGER.debug("Getter %s returned %r for %s", self._getter_name, value, self._attr_unique_id)
+            _LOGGER.debug(
+                "Getter %s returned %r for %s",
+                self._getter_name,
+                value,
+                self._attr_unique_id,
+            )
         except Exception:
-            _LOGGER.exception("Failed to update %s for %s", self._getter_name, getattr(self.vacuum, "device_id", "unknown"))
+            _LOGGER.exception(
+                "Failed to update %s for %s",
+                self._getter_name,
+                getattr(self.vacuum, "device_id", "unknown"),
+            )
             return
 
         # Only update entity state when getter returns a real value.
@@ -148,4 +169,9 @@ class RoboVacSensor(SensorEntity):
         if value is not None:
             self._attr_native_value = value
         else:
-            _LOGGER.debug("Getter %s returned None for %s — keeping last known value %r", self._getter_name, self._attr_unique_id, self._attr_native_value)
+            _LOGGER.debug(
+                "Getter %s returned None for %s — keeping last known value %r",
+                self._getter_name,
+                self._attr_unique_id,
+                self._attr_native_value,
+            )
