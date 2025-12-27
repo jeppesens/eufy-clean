@@ -7,6 +7,22 @@ DOMAIN: Final = "robovac_mqtt"
 VACS: Final = "vacs"
 DEVICES: Final = "devices"
 
+# Eufy API URLs
+EUFY_API_BASE_URL: Final = "https://api.eufylife.com"
+EUFY_HOME_API_BASE_URL: Final = "https://home-api.eufylife.com"
+EUFY_AIOT_API_BASE_URL: Final = "https://aiot-clean-api-pr.eufylife.com"
+
+EUFY_API_LOGIN: Final = f"{EUFY_HOME_API_BASE_URL}/v1/user/email/login"
+EUFY_API_USER_INFO: Final = f"{EUFY_API_BASE_URL}/v1/user/user_center_info"
+EUFY_API_DEVICE_LIST: Final = (
+    f"{EUFY_AIOT_API_BASE_URL}/app/devicerelation/get_device_list"
+)
+EUFY_API_DEVICE_V2: Final = f"{EUFY_API_BASE_URL}/v1/device/v2"
+EUFY_API_MQTT_INFO: Final = (
+    f"{EUFY_AIOT_API_BASE_URL}/app/devicemanage/get_user_mqtt_info"
+)
+
+
 EUFY_CLEAN_DEVICES = {
     "T1250": "RoboVac 35C",
     "T2103": "RoboVac 11C",
@@ -260,4 +276,28 @@ EUFY_CLEAN_ERROR_CODES = {
     114: "WATER PUMP ABNORMAL",
     117: "ULTRASONIC ABNORMAL",
     119: "WIFI BLUETOOTH ABNORMAL",
+}
+
+
+DPS_MAP = {
+    "PLAY_PAUSE": "152",
+    "DIRECTION": "155",
+    "WORK_MODE": "153",
+    "WORK_STATUS": "153",
+    "CLEANING_PARAMETERS": "154",
+    "CLEANING_STATISTICS": "167",
+    "ACCESSORIES_STATUS": "168",
+    "GO_HOME": "173",
+    "CLEAN_SPEED": "158",
+    "FIND_ROBOT": "160",
+    "BATTERY_LEVEL": "163",
+    "STATION_STATUS": "173",
+    "ERROR_CODE": "177",
+    "SCENE_INFO": "180",
+    "MAP_DATA": "165",
+    "MAP_EDIT": "164",
+    "MULTI_MAP_SW": "156",
+    "MAP_STREAM": "166",
+    "UNSETTING": "176",
+    "MAP_MANAGE": "169",
 }

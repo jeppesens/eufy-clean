@@ -13,10 +13,10 @@ async def sleep(ms: int):
 
 # This code comes from here: https://github.com/CodeFoodPixels/robovac/issues/68#issuecomment-2119573501
 
-T = TypeVar("T", bound=type[Message])
+T = TypeVar("T", bound=Message)
 
 
-def decode(to_type: T, b64_data: str, has_length: bool = True) -> T:
+def decode(to_type: type[T], b64_data: str, has_length: bool = True) -> T:
     data = b64decode(b64_data)
 
     if has_length:
@@ -47,7 +47,7 @@ def encode_varint(n: int) -> bytes:
     return bytes(out)
 
 
-def encode_message(message: type[Message], has_length: bool = True) -> str:
+def encode_message(message: Message, has_length: bool = True) -> str:
     out = message.SerializeToString(deterministic=False)
 
     if has_length:

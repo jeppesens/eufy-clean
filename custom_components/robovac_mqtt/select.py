@@ -1,27 +1,19 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICES, DOMAIN, VACS
-from .controllers.SharedConnect import SharedConnect
-from .proto.cloud.common_pb2 import Switch
-from .proto.cloud.station_pb2 import (
-    AutoActionCfg,
-    CollectDustCfg,
-    CollectDustCfgV2,
-    DryCfg,
-    Duration,
-    WashCfg,
-)
+from .api.commands import build_command
+from .const import DOMAIN
+from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,369 +23,284 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    entities = []
-    for device_id, device in hass.data[DOMAIN][DEVICES].items():
-        _LOGGER.info("Adding select entities for %s", device_id)
+    """Setup select entities."""
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    coordinators: list[EufyCleanCoordinator] = data["coordinators"]
 
-        # Wash Frequency Mode
-        def set_wash_freq_mode(cfg, val):
-            cfg.wash.wash_freq.mode = (
-                WashCfg.BackwashFreq.Mode.ByPartition
-                if val == "ByRoom"
-                else WashCfg.BackwashFreq.Mode.ByTime
-            )
+    entities = []
+
+    for coordinator in coordinators:
+        _LOGGER.debug("Adding select entities for %s", coordinator.device_name)
+
+        entities.append(SceneSelectEntity(coordinator))
+        entities.append(RoomSelectEntity(coordinator))
 
         entities.append(
             DockSelectEntity(
-                device,
+                coordinator,
                 "wash_frequency_mode",
                 "Wash Frequency Mode",
                 ["ByRoom", "ByTime"],
                 lambda cfg: (
                     "ByRoom"
-                    if cfg.wash.wash_freq.mode == WashCfg.BackwashFreq.Mode.ByPartition
+                    if cfg.get("wash", {})
+                    .get("wash_freq", {})
+                    .get("mode", "ByPartition")
+                    == "ByPartition"
                     else "ByTime"
                 ),
-                set_wash_freq_mode,
-                "mdi:calendar-sync",
+                _set_wash_freq_mode,
+                icon="mdi:calendar-sync",
             )
         )
 
-        # Dry Duration
-        def set_dry_duration(cfg, val):
-            cfg.dry.duration.level = ["2h", "3h", "4h"].index(val)
-
         entities.append(
             DockSelectEntity(
-                device,
+                coordinator,
                 "dry_duration",
                 "Dry Duration",
                 ["2h", "3h", "4h"],
-                lambda cfg: (
-                    "3h"
-                    if not cfg.HasField("dry")
-                    else (
-                        "2h"
-                        if cfg.dry.duration.level == 0
-                        else ("3h" if cfg.dry.duration.level == 1 else "4h")
-                    )
-                ),
-                set_dry_duration,
-                "mdi:timer-sand",
+                _get_dry_duration,
+                _set_dry_duration,
+                icon="mdi:timer-sand",
             )
         )
-
-        # Collect Dust Mode (V2)
-        def get_collect_dust_mode(cfg):
-            # Check for value 2 (SMART)
-            if cfg.collectdust_v2.mode.value == 2:
-                return "Smart"
-            # Fallback to BY_TASK as "Smart" (legacy check)
-            elif cfg.collectdust_v2.mode.value == CollectDustCfgV2.Mode.Value.BY_TASK:
-                return "Smart"
-            elif cfg.collectdust_v2.mode.value == CollectDustCfgV2.Mode.Value.BY_TIME:
-                return f"{cfg.collectdust_v2.mode.time} min"
-            return "Smart"
-
-        def set_collect_dust_mode(cfg, val):
-            if val == "Smart":
-                cfg.collectdust_v2.mode.value = 2  # SMART
-            else:
-                try:
-                    minutes = int(val.split(" ")[0])
-                    cfg.collectdust_v2.mode.value = CollectDustCfgV2.Mode.Value.BY_TIME
-                    cfg.collectdust_v2.mode.time = minutes
-                except ValueError:
-                    _LOGGER.error(f"Invalid collect dust mode value: {val}")
 
         entities.append(
             DockSelectEntity(
-                device,
-                "collect_dust_mode",
+                coordinator,
+                "auto_empty_mode",
                 "Auto Empty Mode",
                 ["Smart", "15 min", "30 min", "45 min", "60 min"],
-                get_collect_dust_mode,
-                set_collect_dust_mode,
-                "mdi:delete-restore",
+                _get_collect_dust_mode,
+                _set_collect_dust_mode,
+                icon="mdi:delete-restore",
             )
         )
-
-        # Scene Selection
-        entities.append(SceneSelectEntity(device))
-
-        # Room Selection
-        entities.append(RoomSelectEntity(device))
 
     async_add_entities(entities)
 
 
-class DockSelectEntity(SelectEntity):
+def _set_wash_freq_mode(cfg: dict[str, Any], val: str) -> None:
+    """Helper to set wash freq mode."""
+    if "wash" not in cfg:
+        cfg["wash"] = {}
+    if "wash_freq" not in cfg["wash"]:
+        cfg["wash"]["wash_freq"] = {}
+    cfg["wash"]["wash_freq"]["mode"] = "ByPartition" if val == "ByRoom" else "ByTime"
+
+
+def _get_dry_duration(cfg: dict[str, Any]) -> str:
+    """Helper to get dry duration."""
+    levels = ["SHORT", "MEDIUM", "LONG"]
+    displays = ["2h", "3h", "4h"]
+
+    dry = cfg.get("dry", {})
+    level = dry.get("duration", {}).get("level", "SHORT")
+
+    try:
+        idx = levels.index(level)
+        return displays[idx]
+    except ValueError:
+        return "3h"
+
+
+def _set_dry_duration(cfg: dict[str, Any], val: str) -> None:
+    """Helper to set dry duration."""
+    levels = ["SHORT", "MEDIUM", "LONG"]
+    displays = ["2h", "3h", "4h"]
+    try:
+        idx = displays.index(val)
+        level_str = levels[idx]
+
+        if "dry" not in cfg:
+            cfg["dry"] = {}
+        if "duration" not in cfg["dry"]:
+            cfg["dry"]["duration"] = {}
+        cfg["dry"]["duration"]["level"] = level_str
+    except ValueError:
+        pass
+
+
+def _get_collect_dust_mode(cfg: dict[str, Any]) -> str:
+    """Helper to get collect dust mode."""
+    mode = cfg.get("collectdust_v2", {}).get("mode", {})
+    val = mode.get("value", "BY_TASK")
+
+    if val in (2, "2", "BY_TASK"):
+        return "Smart"
+
+    if val == "BY_TIME":
+        time = mode.get("time", 15)
+        return f"{time} min"
+
+    return "Smart"
+
+
+def _set_collect_dust_mode(cfg: dict[str, Any], val: str) -> None:
+    """Helper to set collect dust mode."""
+    if "collectdust_v2" not in cfg:
+        cfg["collectdust_v2"] = {}
+    if "mode" not in cfg["collectdust_v2"]:
+        cfg["collectdust_v2"]["mode"] = {}
+
+    if val == "Smart":
+        cfg["collectdust_v2"]["mode"]["value"] = 2
+    else:
+        try:
+            minutes = int(val.split(" ")[0])
+            cfg["collectdust_v2"]["mode"]["value"] = 1
+            cfg["collectdust_v2"]["mode"]["time"] = minutes
+        except ValueError:
+            pass
+
+
+class DockSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
+    """Configuration select for Dock/Station settings."""
+
     def __init__(
         self,
-        device: SharedConnect,
+        coordinator: EufyCleanCoordinator,
         id_suffix: str,
-        name: str,
+        name_suffix: str,
         options: list[str],
-        getter: Any,
-        setter: Any,
-        icon: str = None,
+        getter: Callable[[dict[str, Any]], str],
+        setter: Callable[[dict[str, Any], str], None],
+        icon: str | None = None,
     ) -> None:
-        super().__init__()
-        self.vacuum = device
-        self._attr_unique_id = f"{device.device_id}_{id_suffix}"
-        self._attr_name = name
-        self._attr_options = options
+        """Initialize the dock select entity."""
+        super().__init__(coordinator)
+        self._id_suffix = id_suffix
         self._getter = getter
         self._setter = setter
+        self._attr_options = options
+        self._attr_unique_id = f"{coordinator.device_id}_{id_suffix}"
+        self._attr_has_entity_name = True
+        self._attr_name = name_suffix
+        self._attr_entity_category = EntityCategory.CONFIG
         if icon:
             self._attr_icon = icon
 
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.device_model_desc,
-            manufacturer="Eufy",
-            model=device.device_model,
-        )
-        self._attr_current_option = None
-        self._attr_entity_category = EntityCategory.CONFIG
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.device_id)},
+            "name": coordinator.device_name,
+            "manufacturer": "Eufy",
+            "model": coordinator.device_model,
+        }
 
-    async def async_added_to_hass(self):
-        await self.async_update()
-        self.async_write_ha_state()
+    @property
+    def current_option(self) -> str | None:
+        """Return the current selected option."""
+        cfg = self.coordinator.data.dock_auto_cfg
+        if not cfg:
+            return None
         try:
-            self.vacuum.add_listener(self._handle_update)
+            return self._getter(cfg)
         except Exception:
-            _LOGGER.exception(
-                "Failed to add update listener for %s", self._attr_unique_id
-            )
-
-    async def async_will_remove_from_hass(self):
-        try:
-            if hasattr(self.vacuum, "_update_listeners"):
-                try:
-                    self.vacuum._update_listeners.remove(self._handle_update)
-                except ValueError:
-                    pass
-        except Exception:
-            _LOGGER.exception(
-                "Failed to remove update listener for %s", self._attr_unique_id
-            )
-
-    async def _handle_update(self):
-        await self.async_update()
-        self.async_write_ha_state()
-
-    async def async_update(self):
-        try:
-            cfg = await self.vacuum.get_auto_action_cfg()
-            if cfg:
-                try:
-                    self._attr_current_option = self._getter(cfg)
-                except Exception:
-                    pass
-        except Exception as e:
-            _LOGGER.error(f"Error updating {self._attr_name}: {e}")
+            return None
 
     async def async_select_option(self, option: str) -> None:
-        try:
-            cfg = await self.vacuum.get_auto_action_cfg()
-            if not cfg:
-                cfg = AutoActionCfg()
+        """Change the selected option."""
+        cfg = self.coordinator.data.dock_auto_cfg.copy()
+        self._setter(cfg, option)
 
-            self._setter(cfg, option)
+        command = build_command("set_auto_cfg", cfg=cfg)
+        await self.coordinator.async_send_command(command)
 
-            from google.protobuf.json_format import MessageToDict
-
-            cfg_dict = MessageToDict(cfg, preserving_proto_field_name=True)
-            await self.vacuum.set_auto_action_cfg(cfg_dict)
-
-            self._attr_current_option = option
-            self.async_write_ha_state()
-        except Exception as e:
-            _LOGGER.error(f"Error setting {self._attr_name}: {e}")
+        self.async_write_ha_state()
 
 
-class SceneSelectEntity(SelectEntity):
+class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     """Select entity for choosing and triggering cleaning scenes."""
 
-    def __init__(self, device: SharedConnect) -> None:
-        super().__init__()
-        self.vacuum = device
-        self._attr_unique_id = f"{device.device_id}_scene_select"
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize scene select."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_scene_select"
+        self._attr_has_entity_name = True
         self._attr_name = "Scene"
         self._attr_icon = "mdi:play-circle-outline"
-        self._attr_options = []
-        self._scene_list = []
 
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.device_model_desc,
-            manufacturer="Eufy",
-            model=device.device_model,
-        )
-        self._attr_current_option = None
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.device_id)},
+            "name": coordinator.device_name,
+            "manufacturer": "Eufy",
+            "model": coordinator.device_model,
+        }
 
-    async def async_added_to_hass(self):
-        await self.async_update()
-        self.async_write_ha_state()
-        try:
-            self.vacuum.add_listener(self._handle_update)
-        except Exception:
-            _LOGGER.exception(
-                "Failed to add update listener for %s", self._attr_unique_id
-            )
+    @property
+    def options(self) -> list[str]:
+        """Return available scenes."""
+        return [scene["name"] for scene in self.coordinator.data.scenes]
 
-    async def async_will_remove_from_hass(self):
-        try:
-            if hasattr(self.vacuum, "_update_listeners"):
-                try:
-                    self.vacuum._update_listeners.remove(self._handle_update)
-                except ValueError:
-                    pass
-        except Exception:
-            _LOGGER.exception(
-                "Failed to remove update listener for %s", self._attr_unique_id
-            )
-
-    async def _handle_update(self):
-        await self.async_update()
-        self.async_write_ha_state()
-
-    async def async_update(self):
-        """Update the available scenes list."""
-        try:
-            scenes = await self.vacuum.get_scene_list()
-            if scenes:
-                self._scene_list = scenes
-                self._attr_options = [scene["name"] for scene in scenes]
-
-                # Reset current option if it's not in the new list
-                if (
-                    self._attr_current_option
-                    and self._attr_current_option not in self._attr_options
-                ):
-                    self._attr_current_option = None
-            else:
-                self._attr_options = []
-                self._attr_current_option = None
-        except Exception as e:
-            _LOGGER.error(f"Error updating scene list: {e}")
+    @property
+    def current_option(self) -> str | None:
+        """Scenes are action-triggers, they don't have a persistent 'current' state."""
+        return None
 
     async def async_select_option(self, option: str) -> None:
         """Trigger the selected scene."""
-        try:
-            # Find scene ID by name
-            scene = next((s for s in self._scene_list if s["name"] == option), None)
-            if not scene:
-                _LOGGER.error(f"Scene '{option}' not found in scene list")
-                return
+        scene = next(
+            (s for s in self.coordinator.data.scenes if s["name"] == option), None
+        )
+        if not scene:
+            _LOGGER.error("Scene '%s' not found", option)
+            return
 
-            scene_id = scene["id"]
-            _LOGGER.info(f"Triggering scene '{option}' (ID: {scene_id})")
-            await self.vacuum.scene_clean(scene_id)
+        command = build_command("scene_clean", scene_id=scene["id"])
+        await self.coordinator.async_send_command(command)
 
-            # Don't set current option as this is an action trigger, not a state
-            # The entity will remain unset until the user selects another scene
-        except Exception as e:
-            _LOGGER.error(f"Error triggering scene {option}: {e}")
+        self.async_write_ha_state()
 
 
-class RoomSelectEntity(SelectEntity):
+class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     """Select entity for choosing and triggering room cleaning."""
 
-    def __init__(self, device: SharedConnect) -> None:
-        super().__init__()
-        self.vacuum = device
-        self._attr_unique_id = f"{device.device_id}_room_select"
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize room select."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_room_select"
+        self._attr_has_entity_name = True
         self._attr_name = "Clean Room"
         self._attr_icon = "mdi:door-open"
-        self._attr_options = []
-        self._room_list = []
 
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.device_model_desc,
-            manufacturer="Eufy",
-            model=device.device_model,
-        )
-        self._attr_current_option = None
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.device_id)},
+            "name": coordinator.device_name,
+            "manufacturer": "Eufy",
+            "model": coordinator.device_model,
+        }
 
-    async def async_added_to_hass(self):
-        await self.async_update()
-        self.async_write_ha_state()
-        try:
-            self.vacuum.add_listener(self._handle_update)
-        except Exception:
-            _LOGGER.exception(
-                "Failed to add update listener for %s", self._attr_unique_id
-            )
+    @property
+    def options(self) -> list[str]:
+        """Return available rooms."""
+        rooms = self.coordinator.data.rooms
+        return [f"{r.get('name') or 'Room'} (ID: {r['id']})" for r in rooms]
 
-    async def async_will_remove_from_hass(self):
-        try:
-            if hasattr(self.vacuum, "_update_listeners"):
-                try:
-                    self.vacuum._update_listeners.remove(self._handle_update)
-                except ValueError:
-                    pass
-        except Exception:
-            _LOGGER.exception(
-                "Failed to remove update listener for %s", self._attr_unique_id
-            )
-
-    async def _handle_update(self):
-        await self.async_update()
-        self.async_write_ha_state()
-
-    async def async_update(self):
-        """Update the available rooms list."""
-        try:
-            if self.vacuum.rooms:
-                self._room_list = self.vacuum.rooms
-                # Include ID in the name for easier identification
-                self._attr_options = [
-                    f"{room.get('name') or 'Room'} (ID: {room['id']})"
-                    for room in self._room_list
-                ]
-
-                # Reset current option if it's not in the new list
-                if (
-                    self._attr_current_option
-                    and self._attr_current_option not in self._attr_options
-                ):
-                    self._attr_current_option = None
-            else:
-                self._attr_options = []
-                self._attr_current_option = None
-        except Exception as e:
-            _LOGGER.error(f"Error updating room list: {e}")
+    @property
+    def current_option(self) -> str | None:
+        """Room selection is an action trigger."""
+        return None
 
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
-        try:
-            # Find room ID by matching the formatted option string
-            room = next(
-                (
-                    r
-                    for r in self._room_list
-                    if f"{r.get('name') or 'Room'} (ID: {r['id']})" == option
-                ),
-                None,
-            )
-            if not room:
-                _LOGGER.error(f"Room '{option}' not found in room list")
-                return
+        rooms = self.coordinator.data.rooms
+        room = next(
+            (
+                r
+                for r in rooms
+                if f"{r.get('name') or 'Room'} (ID: {r['id']})" == option
+            ),
+            None,
+        )
+        if not room:
+            _LOGGER.error("Room '%s' not found", option)
+            return
 
-            room_id = room["id"]
-            # Use discovered map_id if available, otherwise fallback to 1
-            map_id = self.vacuum.map_id or 1
-            _LOGGER.info(
-                f"Triggering cleaning for room '{option}' (ID: {room_id}, Map ID: {map_id})"
-            )
-            await self.vacuum.room_clean([room_id], map_id=map_id)
+        room_id = room["id"]
+        map_id = self.coordinator.data.map_id or 1
 
-            # Reset current option to allow re-selecting the same room later
-            self._attr_current_option = None
-            self.async_write_ha_state()
+        command = build_command("room_clean", room_ids=[room_id], map_id=map_id)
+        await self.coordinator.async_send_command(command)
 
-        except Exception as e:
-            _LOGGER.error(f"Error triggering room clean {option}: {e}")
+        self.async_write_ha_state()

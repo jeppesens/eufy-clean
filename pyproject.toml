@@ -20,18 +20,10 @@ warn_unreachable = true
 strict_equality = true
 ignore_missing_imports = true
 follow_imports = "silent"
+explicit_package_bases = true
 
 [[tool.mypy.overrides]]
 module = [
-    "custom_components.robovac_mqtt.controllers.*",
-    "custom_components.robovac_mqtt.vacuum",
-    "custom_components.robovac_mqtt.select",
-    "custom_components.robovac_mqtt.switch",
-    "custom_components.robovac_mqtt.number",
-    "custom_components.robovac_mqtt.sensor",
-    "custom_components.robovac_mqtt.button",
-    "custom_components.robovac_mqtt.config_flow",
-    "custom_components.robovac_mqtt.EufyClean",
     "custom_components.robovac_mqtt.proto.*"
 ]
 ignore_errors = true
@@ -72,6 +64,8 @@ disable = [
     "logging-too-many-args",
     "relative-beyond-top-level",
     "no-else-return",
+    "abstract-method",
+    "too-many-positional-arguments",
 ]
 
 [tool.pytest.ini_options]

@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICES, DOMAIN, VACS
-from .controllers.SharedConnect import SharedConnect
-from .proto.cloud.common_pb2 import Switch
-from .proto.cloud.station_pb2 import AutoActionCfg, CollectDustCfgV2, WashCfg
+from .api.commands import build_command
+from .const import DOMAIN
+from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,128 +23,126 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    entities = []
-    for device_id, device in hass.data[DOMAIN][DEVICES].items():
-        _LOGGER.info("Adding switch entities for %s", device_id)
+    """Setup switch entities."""
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    coordinators: list[EufyCleanCoordinator] = data["coordinators"]
 
-        # Collect Dust Enable (V2)
-        def set_collect_dust_switch(cfg, val):
-            cfg.collectdust_v2.sw.value = bool(val)
+    entities = []
+
+    for coordinator in coordinators:
+        _LOGGER.debug("Adding switch entities for %s", coordinator.device_name)
 
         entities.append(
             DockSwitchEntity(
-                device,
-                "collect_dust_switch",
+                coordinator,
+                "auto_empty",
                 "Auto Empty",
-                lambda cfg: cfg.collectdust_v2.sw.value,
-                set_collect_dust_switch,
-                "mdi:delete-restore",
+                lambda cfg: cfg.get("collectdust_v2", {})
+                .get("sw", {})
+                .get("value", False),
+                _set_collect_dust,
+                icon="mdi:delete-restore",
             )
         )
 
-        # Auto Mop Washing
-        def set_auto_mop_washing(cfg, val):
-            cfg.wash.cfg = WashCfg.Cfg.STANDARD if val else WashCfg.Cfg.CLOSE
-
         entities.append(
             DockSwitchEntity(
-                device,
-                "auto_mop_washing_switch",
-                "Auto Mop Washing",
-                lambda cfg: cfg.wash.cfg == WashCfg.Cfg.STANDARD,
-                set_auto_mop_washing,
-                "mdi:water-sync",
+                coordinator,
+                "auto_wash",
+                "Auto Wash",
+                lambda cfg: cfg.get("wash", {}).get("cfg", "CLOSE") == "STANDARD",
+                _set_wash_cfg,
+                icon="mdi:water-sync",
             )
         )
 
     async_add_entities(entities)
 
 
-class DockSwitchEntity(SwitchEntity):
+def _set_collect_dust(cfg: dict[str, Any], val: bool) -> None:
+    """Helper to set collect dust state in config dict."""
+    if "collectdust_v2" not in cfg:
+        cfg["collectdust_v2"] = {"sw": {"value": val}}
+    else:
+        if "sw" not in cfg["collectdust_v2"]:
+            cfg["collectdust_v2"]["sw"] = {"value": val}
+        else:
+            cfg["collectdust_v2"]["sw"]["value"] = val
+
+
+def _set_wash_cfg(cfg: dict[str, Any], val: bool) -> None:
+    """Helper to set wash state in config dict."""
+    if "wash" not in cfg:
+        cfg["wash"] = {"cfg": 1 if val else 0}
+    else:
+        cfg["wash"]["cfg"] = 1 if val else 0
+
+
+def _set_dry_cfg(cfg: dict[str, Any], val: bool) -> None:
+    """Helper to set dry state in config dict."""
+    if "dry" not in cfg:
+        cfg["dry"] = {"cfg": 1 if val else 0}
+    else:
+        cfg["dry"]["cfg"] = 1 if val else 0
+
+
+class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
+    """Switch for Dock/Station settings."""
+
     def __init__(
         self,
-        device: SharedConnect,
+        coordinator: EufyCleanCoordinator,
         id_suffix: str,
-        name: str,
-        getter: Any,
-        setter: Any,
-        icon: str = None,
+        name_suffix: str,
+        getter: Callable[[dict[str, Any]], bool],
+        setter: Callable[[dict[str, Any], bool], None],
+        icon: str | None = None,
     ) -> None:
-        super().__init__()
-        self.vacuum = device
-        self._attr_unique_id = f"{device.device_id}_{id_suffix}"
-        self._attr_name = name
+        """Initialize the dock switch entity."""
+        super().__init__(coordinator)
+        self._id_suffix = id_suffix
         self._getter = getter
         self._setter = setter
+        self._attr_unique_id = f"{coordinator.device_id}_{id_suffix}"
+        self._attr_has_entity_name = True
+        self._attr_name = name_suffix
+        self._attr_entity_category = EntityCategory.CONFIG
         if icon:
             self._attr_icon = icon
 
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.device_model_desc,
-            manufacturer="Eufy",
-            model=device.device_model,
-        )
-        self._attr_is_on = None
-        self._attr_entity_category = EntityCategory.CONFIG
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.device_id)},
+            "name": coordinator.device_name,
+            "manufacturer": "Eufy",
+            "model": coordinator.device_model,
+        }
 
-    async def async_added_to_hass(self):
-        await self.async_update()
-        self.async_write_ha_state()
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if switch is on."""
+        cfg = self.coordinator.data.dock_auto_cfg
+        if not cfg:
+            return None
         try:
-            self.vacuum.add_listener(self._handle_update)
-        except Exception:
-            _LOGGER.exception(
-                "Failed to add update listener for %s", self._attr_unique_id
-            )
-
-    async def async_will_remove_from_hass(self):
-        try:
-            if hasattr(self.vacuum, "_update_listeners"):
-                try:
-                    self.vacuum._update_listeners.remove(self._handle_update)
-                except ValueError:
-                    pass
-        except Exception:
-            _LOGGER.exception(
-                "Failed to remove update listener for %s", self._attr_unique_id
-            )
-
-    async def _handle_update(self):
-        await self.async_update()
-        self.async_write_ha_state()
-
-    async def async_update(self):
-        try:
-            cfg = await self.vacuum.get_auto_action_cfg()
-            if cfg:
-                try:
-                    self._attr_is_on = self._getter(cfg)
-                except Exception:
-                    pass
+            return self._getter(cfg)
         except Exception as e:
-            _LOGGER.error(f"Error updating {self._attr_name}: {e}")
+            _LOGGER.debug("Error getting switch state for %s: %s", self._attr_name, e)
+            return None
 
     async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the switch on."""
         await self._set_state(True)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the switch off."""
         await self._set_state(False)
 
     async def _set_state(self, state: bool) -> None:
-        try:
-            cfg = await self.vacuum.get_auto_action_cfg()
-            if not cfg:
-                cfg = AutoActionCfg()
+        """Send command to update config."""
+        cfg = self.coordinator.data.dock_auto_cfg.copy()
+        self._setter(cfg, state)
 
-            self._setter(cfg, state)
+        command = build_command("set_auto_cfg", cfg=cfg)
+        await self.coordinator.async_send_command(command)
 
-            from google.protobuf.json_format import MessageToDict
-
-            cfg_dict = MessageToDict(cfg, preserving_proto_field_name=True)
-            await self.vacuum.set_auto_action_cfg(cfg_dict)
-
-            self._attr_is_on = state
-            self.async_write_ha_state()
-        except Exception as e:
-            _LOGGER.error(f"Error setting {self._attr_name}: {e}")
+        self.async_write_ha_state()

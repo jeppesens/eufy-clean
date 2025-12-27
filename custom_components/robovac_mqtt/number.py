@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from homeassistant.components.number import NumberEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DEVICES, DOMAIN, VACS
-from .controllers.SharedConnect import SharedConnect
-from .proto.cloud.common_pb2 import Numerical
-from .proto.cloud.station_pb2 import AutoActionCfg, CollectDustCfgV2, WashCfg
+from .api.commands import build_command
+from .const import DOMAIN
+from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -23,47 +23,69 @@ async def async_setup_entry(
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Setup number entities."""
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    coordinators: list[EufyCleanCoordinator] = data["coordinators"]
+
     entities = []
-    for device_id, device in hass.data[DOMAIN][DEVICES].items():
-        _LOGGER.info("Adding number entities for %s", device_id)
+
+    for coordinator in coordinators:
+        _LOGGER.debug("Adding number entities for %s", coordinator.device_name)
 
         # Wash Frequency Value
-        def set_wash_freq_value(cfg, val):
-            cfg.wash.wash_freq.time_or_area.value = int(val)
-
         entities.append(
             DockNumberEntity(
-                device,
+                coordinator,
                 "wash_frequency_value",
                 "Wash Frequency Value (Time)",
                 15,
                 25,
-                1,  # Min, Max, Step
-                lambda cfg: cfg.wash.wash_freq.time_or_area.value,
-                set_wash_freq_value,
-                "mdi:clock-time-four-outline",
+                1,  # step
+                lambda cfg: cfg.get("wash", {})
+                .get("wash_freq", {})
+                .get("time_or_area", {})
+                .get("value", 15),
+                _set_wash_freq_value,
+                icon="mdi:clock-time-four-outline",
             )
         )
 
     async_add_entities(entities)
 
 
-class DockNumberEntity(NumberEntity):
+def _set_wash_freq_value(cfg: dict[str, Any], val: float) -> None:
+    """Helper to set wash freq value."""
+    # Ensure structure exists
+    if "wash" not in cfg:
+        cfg["wash"] = {}
+    if "wash_freq" not in cfg["wash"]:
+        cfg["wash"]["wash_freq"] = {}
+    if "time_or_area" not in cfg["wash"]["wash_freq"]:
+        cfg["wash"]["wash_freq"]["time_or_area"] = {}
+
+    cfg["wash"]["wash_freq"]["time_or_area"]["value"] = int(val)
+
+
+class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
+    """Number entity for Dock settings."""
+
     def __init__(
         self,
-        device: SharedConnect,
+        coordinator: EufyCleanCoordinator,
         id_suffix: str,
         name: str,
         min_val: float,
         max_val: float,
         step_val: float,
-        getter: Any,
-        setter: Any,
-        icon: str = None,
+        getter: Callable[[dict[str, Any]], float],
+        setter: Callable[[dict[str, Any], float], None],
+        icon: str | None = None,
     ) -> None:
-        super().__init__()
-        self.vacuum = device
-        self._attr_unique_id = f"{device.device_id}_{id_suffix}"
+        """Initialize the dock number entity."""
+        super().__init__(coordinator)
+        self._id_suffix = id_suffix
+        self._attr_unique_id = f"{coordinator.device_id}_{id_suffix}"
+        self._attr_has_entity_name = True
         self._attr_name = name
         self._attr_native_min_value = min_val
         self._attr_native_max_value = max_val
@@ -73,66 +95,31 @@ class DockNumberEntity(NumberEntity):
         if icon:
             self._attr_icon = icon
 
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.device_model_desc,
-            manufacturer="Eufy",
-            model=device.device_model,
-        )
-        self._attr_native_value = None
+        self._attr_device_info = {
+            "identifiers": {(DOMAIN, coordinator.device_id)},
+            "name": coordinator.device_name,
+            "manufacturer": "Eufy",
+            "model": coordinator.device_model,
+        }
         self._attr_entity_category = EntityCategory.CONFIG
 
-    async def async_added_to_hass(self):
-        await self.async_update()
-        self.async_write_ha_state()
+    @property
+    def native_value(self) -> float | None:
+        """Return the value."""
+        cfg = self.coordinator.data.dock_auto_cfg
+        if not cfg:
+            return None
         try:
-            self.vacuum.add_listener(self._handle_update)
+            return self._getter(cfg)
         except Exception:
-            _LOGGER.exception(
-                "Failed to add update listener for %s", self._attr_unique_id
-            )
-
-    async def async_will_remove_from_hass(self):
-        try:
-            if hasattr(self.vacuum, "_update_listeners"):
-                try:
-                    self.vacuum._update_listeners.remove(self._handle_update)
-                except ValueError:
-                    pass
-        except Exception:
-            _LOGGER.exception(
-                "Failed to remove update listener for %s", self._attr_unique_id
-            )
-
-    async def _handle_update(self):
-        await self.async_update()
-        self.async_write_ha_state()
-
-    async def async_update(self):
-        try:
-            cfg = await self.vacuum.get_auto_action_cfg()
-            if cfg:
-                try:
-                    self._attr_native_value = self._getter(cfg)
-                except Exception:
-                    pass
-        except Exception as e:
-            _LOGGER.error(f"Error updating {self._attr_name}: {e}")
+            return None
 
     async def async_set_native_value(self, value: float) -> None:
-        try:
-            cfg = await self.vacuum.get_auto_action_cfg()
-            if not cfg:
-                cfg = AutoActionCfg()
+        """Set the value."""
+        cfg = self.coordinator.data.dock_auto_cfg.copy()
+        self._setter(cfg, value)
 
-            self._setter(cfg, value)
+        command = build_command("set_auto_cfg", cfg=cfg)
+        await self.coordinator.async_send_command(command)
 
-            from google.protobuf.json_format import MessageToDict
-
-            cfg_dict = MessageToDict(cfg, preserving_proto_field_name=True)
-            await self.vacuum.set_auto_action_cfg(cfg_dict)
-
-            self._attr_native_value = value
-            self.async_write_ha_state()
-        except Exception as e:
-            _LOGGER.error(f"Error setting {self._attr_name}: {e}")
+        self.async_write_ha_state()

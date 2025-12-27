@@ -40,7 +40,6 @@ repos:
         additional_dependencies:
           - types-protobuf
           - types-requests
-        exclude: ^custom_components/robovac_mqtt/
   - repo: local
     hooks:
       - id: pylint
@@ -49,4 +48,3 @@ repos:
         language: system
         types: [python]
         args: ["-rn", "-sn", "--rcfile=pyproject.toml"]
-        exclude: ^custom_components/robovac_mqtt/

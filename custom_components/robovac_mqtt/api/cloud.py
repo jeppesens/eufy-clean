@@ -1,19 +1,25 @@
 from __future__ import annotations
 
-from ..controllers.Base import Base
-from ..EufyApi import EufyApi
+from typing import Any
+
+from ..const import DPS_MAP
+from .http import EufyHTTPClient
 
 
-class EufyLogin(Base):
+class EufyLoginError(Exception):
+    """Eufy Login Error."""
+
+
+class EufyLogin:
     def __init__(self, username: str, password: str, openudid: str):
-        super().__init__()
-        self.eufyApi = EufyApi(username, password, openudid)
+        self.eufyApi = EufyHTTPClient(username, password, openudid)
         self.username = username
         self.password = password
+        self.openudid = openudid
         self.sid = None
         self.mqtt_credentials = None
-        self.mqtt_devices = []
-        self.eufy_api_devices = []
+        self.mqtt_devices: list[dict[str, Any]] = []
+        self.eufy_api_devices: list[dict[str, Any]] = []
 
     async def init(self):
         await self.login({"mqtt": True})
@@ -23,15 +29,12 @@ class EufyLogin(Base):
         eufyLogin = None
 
         if not config["mqtt"]:
-            raise Exception("MQTT login is required")
+            raise EufyLoginError("MQTT login is required")
 
         eufyLogin = await self.eufyApi.login()
 
         if not eufyLogin:
-            raise Exception("Login failed")
-
-        if not config["mqtt"]:
-            raise Exception("MQTT login is required")
+            raise EufyLoginError("Login failed")
 
         self.mqtt_credentials = eufyLogin["mqtt"]
 
@@ -54,10 +57,12 @@ class EufyLogin(Base):
         self.mqtt_devices = [d for d in devices if not d["invalid"]]
 
     async def getMqttDevice(self, deviceId: str):
-        return await self.eufyApi.get_device_list(deviceId)
+        devices = await self.eufyApi.get_device_list()
+        return next((d for d in devices if d.get("device_sn") == deviceId), None)
 
-    def checkApiType(self, dps: dict):
-        if any(k in dps for k in self.dps_map.values()):
+    @staticmethod
+    def checkApiType(dps: dict):
+        if any(k in dps for k in DPS_MAP.values()):
             return "novel"
         return "legacy"
 
