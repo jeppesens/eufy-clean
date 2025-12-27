@@ -1,0 +1,6 @@
+pytest-homeassistant-custom-component>=0.13.102
+pylint
+mypy
+types-requests
+types-setuptools
+protobuf
