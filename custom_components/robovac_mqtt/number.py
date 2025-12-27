@@ -95,12 +95,7 @@ class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
         if icon:
             self._attr_icon = icon
 
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.device_id)},
-            "name": coordinator.device_name,
-            "manufacturer": "Eufy",
-            "model": coordinator.device_model,
-        }
+        self._attr_device_info = coordinator.device_info
         self._attr_entity_category = EntityCategory.CONFIG
 
     @property

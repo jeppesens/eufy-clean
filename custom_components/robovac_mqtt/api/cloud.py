@@ -51,6 +51,7 @@ class EufyLogin:
                 "apiType": self.checkApiType(device.get("dps", {})),
                 "mqtt": True,
                 "dps": device.get("dps", {}),
+                "softVersion": device.get("soft_version", ""),
             }
             for device in devices
         ]

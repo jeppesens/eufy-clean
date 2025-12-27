@@ -119,12 +119,7 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
         self._attr_has_entity_name = True
         self._attr_name = name_suffix
 
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.device_id)},
-            "name": coordinator.device_name,
-            "manufacturer": "Eufy",
-            "model": coordinator.device_model,
-        }
+        self._attr_device_info = coordinator.device_info
 
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class

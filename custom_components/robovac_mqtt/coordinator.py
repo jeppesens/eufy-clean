@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EufyCleanClient
@@ -29,6 +30,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self.device_id = device_info["deviceId"]
         self.device_model = device_info["deviceModel"]
         self.device_name = device_info["deviceName"]
+        self.serial_number = device_info.get("deviceId")  # Usually deviceId is SN
+        self.firmware_version = device_info.get("softVersion")
         self.eufy_login = eufy_login
 
         super().__init__(
@@ -41,6 +44,18 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self.data = VacuumState()
         if dps := device_info.get("dps"):
             self.data = update_state(self.data, dps)
+
+    @property
+    def device_info(self) -> DeviceInfo:
+        """Return device info."""
+        return DeviceInfo(
+            identifiers={(DOMAIN, self.device_id)},
+            name=self.device_name,
+            manufacturer="Eufy",
+            model=self.device_model,
+            serial_number=self.serial_number,
+            sw_version=self.firmware_version,
+        )
 
     async def initialize(self) -> None:
         """Initialize connection to the device."""

@@ -181,12 +181,7 @@ class DockSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         if icon:
             self._attr_icon = icon
 
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.device_id)},
-            "name": coordinator.device_name,
-            "manufacturer": "Eufy",
-            "model": coordinator.device_model,
-        }
+        self._attr_device_info = coordinator.device_info
 
     @property
     def current_option(self) -> str | None:
@@ -221,12 +216,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         self._attr_name = "Scene"
         self._attr_icon = "mdi:play-circle-outline"
 
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.device_id)},
-            "name": coordinator.device_name,
-            "manufacturer": "Eufy",
-            "model": coordinator.device_model,
-        }
+        self._attr_device_info = coordinator.device_info
 
     @property
     def options(self) -> list[str]:
@@ -264,12 +254,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         self._attr_name = "Clean Room"
         self._attr_icon = "mdi:door-open"
 
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.device_id)},
-            "name": coordinator.device_name,
-            "manufacturer": "Eufy",
-            "model": coordinator.device_model,
-        }
+        self._attr_device_info = coordinator.device_info
 
     @property
     def options(self) -> list[str]:

@@ -48,12 +48,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         super().__init__(coordinator)
         self._attr_unique_id = coordinator.device_id
 
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, coordinator.device_id)},
-            "name": coordinator.device_name,
-            "manufacturer": "Eufy",
-            "model": coordinator.device_model,
-        }
+        self._attr_device_info = coordinator.device_info
 
         self._attr_fan_speed_list = EUFY_CLEAN_NOVEL_CLEAN_SPEED
         self._attr_supported_features = (
