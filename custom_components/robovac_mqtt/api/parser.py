@@ -64,12 +64,6 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 changes["dock_status"] = _map_dock_status(station)
                 if station.HasField("clean_water"):
                     changes["station_clean_water"] = station.clean_water.value
-                # Check if waste_water field exists before accessing
-                try:
-                    if station.HasField("waste_water"):
-                        changes["station_waste_water"] = station.waste_water.value  # type: ignore[attr-defined]
-                except ValueError as e:
-                    _LOGGER.debug(f"ValueError accessing waste_water field: {e}")
 
                 # Auto Empty Config
                 if station.HasField("auto_cfg_status"):
