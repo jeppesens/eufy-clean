@@ -96,7 +96,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         try:
             # Parse MQTT wrapper and extract DPS data
             parsed = json.loads(payload.decode())
-            if dps := parsed.get("payload", {}).get("data"):
+            payload_data = parsed.get("payload", {})
+            # Payload can be a nested JSON string or a dict
+            if isinstance(payload_data, str):
+                payload_data = json.loads(payload_data)
+            if dps := payload_data.get("data"):
                 new_state = update_state(self.data, dps)
                 self.async_set_updated_data(new_state)
 
