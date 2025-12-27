@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import random
 import string
@@ -25,7 +27,7 @@ USER_SCHEMA = Schema(
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Eufy Robovac."""
 
-    data: Optional[dict[str, Any]]
+    data: dict[str, Any] | None
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None

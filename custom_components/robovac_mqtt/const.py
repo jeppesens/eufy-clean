@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 from enum import Enum
+from typing import Final
 
-DOMAIN = "robovac_mqtt"
-VACS = "vacs"
-DEVICES = "devices"
+DOMAIN: Final = "robovac_mqtt"
+VACS: Final = "vacs"
+DEVICES: Final = "devices"
 
 EUFY_CLEAN_DEVICES = {
     "T1250": "RoboVac 35C",

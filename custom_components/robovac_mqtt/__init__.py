@@ -1,13 +1,16 @@
+from __future__ import annotations
+
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers.typing import ConfigType
 
 from .const import DEVICES, DOMAIN, VACS
 from .EufyClean import EufyClean
 
-PLATFORMS = [
+PLATFORMS: list[Platform] = [
     Platform.VACUUM,
     Platform.BUTTON,
     Platform.SENSOR,
@@ -18,7 +21,7 @@ PLATFORMS = [
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup(hass: HomeAssistant, _) -> bool:
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     hass.data.setdefault(DOMAIN, {VACS: {}, DEVICES: {}})
     return True
 
