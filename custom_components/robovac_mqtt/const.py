@@ -301,3 +301,13 @@ DPS_MAP = {
     "UNSETTING": "176",
     "MAP_MANAGE": "169",
 }
+
+
+ACCESSORY_MAX_LIFE = {
+    "filter_usage": 360,
+    "main_brush_usage": 360,
+    "side_brush_usage": 180,
+    "sensor_usage": 60,  # Maintain/clean interval
+    "scrape_usage": 30,  # Cleaning Tray maintain/clean interval
+    "mop_usage": 180,
+}

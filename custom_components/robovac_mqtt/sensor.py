@@ -15,7 +15,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import ACCESSORY_MAX_LIFE, DOMAIN
 from .coordinator import EufyCleanCoordinator, VacuumState
 
 _LOGGER = logging.getLogger(__name__)
@@ -90,6 +90,52 @@ async def async_setup_entry(
             )
         )
 
+        # Accessory Sensors
+        accessories = [
+            ("filter_usage", "Filter Remaining", "mdi:air-filter"),
+            ("main_brush_usage", "Rolling Brush Remaining", "mdi:broom"),
+            ("side_brush_usage", "Side Brush Remaining", "mdi:broom"),
+            ("sensor_usage", "Sensor Remaining", "mdi:eye-outline"),
+            ("scrape_usage", "Cleaning Tray Remaining", "mdi:wiper"),
+            ("mop_usage", "Mopping Cloth Remaining", "mdi:water"),
+        ]
+
+        for attr, name, icon in accessories:
+            # We must capture the specific attr value in the lambda default args
+            # otherwise all lambdas will point to the last attr in the loop
+            def get_accessory_remaining(state: VacuumState, a: str = attr) -> int:
+                usage = getattr(state.accessories, a) or 0
+                max_life = ACCESSORY_MAX_LIFE.get(a, 0)
+                # Ensure we don't go negative if usage exceeds defaults
+                return max(0, max_life - usage)
+
+            max_life_val = ACCESSORY_MAX_LIFE.get(attr, 0)
+
+            # Extra attributes explicitly using specific attr
+            def get_attributes(
+                state: VacuumState, a: str = attr, m: int = max_life_val
+            ) -> dict[str, Any]:
+                usage = getattr(state.accessories, a) or 0
+                return {
+                    "usage_hours": usage,
+                    "total_life_hours": m,
+                }
+
+            entities.append(
+                RoboVacSensor(
+                    coordinator,
+                    attr.replace("_usage", "_remaining"),
+                    name,
+                    get_accessory_remaining,
+                    device_class=SensorDeviceClass.DURATION,
+                    unit="h",  # Hours
+                    state_class=SensorStateClass.MEASUREMENT,
+                    icon=icon,
+                    category=EntityCategory.DIAGNOSTIC,
+                    extra_state_attributes_fn=get_attributes,
+                )
+            )
+
     async_add_entities(entities)
 
 
@@ -107,10 +153,14 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
         state_class: SensorStateClass | None = None,
         icon: str | None = None,
         category: EntityCategory | None = EntityCategory.DIAGNOSTIC,
+        extra_state_attributes_fn: (
+            Callable[[VacuumState], dict[str, Any]] | None
+        ) = None,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._value_fn = value_fn
+        self._extra_attrs_fn = extra_state_attributes_fn
         self._attr_unique_id = f"{coordinator.device_id}_{id_suffix}"
 
         # Use Home Assistant standard naming
@@ -132,3 +182,10 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
     def native_value(self) -> Any:
         """Return the state of the sensor."""
         return self._value_fn(self.coordinator.data)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        if self._extra_attrs_fn:
+            return self._extra_attrs_fn(self.coordinator.data)
+        return None

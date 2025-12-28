@@ -11,7 +11,8 @@ from ..const import (
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
 )
-from ..models import VacuumState
+from ..models import AccessoryState, VacuumState
+from ..proto.cloud.consumable_pb2 import ConsumableResponse
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.scene_pb2 import SceneResponse
 from ..proto.cloud.station_pb2 import StationResponse
@@ -73,6 +74,9 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                     changes["dock_auto_cfg"] = MessageToDict(
                         station.auto_cfg_status, preserving_proto_field_name=True
                     )
+
+            elif key == DPS_MAP["ACCESSORIES_STATUS"]:
+                changes["accessories"] = _parse_accessories(state.accessories, value)
 
             elif key == DPS_MAP["SCENE_INFO"]:
                 changes["scenes"] = _parse_scene_info(value)
@@ -209,3 +213,39 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
         pass
 
     return None
+
+
+def _parse_accessories(current_state: AccessoryState, value: Any) -> AccessoryState:
+    """Parse ConsumableResponse from DPS."""
+    try:
+        response = decode(ConsumableResponse, value)
+        if not response.HasField("runtime"):
+            return current_state
+
+        runtime = response.runtime
+        changes: dict[str, Any] = {}
+
+        if runtime.HasField("filter_mesh"):
+            changes["filter_usage"] = runtime.filter_mesh.duration
+        if runtime.HasField("rolling_brush"):
+            changes["main_brush_usage"] = runtime.rolling_brush.duration
+        if runtime.HasField("side_brush"):
+            changes["side_brush_usage"] = runtime.side_brush.duration
+        if runtime.HasField("sensor"):
+            changes["sensor_usage"] = runtime.sensor.duration
+        if runtime.HasField("scrape"):
+            changes["scrape_usage"] = runtime.scrape.duration
+        if runtime.HasField("mop"):
+            changes["mop_usage"] = runtime.mop.duration
+        if runtime.HasField("dustbag"):
+            changes["dustbag_usage"] = runtime.dustbag.duration
+        if runtime.HasField("dirty_watertank"):
+            changes["dirty_watertank_usage"] = runtime.dirty_watertank.duration
+        if runtime.HasField("dirty_waterfilter"):
+            changes["dirty_waterfilter_usage"] = runtime.dirty_waterfilter.duration
+
+        return replace(current_state, **changes)
+
+    except Exception as e:
+        _LOGGER.debug(f"Error parsing accessory info: {e}")
+        return current_state

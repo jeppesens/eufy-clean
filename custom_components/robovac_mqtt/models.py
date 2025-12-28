@@ -21,7 +21,12 @@ class AccessoryState:
     filter_usage: int = 0
     main_brush_usage: int = 0
     side_brush_usage: int = 0
-    sensor_usage: int = 0  # Sensors needing cleaning
+    sensor_usage: int = 0
+    scrape_usage: int = 0
+    mop_usage: int = 0
+    dustbag_usage: int = 0
+    dirty_watertank_usage: int = 0
+    dirty_waterfilter_usage: int = 0
 
 
 @dataclass

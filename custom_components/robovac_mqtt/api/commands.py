@@ -8,6 +8,7 @@ from ..const import (
     EUFY_CLEAN_CONTROL,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
 )
+from ..proto.cloud.consumable_pb2 import ConsumableRequest
 from ..proto.cloud.control_pb2 import ModeCtrlRequest, SelectRoomsClean
 from ..proto.cloud.station_pb2 import StationRequest
 from ..utils import encode, encode_message
@@ -74,6 +75,12 @@ def build_room_clean_command(room_ids: list[int], map_id: int = 3) -> dict[str, 
     return {DPS_MAP["PLAY_PAUSE"]: value}
 
 
+def build_reset_accessory_command(reset_type: int) -> dict[str, str]:
+    """Build command to reset accessory usage."""
+    value = encode(ConsumableRequest, {"reset_types": [reset_type]})
+    return {DPS_MAP["ACCESSORIES_STATUS"]: value}
+
+
 def build_set_auto_action_cfg_command(cfg_dict: dict[str, Any]) -> dict[str, str]:
     """Build command to set dock auto-action config."""
     value = encode(StationRequest, {"auto_cfg": cfg_dict})
@@ -120,5 +127,7 @@ def build_command(command: str, **kwargs: Any) -> dict[str, str]:
         )
     if cmd == "set_auto_cfg":
         return build_set_auto_action_cfg_command(kwargs.get("cfg", {}))
+    if cmd == "reset_accessory":
+        return build_reset_accessory_command(int(kwargs.get("reset_type", 0)))
 
     return {}
