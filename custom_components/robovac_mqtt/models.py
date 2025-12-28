@@ -45,7 +45,7 @@ class VacuumState:
 
     # Detailed Status
     status_code: int = 0  # Raw status value if needed
-    dock_status: str | None = None  # Text description
+    dock_status: str | None = None  # Text description (debounced in coordinator)
     station_clean_water: int = 0  # Percentage?
     station_waste_water: int = 0
     dock_auto_cfg: dict[str, Any] = field(default_factory=dict)

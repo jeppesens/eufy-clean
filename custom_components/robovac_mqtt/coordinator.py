@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import replace
 from typing import Any
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EufyCleanClient
@@ -42,6 +44,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         self.client: EufyCleanClient | None = None
         self.data = VacuumState()
+        self._dock_idle_cancel: CALLBACK_TYPE | None = (
+            None  # Timer for dock IDLE debounce
+        )
+        self._pending_dock_status: str | None = None
         if dps := device_info.get("dps"):
             self.data = update_state(self.data, dps)
 
@@ -100,9 +106,49 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             # Payload can be a nested JSON string or a dict
             if isinstance(payload_data, str):
                 payload_data = json.loads(payload_data)
+
             if dps := payload_data.get("data"):
+                # Calculate new state based on connection
                 new_state = update_state(self.data, dps)
-                self.async_set_updated_data(new_state)
+                new_dock = new_state.dock_status
+
+                # Determine the status we are currently "heading towards"
+                target_dock = (
+                    self._pending_dock_status
+                    if self._pending_dock_status
+                    else self.data.dock_status
+                )
+
+                # If the reported dock status differs from our target, restart the debounce timer
+                if new_dock != target_dock:
+                    if self._dock_idle_cancel:
+                        self._dock_idle_cancel()
+
+                    self._pending_dock_status = new_dock
+
+                    @callback
+                    def _commit_dock_status(_now: Any) -> None:
+                        """Commit the pending dock status."""
+                        self._dock_idle_cancel = None
+                        final_dock = self._pending_dock_status
+                        self._pending_dock_status = None
+
+                        # Apply the final dock status to the current data
+                        committed_state = replace(self.data, dock_status=final_dock)
+                        self.async_set_updated_data(committed_state)
+
+                    self._dock_idle_cancel = async_call_later(
+                        self.hass, 2.0, _commit_dock_status
+                    )
+
+                # Always update the rest of the state immediately
+                # But force dock_status to remain at the currently visible value until the timer fires
+                effective_current_status = self.data.dock_status
+                state_to_publish = replace(
+                    new_state, dock_status=effective_current_status
+                )
+
+                self.async_set_updated_data(state_to_publish)
 
         except Exception as e:
             _LOGGER.warning(f"Error handling MQTT message: {e}")

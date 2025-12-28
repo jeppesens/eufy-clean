@@ -61,7 +61,10 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
 
             elif key == DPS_MAP["STATION_STATUS"]:
                 station = decode(StationResponse, value)
-                changes["dock_status"] = _map_dock_status(station)
+                new_dock_status = _map_dock_status(station)
+                # Debouncing is handled in coordinator, not here
+                changes["dock_status"] = new_dock_status
+
                 if station.HasField("clean_water"):
                     changes["station_clean_water"] = station.clean_water.value
 
@@ -131,18 +134,28 @@ def _map_clean_speed(value: Any) -> str:
 def _map_dock_status(value: StationResponse) -> str:
     """Map StationResponse to status string."""
     try:
-        if value.status.collecting_dust:
+        status = value.status
+        _LOGGER.debug(
+            f"Dock status raw: state={status.state}, "
+            f"collecting_dust={status.collecting_dust}, "
+            f"clear_water_adding={status.clear_water_adding}, "
+            f"waste_water_recycling={status.waste_water_recycling}, "
+            f"disinfectant_making={status.disinfectant_making}, "
+            f"cutting_hair={status.cutting_hair}"
+        )
+
+        if status.collecting_dust:
             return "Emptying dust"
-        if value.status.clear_water_adding:
+        if status.clear_water_adding:
             return "Adding clean water"
-        if value.status.waste_water_recycling:
+        if status.waste_water_recycling:
             return "Recycling waste water"
-        if value.status.disinfectant_making:
+        if status.disinfectant_making:
             return "Making disinfectant"
-        if value.status.cutting_hair:
+        if status.cutting_hair:
             return "Cutting hair"
 
-        state = value.status.state
+        state = status.state
         state_name = StationResponse.StationStatus.State.Name(state)
         state_string = state_name.strip().lower().replace("_", " ")
         return state_string[:1].upper() + state_string[1:]
