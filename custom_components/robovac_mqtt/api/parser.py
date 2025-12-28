@@ -41,6 +41,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
 
             elif key == DPS_MAP["WORK_STATUS"]:
                 work_status = decode(WorkStatus, value)
+                _LOGGER.debug(f"Decoded WorkStatus: {work_status}")
                 changes["activity"] = _map_work_status(work_status)
                 changes["status_code"] = work_status.state
 
@@ -49,6 +50,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
 
             elif key == DPS_MAP["ERROR_CODE"]:
                 error_proto = decode(ErrorCode, value)
+                _LOGGER.debug(f"Decoded ErrorCode: {error_proto}")
                 # Repeated Scalar Field (warn) acts like a list
                 if len(error_proto.warn) > 0:
                     code = error_proto.warn[0]
@@ -62,6 +64,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
 
             elif key == DPS_MAP["STATION_STATUS"]:
                 station = decode(StationResponse, value)
+                _LOGGER.debug(f"Decoded StationResponse: {station}")
                 new_dock_status = _map_dock_status(station)
                 # Debouncing is handled in coordinator, not here
                 changes["dock_status"] = new_dock_status
