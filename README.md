@@ -44,10 +44,29 @@ All dock settings are organized under the **Configuration** category in your dev
   - `Smart`: Intelligent auto-detection
   - `15 min`, `30 min`, `45 min`, `60 min`: Fixed time intervals
 
+### Accessory Maintenance
+The integration tracks the usage of consumable accessories and allows you to reset them after replacement.
+
+#### Sensors
+-   **Consumable Life**: Monitors the remaining life (in hours) for:
+    -   Filter
+    -   Side Brush
+    -   Rolling Brush
+    -   Sensors
+    -   Mop
+    -   Cleaning Tray (Scrape)
+
+#### Reset Buttons
+-   Dedicated buttons are available to reset the usage counter for each accessory when you replace them.
+
+> [!NOTE]
+> The Eufy App displays two types of accessory tracking: "Maintenance" (recommended cleaning) and "Replacement". The "Maintenance" alerts are often calculated locally by the App based on time intervals and are **not** transmitted via MQTT. This integration only tracks the "Replacement" life, which is the actual usage data reported by the device firmware.
+
 ### Sensors
 - Battery level percentage
 - Charging status
 - Work status and mode
+- **Extended Device Info**: Serial number, MAC address, and Firmware version are now available in the device info panel.
 
 ## Usage
 
@@ -112,7 +131,6 @@ This project is maintained as a Home Assistant component. Issues and PRs should 
 
 ### Pending Features
 - Clean room(s) with custom cleaning mode
-- Track consumables (dustbin, filter, etc.)
 - Track errors
 - Map management
 - Locate device
