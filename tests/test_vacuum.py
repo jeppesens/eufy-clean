@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.components.vacuum import VacuumActivity
 
+from custom_components.robovac_mqtt.const import (
+    EUFY_CLEAN_CLEAN_SPEED,
+    EUFY_CLEAN_VACUUMCLEANER_STATE,
+)
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.vacuum import RoboVacMQTTEntity
 
@@ -32,10 +36,10 @@ def test_vacuum_properties(mock_coordinator):
     # assert entity.name is None  # has_entity_name is True
 
     # Test Activity Mapping
-    mock_coordinator.data.activity = "cleaning"
+    mock_coordinator.data.activity = EUFY_CLEAN_VACUUMCLEANER_STATE.CLEANING
     assert entity.activity == VacuumActivity.CLEANING
 
-    mock_coordinator.data.activity = "docked"
+    mock_coordinator.data.activity = EUFY_CLEAN_VACUUMCLEANER_STATE.DOCKED
     assert entity.activity == VacuumActivity.DOCKED
 
     mock_coordinator.data.activity = "error"
@@ -50,12 +54,12 @@ def test_vacuum_attributes(mock_coordinator):
     entity = RoboVacMQTTEntity(mock_coordinator)
 
     mock_coordinator.data.battery_level = 80
-    mock_coordinator.data.fan_speed = "Standard"
+    mock_coordinator.data.fan_speed = EUFY_CLEAN_CLEAN_SPEED.STANDARD
     mock_coordinator.data.error_code = 0
 
     attrs = entity.extra_state_attributes
     assert attrs["battery_level"] == 80
-    assert attrs["fan_speed"] == "Standard"
+    assert attrs["fan_speed"] == EUFY_CLEAN_CLEAN_SPEED.STANDARD
 
 
 @pytest.mark.asyncio
@@ -99,8 +103,9 @@ async def test_set_fan_speed(mock_coordinator):
     with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
         mock_build.return_value = {"cmd": "speed"}
 
-        await entity.async_set_fan_speed("Max")
-        mock_build.assert_called_with("set_fan_speed", fan_speed="Max")
+        speed_max = EUFY_CLEAN_CLEAN_SPEED.MAX
+        await entity.async_set_fan_speed(speed_max)
+        mock_build.assert_called_with("set_fan_speed", fan_speed=speed_max)
         mock_coordinator.async_send_command.assert_called_with({"cmd": "speed"})
 
         # Invalid speed

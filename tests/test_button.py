@@ -8,6 +8,9 @@ import pytest
 
 from custom_components.robovac_mqtt.button import RoboVacButton
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.proto.cloud.consumable_pb2 import (
+    ConsumableRequest,
+)
 
 
 @pytest.fixture
@@ -45,3 +48,26 @@ async def test_button_press(mock_coordinator):
 
         mock_build.assert_called_with("collect_dust")
         mock_coordinator.async_send_command.assert_called_with({"cmd": "collect"})
+
+
+@pytest.mark.asyncio
+async def test_button_reset_accessory(mock_coordinator):
+    """Test button with kwargs (reset accessory)."""
+    entity = RoboVacButton(
+        mock_coordinator,
+        "Reset Filter",
+        "_reset_filter",
+        "reset_accessory",
+        "mdi:air-filter",
+        reset_type=ConsumableRequest.FILTER_MESH,
+    )
+
+    with patch("custom_components.robovac_mqtt.button.build_command") as mock_build:
+        mock_build.return_value = {"cmd": "reset"}
+
+        await entity.async_press()
+
+        mock_build.assert_called_with(
+            "reset_accessory", reset_type=ConsumableRequest.FILTER_MESH
+        )
+        mock_coordinator.async_send_command.assert_called_with({"cmd": "reset"})
