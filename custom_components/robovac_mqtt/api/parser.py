@@ -76,19 +76,22 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                     )
 
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
+                _LOGGER.debug(f"Received ACCESSORIES_STATUS: {value}")
                 changes["accessories"] = _parse_accessories(state.accessories, value)
 
             elif key == DPS_MAP["SCENE_INFO"]:
+                _LOGGER.debug(f"Received SCENE_INFO: {value}")
                 changes["scenes"] = _parse_scene_info(value)
 
             elif key == DPS_MAP["MAP_DATA"]:
+                _LOGGER.debug(f"Received MAP_DATA: {value}")
                 map_info = _parse_map_data(value)
                 if map_info:
                     changes["map_id"] = map_info.get("map_id", 0)
                     changes["rooms"] = map_info.get("rooms", [])
 
         except Exception as e:
-            _LOGGER.warning(f"Error parsing DPS {key}: {e}")
+            _LOGGER.warning(f"Error parsing DPS {key}: {e}", exc_info=True)
 
     return replace(state, **changes)
 
@@ -171,6 +174,7 @@ def _parse_scene_info(value: Any) -> list[dict[str, Any]]:
     """Parse SceneResponse from DPS."""
     try:
         scene_response = decode(SceneResponse, value, has_length=True)
+        _LOGGER.debug(f"Decoded SceneResponse: {scene_response}")
         if not scene_response or not scene_response.infos:
             return []
 
@@ -186,7 +190,7 @@ def _parse_scene_info(value: Any) -> list[dict[str, Any]]:
                 )
         return scenes
     except Exception as e:
-        _LOGGER.debug(f"Error parsing scene info: {e}")
+        _LOGGER.debug(f"Error parsing scene info: {e} | Raw: {value}")
         return []
 
 
@@ -195,23 +199,28 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
     # UniversalDataResponse
     try:
         universal_data = decode(UniversalDataResponse, value, has_length=True)
+        if universal_data:
+            _LOGGER.debug(f"Decoded UniversalDataResponse: {universal_data}")
         if universal_data and universal_data.cur_map_room.map_id:
             rooms = [
                 {"id": r.id, "name": r.name} for r in universal_data.cur_map_room.data
             ]
             return {"map_id": universal_data.cur_map_room.map_id, "rooms": rooms}
-    except Exception:
-        pass
+    except Exception as e:
+        _LOGGER.debug(f"UniversalDataResponse parse failed: {e}")
 
     # RoomParams
     try:
         room_params = decode(RoomParams, value, has_length=True)
+        if room_params:
+            _LOGGER.debug(f"Decoded RoomParams: {room_params}")
         if room_params and room_params.map_id:
             rooms = [{"id": r.id, "name": r.name} for r in room_params.rooms]
             return {"map_id": room_params.map_id, "rooms": rooms}
-    except Exception:
-        pass
+    except Exception as e:
+        _LOGGER.debug(f"RoomParams parse failed: {e}")
 
+    _LOGGER.debug(f"Failed to parse map data. Raw: {value}")
     return None
 
 
@@ -219,6 +228,7 @@ def _parse_accessories(current_state: AccessoryState, value: Any) -> AccessorySt
     """Parse ConsumableResponse from DPS."""
     try:
         response = decode(ConsumableResponse, value)
+        _LOGGER.debug(f"Decoded ConsumableResponse: {response}")
         if not response.HasField("runtime"):
             return current_state
 
