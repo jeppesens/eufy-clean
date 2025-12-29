@@ -3,7 +3,6 @@ import logging
 from homeassistant.components.button import ButtonEntity
 from homeassistant.helpers.entity import DeviceInfo
 from .constants.hass import DOMAIN, DEVICES
-from .EufyClean import EufyClean
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,7 +16,9 @@ async def async_setup_entry(hass, config_entry, async_add_entities):
         clean_mop_button = RoboVacButton(device, "Wash mop", "_wash_mop", device.go_selfcleaning)
         # Empty dust bin button
         collect_dust_button = RoboVacButton(device, "Empty dust bin", "_empty_dust_bin", device.collect_dust)
-        async_add_entities([dry_mop_button, clean_mop_button, collect_dust_button])
+        # Stop mop dry button
+        stop_dry_mop_button = RoboVacButton(device, "Stop dry mop", "_stop_dry_mop", device.stop_dry_mop)
+        async_add_entities([dry_mop_button, clean_mop_button, collect_dust_button, stop_dry_mop_button])
 
 
 class RoboVacButton(ButtonEntity):

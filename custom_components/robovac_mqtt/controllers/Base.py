@@ -12,6 +12,7 @@ class Base:
             'CLEAN_SPEED': '158',
             'FIND_ROBOT': '160',
             'BATTERY_LEVEL': '163',
+            'STATION_STATUS': '173',
             'ERROR_CODE': '177',
         }
         self.robovac_data = {}
