@@ -121,24 +121,16 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
                 # If the reported dock status differs from our target, restart the debounce timer
                 if new_dock != target_dock:
+                    _LOGGER.debug(
+                        f"Dock status change detected: {self.data.dock_status} -> {new_dock}. Starting debounce."
+                    )
                     if self._dock_idle_cancel:
+                        _LOGGER.debug("Cancelling existing debounce timer.")
                         self._dock_idle_cancel()
 
                     self._pending_dock_status = new_dock
-
-                    @callback
-                    def _commit_dock_status(_now: Any) -> None:
-                        """Commit the pending dock status."""
-                        self._dock_idle_cancel = None
-                        final_dock = self._pending_dock_status
-                        self._pending_dock_status = None
-
-                        # Apply the final dock status to the current data
-                        committed_state = replace(self.data, dock_status=final_dock)
-                        self.async_set_updated_data(committed_state)
-
                     self._dock_idle_cancel = async_call_later(
-                        self.hass, 2.0, _commit_dock_status
+                        self.hass, 2.0, self._async_commit_dock_status
                     )
 
                 # Always update the rest of the state immediately
@@ -152,6 +144,24 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         except Exception as e:
             _LOGGER.warning(f"Error handling MQTT message: {e}")
+
+    @callback
+    def _async_commit_dock_status(self, _now: Any) -> None:
+        """Commit the pending dock status."""
+        _LOGGER.debug(
+            f"Debounce timer fired. Committing status: {self._pending_dock_status}"
+        )
+        self._dock_idle_cancel = None
+        final_dock = self._pending_dock_status
+        self._pending_dock_status = None
+
+        if final_dock is None:
+            _LOGGER.warning("Pending dock status was None when timer fired!")
+            return
+
+        # Apply the final dock status to the current data
+        committed_state = replace(self.data, dock_status=final_dock)
+        self.async_set_updated_data(committed_state)
 
     async def async_send_command(self, command_dict: dict[str, Any]) -> None:
         """Send command to device."""
