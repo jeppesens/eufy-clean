@@ -1,0 +1,43 @@
+// See https://aka.ms/vscode-remote/devcontainer.json for format details.
+{
+	"name": "Eufy Clean Dev",
+	"image": "mcr.microsoft.com/devcontainers/python:3.13",
+	"postCreateCommand": "pip3 install --user pre-commit && pre-commit install",
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"ms-python.python",
+				"github.vscode-pull-request-github",
+				"esbenp.prettier-vscode",
+				"ryanluker.vscode-coverage-gutters",
+				"ms-python.vscode-pylance",
+				"ms-python.pylint",
+				"ms-python.black-formatter",
+				"ms-python.isort",
+				"ms-python.python"
+			],
+			"settings": {
+				"files.eol": "\n",
+				"editor.tabSize": 4,
+				"python.analysis.autoSearchPaths": false,
+				"python.linting.pylintEnabled": true,
+				"python.linting.enabled": true,
+				"python.formatting.provider": "black",
+				"editor.formatOnPaste": false,
+				"editor.formatOnSave": true,
+				"editor.formatOnType": true,
+				"files.trimTrailingWhitespace": true
+			}
+		}
+	},
+	"remoteUser": "vscode",
+	"mounts": [
+		"source=${localEnv:HOME}/.gnupg,target=/home/vscode/.gnupg,type=bind,consistency=cached"
+	],
+	"containerEnv": {
+		"GPG_TTY": "${localEnv:GPG_TTY}"
+	},
+	"features": {
+		"rust": "latest"
+	}
+}

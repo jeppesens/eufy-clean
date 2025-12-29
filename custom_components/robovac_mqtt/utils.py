@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import asyncio
 from base64 import b64decode, b64encode
 from typing import Any, Type, TypeVar
@@ -8,12 +10,13 @@ from google.protobuf.message import Message
 async def sleep(ms: int):
     await asyncio.sleep(ms / 1000)
 
+
 # This code comes from here: https://github.com/CodeFoodPixels/robovac/issues/68#issuecomment-2119573501
 
-T = TypeVar("T", bound=Type[Message])
+T = TypeVar("T", bound=Message)
 
 
-def decode(to_type: T, b64_data: str, has_length: bool = True) -> T:
+def decode(to_type: type[T], b64_data: str, has_length: bool = True) -> T:
     data = b64decode(b64_data)
 
     if has_length:
@@ -27,7 +30,9 @@ def decode(to_type: T, b64_data: str, has_length: bool = True) -> T:
     return to_type().FromString(data)
 
 
-def encode(message: Type[Message], data: dict[str, Any], has_length: bool = True) -> str:
+def encode(
+    message: type[Message], data: dict[str, Any], has_length: bool = True
+) -> str:
     m = message(**data)
     return encode_message(m, has_length)
 
@@ -36,16 +41,16 @@ def encode_varint(n: int) -> bytes:
     """Encode an integer as a protobuf varint."""
     out = bytearray()
     while n >= 0x80:
-        out.append((n & 0x7f) | 0x80)
+        out.append((n & 0x7F) | 0x80)
         n >>= 7
-    out.append(n & 0x7f)
+    out.append(n & 0x7F)
     return bytes(out)
 
 
-def encode_message(message: Type[Message], has_length: bool = True) -> str:
+def encode_message(message: Message, has_length: bool = True) -> str:
     out = message.SerializeToString(deterministic=False)
 
     if has_length:
         out = encode_varint(len(out)) + out
 
-    return b64encode(out).decode('utf-8')
+    return b64encode(out).decode("utf-8")

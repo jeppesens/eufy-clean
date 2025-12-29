@@ -1,151 +1,191 @@
+from __future__ import annotations
+
 import logging
+from collections.abc import Callable
+from typing import Any
 
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorEntity,
     SensorStateClass,
 )
-from homeassistant.helpers.entity import DeviceInfo
-from homeassistant.const import (PERCENTAGE, EntityCategory)
-from .constants.hass import DOMAIN, DEVICES
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import PERCENTAGE, EntityCategory
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
+
+from .const import ACCESSORY_MAX_LIFE, DOMAIN
+from .coordinator import EufyCleanCoordinator, VacuumState
 
 _LOGGER = logging.getLogger(__name__)
 
-async def async_setup_entry(hass, config_entry, async_add_entities):
-    for device_id, device in hass.data[DOMAIN][DEVICES].items():
-        _LOGGER.info("Adding sensors for %s", device_id)
+
+async def async_setup_entry(
+    hass: HomeAssistant,
+    config_entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
+) -> None:
+    """Setup sensor entities."""
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    coordinators: list[EufyCleanCoordinator] = data["coordinators"]
+
+    entities = []
+
+    for coordinator in coordinators:
+        _LOGGER.debug("Adding sensors for %s", coordinator.device_name)
 
         # Battery sensor
-        battery = RoboVacSensor(
-            device,
-            "battery",
-            "_battery",
-            getter_name="get_battery_level",
-            device_class=SensorDeviceClass.BATTERY,
-            unit=PERCENTAGE,
-            state_class=SensorStateClass.MEASUREMENT,
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "battery",
+                "Battery",
+                lambda s: s.battery_level,
+                device_class=SensorDeviceClass.BATTERY,
+                unit=PERCENTAGE,
+                state_class=SensorStateClass.MEASUREMENT,
+            )
         )
 
-        # Water level sensor
-        water = RoboVacSensor(
-            device,
-            "water_level",
-            "_water",
-            getter_name="get_water_level",
-            device_class=None,  # no standard device class for water level %
-            unit=PERCENTAGE,
-            state_class=SensorStateClass.MEASUREMENT,
+        # Water level sensor (Station Clean Water)
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "water_level",
+                "Water Level",
+                lambda s: s.station_clean_water,
+                device_class=None,
+                unit=PERCENTAGE,
+                state_class=SensorStateClass.MEASUREMENT,
+            )
         )
 
-        # dock status sensor
-        dock_status = RoboVacSensor(
-            device,
-            "dock_status",
-            "_dock_status",
-            getter_name="get_dock_status",
-            device_class=None,  # no standard device class for dock status
-            unit=None,
-            state_class=None,
+        # Dock status sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "dock_status",
+                "Dock Status",
+                lambda s: s.dock_status,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                category=EntityCategory.DIAGNOSTIC,
+            )
         )
 
         # Active map ID sensor
-        active_map = RoboVacSensor(
-            device,
-            "active_map",
-            "_active_map",
-            getter_name="get_active_map_id",
-            device_class=None,
-            unit=None,
-            state_class=None,
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "active_map",
+                "Active Map",
+                lambda s: s.map_id,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:map-marker-path",
+                category=EntityCategory.DIAGNOSTIC,
+            )
         )
-        active_map._attr_icon = "mdi:map-marker-path"
 
-        async_add_entities([battery, water, dock_status, active_map])
+        # Accessory Sensors
+        accessories = [
+            ("filter_usage", "Filter Remaining", "mdi:air-filter"),
+            ("main_brush_usage", "Rolling Brush Remaining", "mdi:broom"),
+            ("side_brush_usage", "Side Brush Remaining", "mdi:broom"),
+            ("sensor_usage", "Sensor Remaining", "mdi:eye-outline"),
+            ("scrape_usage", "Cleaning Tray Remaining", "mdi:wiper"),
+            ("mop_usage", "Mopping Cloth Remaining", "mdi:water"),
+        ]
 
-class RoboVacSensor(SensorEntity):
+        for attr, name, icon in accessories:
+            # We must capture the specific attr value in the lambda default args
+            # otherwise all lambdas will point to the last attr in the loop
+            def get_accessory_remaining(state: VacuumState, a: str = attr) -> int:
+                usage = getattr(state.accessories, a) or 0
+                max_life = ACCESSORY_MAX_LIFE.get(a, 0)
+                # Ensure we don't go negative if usage exceeds defaults
+                return max(0, max_life - usage)
+
+            max_life_val = ACCESSORY_MAX_LIFE.get(attr, 0)
+
+            # Extra attributes explicitly using specific attr
+            def get_attributes(
+                state: VacuumState, a: str = attr, m: int = max_life_val
+            ) -> dict[str, Any]:
+                usage = getattr(state.accessories, a) or 0
+                return {
+                    "usage_hours": usage,
+                    "total_life_hours": m,
+                }
+
+            entities.append(
+                RoboVacSensor(
+                    coordinator,
+                    attr.replace("_usage", "_remaining"),
+                    name,
+                    get_accessory_remaining,
+                    device_class=SensorDeviceClass.DURATION,
+                    unit="h",  # Hours
+                    state_class=SensorStateClass.MEASUREMENT,
+                    icon=icon,
+                    category=EntityCategory.DIAGNOSTIC,
+                    extra_state_attributes_fn=get_attributes,
+                )
+            )
+
+    async_add_entities(entities)
+
+
+class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
+    """Eufy Clean Sensor Entity."""
+
     def __init__(
         self,
-        device,
-        name,
-        unique_suffix,
-        getter_name: str,
-        device_class=None,
-        unit=PERCENTAGE,
-        state_class=SensorStateClass.MEASUREMENT,
-    ):
-        super().__init__()
-        self.vacuum = device
-        self._attr_name = name
-        self._attr_unique_id = f"{device.device_id}{unique_suffix}"
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, device.device_id)},
-            name=device.device_model_desc,
-            manufacturer="Eufy",
-            model=device.device_model,
-        )
-        # initialize native value to None; will be populated asynchronously
-        self._attr_native_value = None
-        self._attr_entity_category = EntityCategory.DIAGNOSTIC
+        coordinator: EufyCleanCoordinator,
+        id_suffix: str,
+        name_suffix: str,
+        value_fn: Callable[[VacuumState], Any],
+        device_class: SensorDeviceClass | None = None,
+        unit: str | None = None,
+        state_class: SensorStateClass | None = None,
+        icon: str | None = None,
+        category: EntityCategory | None = EntityCategory.DIAGNOSTIC,
+        extra_state_attributes_fn: (
+            Callable[[VacuumState], dict[str, Any]] | None
+        ) = None,
+    ) -> None:
+        """Initialize the sensor."""
+        super().__init__(coordinator)
+        self._value_fn = value_fn
+        self._extra_attrs_fn = extra_state_attributes_fn
+        self._attr_unique_id = f"{coordinator.device_id}_{id_suffix}"
+
+        # Use Home Assistant standard naming
+        # This will prefix the device name to the entity name if the device name is not in the entity name
+        # Result: sensor.robovac_water_level (Safer, avoids collisions)
+        self._attr_has_entity_name = True
+        self._attr_name = name_suffix
+
+        self._attr_device_info = coordinator.device_info
+
         self._attr_native_unit_of_measurement = unit
         self._attr_device_class = device_class
         self._attr_state_class = state_class
+        self._attr_entity_category = category
+        if icon:
+            self._attr_icon = icon
 
-        # ensure HA doesn't try to poll this entity; we push updates via listeners
-        self._attr_should_poll = False
+    @property
+    def native_value(self) -> Any:
+        """Return the state of the sensor."""
+        return self._value_fn(self.coordinator.data)
 
-        self._getter_name = getter_name
-
-    async def _handle_update(self) -> None:
-        """Called by SharedConnect when new data arrives."""
-        _LOGGER.debug("Listener called for %s", self._attr_unique_id)
-        try:
-            await self.async_update()
-            _LOGGER.debug("Updated value for %s -> %s", self._attr_unique_id, self._attr_native_value)
-            self.async_write_ha_state()
-        except Exception:
-            _LOGGER.exception("Error handling update for %s", self._attr_unique_id)
-
-
-    async def async_added_to_hass(self):
-        # fetch initial value when entity is added
-        await self.async_update()
-        self.async_write_ha_state()
-
-        # register for push updates from the device controller
-        try:
-            self.vacuum.add_listener(self._handle_update)
-        except Exception:
-            _LOGGER.exception("Failed to add update listener for %s", self._attr_unique_id)
-
-    async def async_will_remove_from_hass(self):
-        # try to remove listener when entity is removed
-        try:
-            if hasattr(self.vacuum, "_update_listeners"):
-                try:
-                    self.vacuum._update_listeners.remove(self._handle_update)
-                except ValueError:
-                    pass
-        except Exception:
-            _LOGGER.exception("Failed to remove update listener for %s", self._attr_unique_id)
-
-    async def async_update(self):
-        getter = getattr(self.vacuum, self._getter_name, None)
-        if getter is None or not callable(getter):
-            _LOGGER.warning(
-                "Getter %s not found for device %s", self._getter_name, getattr(self.vacuum, "device_id", "unknown")
-            )
-            return
-
-        try:
-            value = await getter()
-            _LOGGER.debug("Getter %s returned %r for %s", self._getter_name, value, self._attr_unique_id)
-        except Exception:
-            _LOGGER.exception("Failed to update %s for %s", self._getter_name, getattr(self.vacuum, "device_id", "unknown"))
-            return
-
-        # Only update entity state when getter returns a real value.
-        # If getter returns None (unknown / not present), preserve last known value.
-        if value is not None:
-            self._attr_native_value = value
-        else:
-            _LOGGER.debug("Getter %s returned None for %s — keeping last known value %r", self._getter_name, self._attr_unique_id, self._attr_native_value)
+    @property
+    def extra_state_attributes(self) -> dict[str, Any] | None:
+        """Return entity specific state attributes."""
+        if self._extra_attrs_fn:
+            return self._extra_attrs_fn(self.coordinator.data)
+        return None

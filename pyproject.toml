@@ -1,0 +1,81 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.mypy]
+python_version = "3.13"
+check_untyped_defs = false
+disallow_any_generics = false
+disallow_incomplete_defs = false
+disallow_subclassing_any = false
+disallow_untyped_calls = false
+disallow_untyped_decorators = false
+disallow_untyped_defs = false
+no_implicit_optional = false
+warn_redundant_casts = true
+warn_return_any = false
+warn_unused_ignores = true
+warn_no_return = true
+warn_unreachable = true
+strict_equality = true
+ignore_missing_imports = true
+follow_imports = "silent"
+explicit_package_bases = true
+
+[[tool.mypy.overrides]]
+module = [
+    "custom_components.robovac_mqtt.proto.*"
+]
+ignore_errors = true
+
+[tool.pylint.MASTER]
+ignore = [
+    "tests",
+]
+load-plugins = [
+    "pylint.extensions.no_self_use",
+]
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+    "line-too-long",
+    "too-many-arguments",
+    "too-many-instance-attributes",
+    "too-many-public-methods",
+    "too-many-locals",
+    "too-few-public-methods",
+    "too-many-branches",
+    "too-many-statements",
+    "logging-fstring-interpolation",
+    "broad-except",
+    "protected-access",
+    "invalid-name",
+    "missing-docstring",
+    "unused-argument",
+    "fixme",
+    "duplicate-code",
+    "import-error",
+    "no-name-in-module",
+    "redefined-builtin",
+    "unused-import",
+    "too-many-return-statements",
+    "pointless-string-statement",
+    "unnecessary-pass",
+    "logging-too-many-args",
+    "relative-beyond-top-level",
+    "no-else-return",
+    "abstract-method",
+    "too-many-positional-arguments",
+]
+
+[tool.pytest.ini_options]
+testpaths = [
+    "tests",
+]
+norecursedirs = [
+    ".git",
+    "dist",
+    "build",
+    ".tox",
+]
+asyncio_mode = "auto"

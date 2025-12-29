@@ -1,41 +1,95 @@
+from __future__ import annotations
+
 import logging
+import random
+import string
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import Platform
+from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from .EufyClean import EufyClean
 
-from .constants.hass import DOMAIN, VACS, DEVICES
+from .api.cloud import EufyLogin
+from .const import DOMAIN
+from .coordinator import EufyCleanCoordinator
 
-PLATFORMS = [Platform.VACUUM, Platform.BUTTON, Platform.SENSOR, Platform.SELECT, Platform.NUMBER, Platform.SWITCH]
+PLATFORMS: list[Platform] = [
+    Platform.VACUUM,
+    Platform.BUTTON,
+    Platform.SENSOR,
+    Platform.SELECT,
+    Platform.SWITCH,
+    Platform.NUMBER,
+]
 _LOGGER = logging.getLogger(__name__)
 
 
-async def async_setup(hass: HomeAssistant, _) -> bool:
-    hass.data.setdefault(DOMAIN, {VACS: {}, DEVICES: {}})
-    return True
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Initialize the integration."""
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
-    # Init EufyClean
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
-    eufy_clean = EufyClean(username, password)
-    await eufy_clean.init()
 
-    # Load devices
-    for vacuum in await eufy_clean.get_devices():
-        device = await eufy_clean.init_device(vacuum['deviceId'])
-        await device.connect()
-        _LOGGER.info("Adding %s", device.device_id)
-        hass.data[DOMAIN][DEVICES][device.device_id] = device
+    # Generate OpenUDID (consistent per session)
+    openudid = "".join(random.choices(string.hexdigits, k=32))
+
+    # Initialize Login Controller
+    eufy_login = EufyLogin(username, password, openudid)
+    try:
+        await eufy_login.init()
+    except Exception as e:
+        _LOGGER.error(f"Failed to login to Eufy Clean: {e}")
+        return False
+
+    coordinators = []
+
+    # Get Devices and create coordinators
+    # eufy_login.mqtt_devices populated by init/getDevices
+    # mqtt_devices is a list of dicts with device info
+    for device_info in eufy_login.mqtt_devices:
+        device_id = device_info.get("deviceId")
+        if not device_id:
+            continue
+
+        _LOGGER.debug(
+            f"Found device: {device_info.get('deviceName', 'Unknown')} ({device_id})"
+        )
+
+        coordinator = EufyCleanCoordinator(hass, eufy_login, device_info)
+        try:
+            await coordinator.initialize()
+            coordinators.append(coordinator)
+        except Exception as e:
+            _LOGGER.warning(f"Failed to initialize coordinator for {device_id}: {e}")
+
+    if not coordinators:
+        _LOGGER.warning("No Eufy Clean devices found or initialized.")
+        # We generally return True anyway to avoid blocking HA startup, unless critical failure?
+        # But if no devices, nothing to do.
+
+    hass.data.setdefault(DOMAIN, {})
+    hass.data[DOMAIN][entry.entry_id] = {"coordinators": coordinators}
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Unload a config entry."""
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+
+    if unload_ok:
+        data = hass.data[DOMAIN].get(entry.entry_id)
+        if data and "coordinators" in data:
+            for coordinator in data["coordinators"]:
+                # Disconnect client
+                if coordinator.client:
+                    await coordinator.client.disconnect()  # Need to ensure disconnect exists or implement it
+
+        hass.data[DOMAIN].pop(entry.entry_id)
+
+    return unload_ok
 
 
 async def update_listener(hass: HomeAssistant, entry: ConfigEntry):
