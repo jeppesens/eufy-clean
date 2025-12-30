@@ -11,5 +11,5 @@
     "iot_class": "cloud_polling",
     "issue_tracker": "https://github.com/m11tch/eufy-clean/issues",
     "requirements": [],
-    "version": "1.2.2"
+    "version": "1.2.3"
 }

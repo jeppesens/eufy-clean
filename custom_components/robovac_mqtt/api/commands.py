@@ -50,13 +50,11 @@ def build_set_clean_speed_command(clean_speed: str) -> dict[str, str]:
 
 def build_scene_clean_command(scene_id: int) -> dict[str, str]:
     """Build command to trigger a specific scene."""
-    # SharedConnect logic adds 3 to the ID
-    increment = 3
     value = encode(
         ModeCtrlRequest,
         {
             "method": EUFY_CLEAN_CONTROL.START_SCENE_CLEAN,
-            "scene_clean": {"scene_id": scene_id + increment},
+            "scene_clean": {"scene_id": scene_id},
         },
     )
     return {DPS_MAP["PLAY_PAUSE"]: value}

@@ -107,7 +107,7 @@ def test_build_scene_clean_command(mock_encode):
     args, _ = mock_encode.call_args
     # args[1] is the data dict
     assert args[1]["method"] == EUFY_CLEAN_CONTROL.START_SCENE_CLEAN
-    assert args[1]["scene_clean"]["scene_id"] == 4  # 1 + 3 increment
+    assert args[1]["scene_clean"]["scene_id"] == 1
 
 
 @patch("custom_components.robovac_mqtt.api.commands.encode_message")
