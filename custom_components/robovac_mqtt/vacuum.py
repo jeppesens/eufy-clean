@@ -107,7 +107,10 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
     async def async_start(self, **kwargs: Any) -> None:
         """Start or resume the cleaning task."""
-        await self.coordinator.async_send_command(build_command("play"))
+        if self.activity == VacuumActivity.PAUSED:
+            await self.coordinator.async_send_command(build_command("play"))
+        else:
+            await self.coordinator.async_send_command(build_command("start_auto"))
 
     async def async_pause(self, **kwargs: Any) -> None:
         """Pause the cleaning task."""

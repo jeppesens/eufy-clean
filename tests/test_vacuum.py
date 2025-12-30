@@ -70,10 +70,15 @@ async def test_vacuum_commands(mock_coordinator):
     with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
         mock_build.return_value = {"cmd": "val"}
 
-        # Start
+        # Start (Default/Docked)
+        await entity.async_start()
+        mock_build.assert_called_with("start_auto")
+        mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
+
+        # Start (Paused -> Resume)
+        mock_coordinator.data.activity = "paused"
         await entity.async_start()
         mock_build.assert_called_with("play")
-        mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
 
         # Stop
         await entity.async_stop()
