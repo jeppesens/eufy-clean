@@ -9,14 +9,20 @@ from ..const import (
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
 )
 from ..proto.cloud.consumable_pb2 import ConsumableRequest
-from ..proto.cloud.control_pb2 import ModeCtrlRequest, SelectRoomsClean
+from ..proto.cloud.control_pb2 import AutoClean, ModeCtrlRequest, SelectRoomsClean
 from ..proto.cloud.station_pb2 import StationRequest
 from ..utils import encode, encode_message
 
 
 def _build_mode_ctrl(method: int) -> dict[str, str]:
     """Helper for ModeCtrlRequest commands."""
-    value = encode(ModeCtrlRequest, {"method": int(method)})
+    data: dict[str, Any] = {"method": int(method)}
+
+    # Special handling for START_AUTO_CLEAN to ensure non-empty payload
+    if method == EUFY_CLEAN_CONTROL.START_AUTO_CLEAN:
+        data["auto_clean"] = AutoClean(clean_times=1, force_mapping=False)
+
+    value = encode(ModeCtrlRequest, data)
     return {DPS_MAP["PLAY_PAUSE"]: value}
 
 
@@ -92,6 +98,8 @@ def build_command(command: str, **kwargs: Any) -> dict[str, str]:
     cmd = command.lower()
 
     # Mode Control
+    if cmd == "start_auto":
+        return _build_mode_ctrl(EUFY_CLEAN_CONTROL.START_AUTO_CLEAN)
     if cmd in ("play", "resume"):
         return _build_mode_ctrl(EUFY_CLEAN_CONTROL.RESUME_TASK)
     if cmd == "pause":
