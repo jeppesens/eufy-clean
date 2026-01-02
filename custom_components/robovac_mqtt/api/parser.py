@@ -128,7 +128,7 @@ def _map_task_status(status: WorkStatus) -> str:
         # GoWash.Mode: NAVIGATION=0, WASHING=1, DRYING=2
         gw_mode = status.go_wash.mode
         if gw_mode == 2:
-            return "Drying Mop"
+            return "Completed"
         if gw_mode == 1:
             return "Washing Mop"
         if gw_mode == 0 and s == 5:
@@ -143,7 +143,8 @@ def _map_task_status(status: WorkStatus) -> str:
     if s == 3:  # Charging
         if is_resumable:
             return "Charging (Resume)"
-        return "Charging"
+        # If not resumable, the task is effectively done.
+        return "Completed"
 
     if s == 7:  # Returning / Go Home
         # Distinguish between "Finished" and "Recharge needed"
@@ -164,6 +165,9 @@ def _map_task_status(status: WorkStatus) -> str:
 
     if s == 2:
         return "Error"
+
+    if s == 6:
+        return "Remote Control"
 
     if s == 15:  # Stop / Pause?
         return "Paused"

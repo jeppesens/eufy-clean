@@ -44,13 +44,13 @@ def test_task_status_mapping():
     new_state = update_state(state, dps)
     assert new_state.task_status == "Washing Mop"
 
-    # Case 3: Drying Mop
+    # Case 3: Drying Mop (effectively Completed/Maintenance)
     ws = WorkStatus()
     ws.state = 5
     ws.go_wash.mode = 2  # Drying
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
     new_state = update_state(state, dps)
-    assert new_state.task_status == "Drying Mop"
+    assert new_state.task_status == "Completed"
 
     # Case 4: Returning to Wash
     ws = WorkStatus()
@@ -76,13 +76,13 @@ def test_task_status_mapping():
     new_state = update_state(state, dps)
     assert new_state.task_status == "Charging (Resume)"
 
-    # Case 7: Normal Charging
+    # Case 7: Normal Charging (effectively Completed)
     ws = WorkStatus()
     ws.state = 3
     # No breakpoint
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
     new_state = update_state(state, dps)
-    assert new_state.task_status == "Charging"
+    assert new_state.task_status == "Completed"
 
     # Case 8: Returning to Empty Dust
     ws = WorkStatus()
@@ -105,6 +105,13 @@ def test_task_status_mapping():
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
     new_state = update_state(state, dps)
     assert new_state.task_status == "Error"
+
+    # Case 11: Remote Control
+    ws = WorkStatus()
+    ws.state = 6
+    dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
+    new_state = update_state(state, dps)
+    assert new_state.task_status == "Remote Control"
 
 
 def test_task_status_sensor(mock_coordinator):
