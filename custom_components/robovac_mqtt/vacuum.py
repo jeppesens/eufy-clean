@@ -99,6 +99,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             "error_code": data.error_code,
             "error_message": data.error_message,
             "status_code": data.status_code,
+            "task_status": data.task_status,
         }
 
     async def async_return_to_base(self, **kwargs: Any) -> None:
