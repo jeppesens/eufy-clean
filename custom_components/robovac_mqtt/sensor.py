@@ -63,6 +63,21 @@ async def async_setup_entry(
             )
         )
 
+        # Task Status Sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "task_status",
+                "Task Status",
+                lambda s: s.task_status,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:robot-vacuum",
+                category=EntityCategory.DIAGNOSTIC,
+            )
+        )
+
         # Cleaning Time Sensor
         entities.append(
             RoboVacSensor(

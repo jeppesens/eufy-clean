@@ -45,6 +45,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 _LOGGER.debug(f"Decoded WorkStatus: {work_status}")
                 changes["activity"] = _map_work_status(work_status)
                 changes["status_code"] = work_status.state
+                changes["task_status"] = _map_task_status(work_status)
 
                 # Check for charging status
                 if work_status.HasField("charging"):
@@ -110,6 +111,59 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             _LOGGER.warning(f"Error parsing DPS {key}: {e}", exc_info=True)
 
     return replace(state, **changes)
+
+
+def _map_task_status(status: WorkStatus) -> str:
+    """Map WorkStatus to detailed task status."""
+    s = status.state
+
+    # Check for specific Wash/Dry states first (usually inside Cleaning state 5)
+    if status.HasField("go_wash"):
+        # GoWash.Mode: NAVIGATION=0, WASHING=1, DRYING=2
+        gw_mode = status.go_wash.mode
+        if gw_mode == 2:
+            return "Drying Mop"
+        if gw_mode == 1:
+            return "Washing Mop"
+        if gw_mode == 0 and s == 5:
+            return "Returning to Wash"
+
+    # Check for Breakpoint (Recharge & Resume)
+    # Usually State 7 (Returning) or 3 (Charging)
+    is_resumable = False
+    if status.HasField("breakpoint") and status.breakpoint.state == 0:
+        is_resumable = True
+
+    if s == 3:  # Charging
+        if is_resumable:
+            return "Charging (Resume)"
+        return "Charging"
+
+    if s == 7:  # Returning / Go Home
+        # Distinguish between "Finished" and "Recharge needed"
+        # However, GoHome mode 0 is "COMPLETE_TASK" and 1 is "COLLECT_DUST"
+        if is_resumable:
+            return "Returning to Charge"
+        if status.HasField("go_home"):
+            gh_mode = status.go_home.mode
+            if gh_mode == 1:
+                return "Returning to Empty"
+        return "Returning"
+
+    if s == 5:  # Cleaning
+        return "Cleaning"
+
+    if s == 4:
+        return "Positioning"
+
+    if s == 2:
+        return "Error"
+
+    if s == 15:  # Stop / Pause?
+        return "Paused"
+
+    # Fallback mappings from basic map
+    return _map_work_status(status).title()
 
 
 def _map_work_status(status: WorkStatus) -> str:
