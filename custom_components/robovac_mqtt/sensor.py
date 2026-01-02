@@ -48,6 +48,21 @@ async def async_setup_entry(
             )
         )
 
+        # Error Message Sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "error_message",
+                "Error Message",
+                lambda s: s.error_message,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:alert-circle-outline",
+                category=EntityCategory.DIAGNOSTIC,
+            )
+        )
+
         # Water level sensor (Station Clean Water)
         entities.append(
             RoboVacSensor(

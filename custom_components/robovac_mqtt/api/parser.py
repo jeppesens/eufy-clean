@@ -45,6 +45,11 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 changes["activity"] = _map_work_status(work_status)
                 changes["status_code"] = work_status.state
 
+                # Check for charging status
+                if work_status.HasField("charging"):
+                    # Charging.State.DOING is 0
+                    changes["charging"] = work_status.charging.state == 0
+
             elif key == DPS_MAP["CLEAN_SPEED"]:
                 changes["fan_speed"] = _map_clean_speed(value)
 

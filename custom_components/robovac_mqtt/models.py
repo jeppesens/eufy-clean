@@ -41,6 +41,7 @@ class VacuumState:
     # Error state
     error_code: int = 0
     error_message: str = ""
+    charging: bool = False
 
     # Map
     map_id: int = 0
