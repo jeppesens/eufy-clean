@@ -12,6 +12,7 @@ from ..const import (
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
 )
 from ..models import AccessoryState, VacuumState
+from ..proto.cloud.clean_statistics_pb2 import CleanStatistics
 from ..proto.cloud.consumable_pb2 import ConsumableResponse
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.scene_pb2 import SceneResponse
@@ -44,6 +45,15 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 _LOGGER.debug(f"Decoded WorkStatus: {work_status}")
                 changes["activity"] = _map_work_status(work_status)
                 changes["status_code"] = work_status.state
+                changes["task_status"] = _map_task_status(work_status)
+
+                # Check for charging status
+                # If the charging sub-message exists, we trust it regardless of main state
+                if work_status.HasField("charging"):
+                    # Charging.State.DOING is 0
+                    changes["charging"] = work_status.charging.state == 0
+                else:
+                    changes["charging"] = False
 
             elif key == DPS_MAP["CLEAN_SPEED"]:
                 changes["fan_speed"] = _map_clean_speed(value)
@@ -82,6 +92,13 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 _LOGGER.debug(f"Received ACCESSORIES_STATUS: {value}")
                 changes["accessories"] = _parse_accessories(state.accessories, value)
 
+            elif key == DPS_MAP["CLEANING_STATISTICS"]:
+                stats = decode(CleanStatistics, value)
+                _LOGGER.debug(f"Decoded CleanStatistics: {stats}")
+                if stats.HasField("single"):
+                    changes["cleaning_time"] = stats.single.clean_duration
+                    changes["cleaning_area"] = stats.single.clean_area
+
             elif key == DPS_MAP["SCENE_INFO"]:
                 _LOGGER.debug(f"Received SCENE_INFO: {value}")
                 changes["scenes"] = _parse_scene_info(value)
@@ -97,6 +114,63 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             _LOGGER.warning(f"Error parsing DPS {key}: {e}", exc_info=True)
 
     return replace(state, **changes)
+
+
+def _map_task_status(status: WorkStatus) -> str:
+    """Map WorkStatus to detailed task status."""
+    s = status.state
+
+    # Check for specific Wash/Dry states first (usually inside Cleaning state 5)
+    if status.HasField("go_wash"):
+        # GoWash.Mode: NAVIGATION=0, WASHING=1, DRYING=2
+        gw_mode = status.go_wash.mode
+        if gw_mode == 2:
+            return "Completed"
+        if gw_mode == 1:
+            return "Washing Mop"
+        if gw_mode == 0 and s == 5:
+            return "Returning to Wash"
+
+    # Check for Breakpoint (Recharge & Resume)
+    # Usually State 7 (Returning) or 3 (Charging)
+    is_resumable = False
+    if status.HasField("breakpoint") and status.breakpoint.state == 0:
+        is_resumable = True
+
+    if s == 3:  # Charging
+        if is_resumable:
+            return "Charging (Resume)"
+        # If not resumable, the task is effectively done.
+        return "Completed"
+
+    if s == 7:  # Returning / Go Home
+        # Distinguish between "Finished" and "Recharge needed"
+        # However, GoHome mode 0 is "COMPLETE_TASK" and 1 is "COLLECT_DUST"
+        if is_resumable:
+            return "Returning to Charge"
+        if status.HasField("go_home"):
+            gh_mode = status.go_home.mode
+            if gh_mode == 1:
+                return "Returning to Empty"
+        return "Returning"
+
+    if s == 5:  # Cleaning
+        return "Cleaning"
+
+    if s == 4:
+        return "Positioning"
+
+    if s == 2:
+        return "Error"
+
+    if s == 6:
+        return "Remote Control"
+
+    if s == 15:  # Stop / Pause?
+        return "Paused"
+
+    # Fallback mappings from basic map
+    return _map_work_status(status).title()
 
 
 def _map_work_status(status: WorkStatus) -> str:

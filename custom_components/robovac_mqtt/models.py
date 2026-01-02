@@ -41,6 +41,14 @@ class VacuumState:
     # Error state
     error_code: int = 0
     error_message: str = ""
+    charging: bool = False
+
+    # Cleaning Stats
+    cleaning_time: int = 0  # seconds
+    cleaning_area: int = 0  # m2
+
+    # Advanced Status
+    task_status: str = "idle"
 
     # Map
     map_id: int = 0

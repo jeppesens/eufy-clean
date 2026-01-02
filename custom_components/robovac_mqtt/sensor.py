@@ -48,6 +48,64 @@ async def async_setup_entry(
             )
         )
 
+        # Error Message Sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "error_message",
+                "Error Message",
+                lambda s: s.error_message,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:alert-circle-outline",
+                category=EntityCategory.DIAGNOSTIC,
+            )
+        )
+
+        # Task Status Sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "task_status",
+                "Task Status",
+                lambda s: s.task_status,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:robot-vacuum",
+                category=EntityCategory.DIAGNOSTIC,
+            )
+        )
+
+        # Cleaning Time Sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "cleaning_time",
+                "Cleaning Time",
+                lambda s: s.cleaning_time,
+                device_class=SensorDeviceClass.DURATION,
+                unit="s",
+                state_class=SensorStateClass.MEASUREMENT,
+                icon="mdi:clock-outline",
+            )
+        )
+
+        # Cleaning Area Sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "cleaning_area",
+                "Cleaning Area",
+                lambda s: s.cleaning_area,
+                device_class=None,
+                unit="m²",
+                state_class=SensorStateClass.MEASUREMENT,
+                icon="mdi:floor-plan",
+            )
+        )
+
         # Water level sensor (Station Clean Water)
         entities.append(
             RoboVacSensor(

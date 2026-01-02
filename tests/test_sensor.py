@@ -82,3 +82,23 @@ def test_water_level_sensor(mock_coordinator):
     # Update state
     mock_coordinator.data.station_clean_water = 20
     assert entity.native_value == 20
+
+
+def test_error_message_sensor(mock_coordinator):
+    """Test error message sensor."""
+    mock_coordinator.data.error_message = "Roller Brush Stuck"
+
+    entity = RoboVacSensor(
+        mock_coordinator,
+        "error_message",
+        "Error Message",
+        lambda s: s.error_message,
+        category=EntityCategory.DIAGNOSTIC,
+    )
+
+    assert entity.native_value == "Roller Brush Stuck"
+    assert entity.entity_category == EntityCategory.DIAGNOSTIC
+
+    # Clear error
+    mock_coordinator.data.error_message = ""
+    assert entity.native_value == ""
