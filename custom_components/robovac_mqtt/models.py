@@ -43,6 +43,10 @@ class VacuumState:
     error_message: str = ""
     charging: bool = False
 
+    # Cleaning Stats
+    cleaning_time: int = 0  # seconds
+    cleaning_area: int = 0  # m2
+
     # Map
     map_id: int = 0
     map_url: str | None = None

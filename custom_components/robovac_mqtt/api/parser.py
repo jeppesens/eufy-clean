@@ -12,6 +12,7 @@ from ..const import (
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
 )
 from ..models import AccessoryState, VacuumState
+from ..proto.cloud.clean_statistics_pb2 import CleanStatistics
 from ..proto.cloud.consumable_pb2 import ConsumableResponse
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.scene_pb2 import SceneResponse
@@ -86,6 +87,13 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug(f"Received ACCESSORIES_STATUS: {value}")
                 changes["accessories"] = _parse_accessories(state.accessories, value)
+
+            elif key == DPS_MAP["CLEANING_STATISTICS"]:
+                stats = decode(CleanStatistics, value)
+                _LOGGER.debug(f"Decoded CleanStatistics: {stats}")
+                if stats.HasField("single"):
+                    changes["cleaning_time"] = stats.single.clean_duration
+                    changes["cleaning_area"] = stats.single.clean_area
 
             elif key == DPS_MAP["SCENE_INFO"]:
                 _LOGGER.debug(f"Received SCENE_INFO: {value}")
