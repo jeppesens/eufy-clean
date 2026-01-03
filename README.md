@@ -67,6 +67,7 @@ The integration tracks the usage of consumable accessories and allows you to res
 - Charging status
 - Work status and mode
 - **Extended Device Info**: Serial number, MAC address, and Firmware version are now available in the device info panel.
+- **Error Tracking**: Real-time error monitoring with detailed descriptions (e.g., "Wheel Stuck", "Sensor Dirty") available as attributes and sensors.
 
 ## Usage
 
@@ -131,7 +132,6 @@ This project is maintained as a Home Assistant component. Issues and PRs should 
 
 ### Pending Features
 - Clean room(s) with custom cleaning mode
-- Track errors
 - Map management
 - Locate device
 - Current position

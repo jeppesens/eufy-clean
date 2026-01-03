@@ -96,10 +96,13 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         return {
             "battery_level": data.battery_level,
             "fan_speed": data.fan_speed,
+            "cleaning_time": data.cleaning_time,
+            "cleaning_area": data.cleaning_area,
+            "task_status": data.task_status,
+            "trigger_source": data.trigger_source,
             "error_code": data.error_code,
             "error_message": data.error_message,
             "status_code": data.status_code,
-            "task_status": data.task_status,
         }
 
     async def async_return_to_base(self, **kwargs: Any) -> None:
