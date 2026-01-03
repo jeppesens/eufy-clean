@@ -78,10 +78,20 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 changes["charging"] = False
 
             # Check for trigger source
+            trigger_source = "unknown"
             if work_status.HasField("trigger"):
-                changes["trigger_source"] = _map_trigger_source(
-                    work_status.trigger.source
-                )
+                trigger_source = _map_trigger_source(work_status.trigger.source)
+
+            # Infer trigger source from Work Mode if unknown
+            # Many robots (like X10 Pro Omni) do not send trigger field for specific cleaning modes
+            if trigger_source == "unknown" and work_status.HasField("mode"):
+                mode_val = work_status.mode.value
+                # SELECT_ROOM (1), SELECT_ZONE (2), SPOT (3), FAST_MAPPING (4),
+                # GLOBAL_CRUISE (5), ZONES_CRUISE (6), POINT_CRUISE (7), SCENE (8), SMART_FOLLOW (9)
+                if mode_val in (1, 2, 3, 4, 5, 6, 7, 8, 9):
+                    trigger_source = "app"
+
+            changes["trigger_source"] = trigger_source
 
             # Fallback/Override if cleaning.scheduled_task is explicit
             if work_status.HasField("cleaning") and work_status.cleaning.scheduled_task:
