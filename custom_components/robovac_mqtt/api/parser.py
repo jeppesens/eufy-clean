@@ -35,58 +35,93 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
     new_raw_dps.update(dps)
     changes["raw_dps"] = new_raw_dps
 
+    # Process Station Status first to ensure dock_status is up to date for task mapping
+    if DPS_MAP["STATION_STATUS"] in dps:
+        value = dps[DPS_MAP["STATION_STATUS"]]
+        try:
+            station = decode(StationResponse, value)
+            _LOGGER.debug(f"Decoded StationResponse: {station}")
+            new_dock_status = _map_dock_status(station)
+            # Debouncing is handled in coordinator, not here
+            changes["dock_status"] = new_dock_status
+
+            if station.HasField("clean_water"):
+                changes["station_clean_water"] = station.clean_water.value
+
+            # Auto Empty Config
+            if station.HasField("auto_cfg_status"):
+                changes["dock_auto_cfg"] = MessageToDict(
+                    station.auto_cfg_status, preserving_proto_field_name=True
+                )
+        except Exception as e:
+            _LOGGER.warning(f"Error parsing Station Status: {e}", exc_info=True)
+
+    # Process Work Status
+    if DPS_MAP["WORK_STATUS"] in dps:
+        value = dps[DPS_MAP["WORK_STATUS"]]
+        try:
+            work_status = decode(WorkStatus, value)
+            _LOGGER.debug(f"Decoded WorkStatus: {work_status}")
+            changes["activity"] = _map_work_status(work_status)
+            changes["status_code"] = work_status.state
+
+            # Use current or updated dock status
+            current_dock_status = changes.get("dock_status", state.dock_status)
+            changes["task_status"] = _map_task_status(work_status, current_dock_status)
+
+            # Check for charging status
+            # If the charging sub-message exists, we trust it regardless of main state
+            if work_status.HasField("charging"):
+                # Charging.State.DOING is 0
+                changes["charging"] = work_status.charging.state == 0
+            else:
+                changes["charging"] = False
+
+            # Update dock_status from WorkStatus if available
+            # This helps clear "stuck" states (like Drying) if StationResponse stops updating
+            # but WorkStatus continues to report (e.g. as Charging/Idle).
+            if work_status.HasField("station"):
+                st = work_status.station
+                current_dock = changes.get("dock_status", state.dock_status)
+
+                # Washing / Drying
+                if st.HasField("washing_drying_system"):
+                    # 0=WASHING, 1=DRYING
+                    if st.washing_drying_system.state == 1:
+                        changes["dock_status"] = "Drying"
+                    else:
+                        changes["dock_status"] = "Washing"
+                elif current_dock in ("Washing", "Drying"):
+                    # If field missing but we were washing/drying, assume done
+                    changes["dock_status"] = "Idle"
+
+                # Dust Collection
+                if st.HasField("dust_collection_system"):
+                    # 0=EMPTYING
+                    changes["dock_status"] = "Emptying dust"
+                elif current_dock == "Emptying dust":
+                    changes["dock_status"] = "Idle"
+
+                # Water Injection
+                if st.HasField("water_injection_system"):
+                    # 0=ADDING, 1=EMPTYING
+                    if st.water_injection_system.state == 0:
+                        changes["dock_status"] = "Adding clean water"
+                elif current_dock == "Adding clean water":
+                    # Only clear if we were adding water
+                    changes["dock_status"] = "Idle"
+
+        except Exception as e:
+            _LOGGER.warning(f"Error parsing Work Status: {e}", exc_info=True)
+
     for key, value in dps.items():
+        # specialized keys handled above, skip them here?
+        if key in (DPS_MAP["WORK_STATUS"], DPS_MAP["STATION_STATUS"]):
+            continue
+
         try:
             if key == DPS_MAP["BATTERY_LEVEL"]:
                 changes["battery_level"] = int(value)
-
-            elif key == DPS_MAP["WORK_STATUS"]:
-                work_status = decode(WorkStatus, value)
-                _LOGGER.debug(f"Decoded WorkStatus: {work_status}")
-                changes["activity"] = _map_work_status(work_status)
-                changes["status_code"] = work_status.state
-                changes["task_status"] = _map_task_status(work_status)
-
-                # Check for charging status
-                # If the charging sub-message exists, we trust it regardless of main state
-                if work_status.HasField("charging"):
-                    # Charging.State.DOING is 0
-                    changes["charging"] = work_status.charging.state == 0
-                else:
-                    changes["charging"] = False
-
-            elif key == DPS_MAP["CLEAN_SPEED"]:
-                changes["fan_speed"] = _map_clean_speed(value)
-
-            elif key == DPS_MAP["ERROR_CODE"]:
-                error_proto = decode(ErrorCode, value)
-                _LOGGER.debug(f"Decoded ErrorCode: {error_proto}")
-                # Repeated Scalar Field (warn) acts like a list
-                if len(error_proto.warn) > 0:
-                    code = error_proto.warn[0]
-                    changes["error_code"] = code
-                    changes["error_message"] = EUFY_CLEAN_ERROR_CODES.get(
-                        code, "Unknown Error"
-                    )
-                else:
-                    changes["error_code"] = 0
-                    changes["error_message"] = ""
-
-            elif key == DPS_MAP["STATION_STATUS"]:
-                station = decode(StationResponse, value)
-                _LOGGER.debug(f"Decoded StationResponse: {station}")
-                new_dock_status = _map_dock_status(station)
-                # Debouncing is handled in coordinator, not here
-                changes["dock_status"] = new_dock_status
-
-                if station.HasField("clean_water"):
-                    changes["station_clean_water"] = station.clean_water.value
-
-                # Auto Empty Config
-                if station.HasField("auto_cfg_status"):
-                    changes["dock_auto_cfg"] = MessageToDict(
-                        station.auto_cfg_status, preserving_proto_field_name=True
-                    )
 
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug(f"Received ACCESSORIES_STATUS: {value}")
@@ -116,7 +151,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
     return replace(state, **changes)
 
 
-def _map_task_status(status: WorkStatus) -> str:
+def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
     """Map WorkStatus to detailed task status."""
     s = status.state
 
@@ -140,7 +175,13 @@ def _map_task_status(status: WorkStatus) -> str:
     if s == 3:  # Charging
         if is_resumable:
             return "Charging (Resume)"
-        # If not resumable, the task is effectively done.
+
+        # Override "Completed" if the dock is actively performing washing tasks
+        # This prevents flapping when the robot briefly reports "Charging" during a wash cycle
+        if dock_status in ("Washing", "Adding clean water", "Recycling waste water"):
+            return "Washing Mop"
+
+        # If not resumable and not washing, the task is effectively done.
         return "Completed"
 
     if s == 7:  # Returning / Go Home
