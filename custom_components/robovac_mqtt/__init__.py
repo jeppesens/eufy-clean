@@ -39,7 +39,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     try:
         await eufy_login.init()
     except Exception as e:
-        _LOGGER.error(f"Failed to login to Eufy Clean: {e}")
+        _LOGGER.error("Failed to login to Eufy Clean: %s", e)
         return False
 
     coordinators = []
@@ -61,7 +61,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await coordinator.initialize()
             coordinators.append(coordinator)
         except Exception as e:
-            _LOGGER.warning(f"Failed to initialize coordinator for {device_id}: {e}")
+            _LOGGER.warning("Failed to initialize coordinator for %s: %s", device_id, e)
 
     if not coordinators:
         _LOGGER.warning("No Eufy Clean devices found or initialized.")

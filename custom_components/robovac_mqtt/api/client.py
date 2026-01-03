@@ -135,12 +135,12 @@ class EufyCleanClient:
             }
 
             topic = f"cmd/eufy_home/{self.device_model}/{self.device_id}/req"
-            _LOGGER.debug(f"Sending command to {topic}: {data_payload}")
+            _LOGGER.debug("Sending command to %s: %s", topic, data_payload)
 
             await self.send_bytes(topic, json.dumps(mqtt_val).encode())
 
         except Exception as e:
-            _LOGGER.error(f"Error sending command: {e}")
+            _LOGGER.error("Error sending command: %s", e)
 
     async def connect(self):
         """Connect to MQTT broker."""
@@ -171,7 +171,7 @@ class EufyCleanClient:
         self._mqtt_client.on_disconnect = self._on_disconnect
 
         # Async connect
-        _LOGGER.debug(f"Connecting to MQTT broker at {self.endpoint}...")
+        _LOGGER.debug("Connecting to MQTT broker at %s...", self.endpoint)
         await self._loop.run_in_executor(
             None, partial(self._mqtt_client.connect, self.endpoint, 8883, 60)
         )

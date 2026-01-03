@@ -143,7 +143,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 self.async_set_updated_data(state_to_publish)
 
         except Exception as e:
-            _LOGGER.warning(f"Error handling MQTT message: {e}")
+            _LOGGER.warning("Error handling MQTT message: %s", e)
 
     @callback
     def _async_commit_dock_status(self, _now: Any) -> None:

@@ -67,7 +67,7 @@ class EufyHTTPClient:
                         _LOGGER.debug("eufyLogin successful")
                         self.session = response_json
                         return response_json
-                _LOGGER.error(f"Login failed: {await response.json()}")
+                _LOGGER.error("Login failed: %s", await response.json())
                 return None
 
     async def get_user_info(self) -> dict[str, Any] | None:
