@@ -8,7 +8,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from functools import partial
-from os import path, unlink
+from os import unlink
 from typing import Any
 
 from paho.mqtt import client as mqtt
@@ -114,7 +114,8 @@ class EufyCleanClient:
 
             # Outer wrapper
             # client_id needs to match what Eufy expects for the session?
-            # MqttConnect uses: f"android-{self.mqttCredentials['app_name']}-eufy_android_{self.openudid}_{self.mqttCredentials['user_id']}"
+            # MqttConnect uses:
+            # f"android-{self.mqttCredentials['app_name']}-eufy_android_{self.openudid}_{self.mqttCredentials['user_id']}"
             client_id = (
                 f"android-{self.app_name}-eufy_android_{self.openudid}_{self.user_id}"
             )
@@ -146,7 +147,10 @@ class EufyCleanClient:
         """Connect to MQTT broker."""
         self._loop = asyncio.get_running_loop()
 
-        client_id = f"android-{self.app_name}-eufy_android_{self.openudid}_{self.user_id}-{int(time.time() * 1000)}"
+        client_id = (
+            f"android-{self.app_name}-eufy_android_{self.openudid}_{self.user_id}"
+            f"-{int(time.time() * 1000)}"
+        )
 
         _LOGGER.debug("Initializing MQTT client with ID: %s", client_id)
 

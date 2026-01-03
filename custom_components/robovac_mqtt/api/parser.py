@@ -83,11 +83,13 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 trigger_source = _map_trigger_source(work_status.trigger.source)
 
             # Infer trigger source from Work Mode if unknown
-            # Many robots (like X10 Pro Omni) do not send trigger field for specific cleaning modes
+            # Many robots (like X10 Pro Omni) do not send trigger field
+            # for specific cleaning modes
             if trigger_source == "unknown" and work_status.HasField("mode"):
                 mode_val = work_status.mode.value
                 # SELECT_ROOM (1), SELECT_ZONE (2), SPOT (3), FAST_MAPPING (4),
-                # GLOBAL_CRUISE (5), ZONES_CRUISE (6), POINT_CRUISE (7), SCENE (8), SMART_FOLLOW (9)
+                # GLOBAL_CRUISE (5), ZONES_CRUISE (6), POINT_CRUISE (7),
+                # SCENE (8), SMART_FOLLOW (9)
                 if mode_val in (1, 2, 3, 4, 5, 6, 7, 8, 9):
                     trigger_source = "app"
 
@@ -98,8 +100,8 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 changes["trigger_source"] = "schedule"
 
             # Update dock_status from WorkStatus if available
-            # This helps clear "stuck" states (like Drying) if StationResponse stops updating
-            # but WorkStatus continues to report (e.g. as Charging/Idle).
+            # This helps clear "stuck" states (like Drying) if StationResponse
+            # stops updating but WorkStatus continues to report (e.g. as Charging/Idle).
             if work_status.HasField("station"):
                 st = work_status.station
                 current_dock = changes.get("dock_status", state.dock_status)

@@ -53,7 +53,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             continue
 
         _LOGGER.debug(
-            "Found device: %s (%s)", device_info.get("deviceName", "Unknown"), device_id
+            "Found device: %s (%s)",
+            device_info.get("deviceName", "Unknown"),
+            device_id,
         )
 
         coordinator = EufyCleanCoordinator(hass, eufy_login, device_info)
@@ -65,7 +67,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     if not coordinators:
         _LOGGER.warning("No Eufy Clean devices found or initialized.")
-        # We generally return True anyway to avoid blocking HA startup, unless critical failure?
+        # We generally return True anyway to avoid blocking HA startup,
+        # unless critical failure?
         # But if no devices, nothing to do.
 
     hass.data.setdefault(DOMAIN, {})
@@ -86,7 +89,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             for coordinator in data["coordinators"]:
                 # Disconnect client
                 if coordinator.client:
-                    await coordinator.client.disconnect()  # Need to ensure disconnect exists or implement it
+                    await coordinator.client.disconnect()
+                    # Need to ensure disconnect exists or implement it
 
         hass.data[DOMAIN].pop(entry.entry_id)
 

@@ -222,7 +222,8 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
         self._attr_unique_id = f"{coordinator.device_id}_{id_suffix}"
 
         # Use Home Assistant standard naming
-        # This will prefix the device name to the entity name if the device name is not in the entity name
+        # This will prefix the device name to the entity name if the
+        # device name is not in the entity name
         # Result: sensor.robovac_water_level (Safer, avoids collisions)
         self._attr_has_entity_name = True
         self._attr_name = name_suffix

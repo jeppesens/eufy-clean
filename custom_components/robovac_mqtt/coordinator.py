@@ -119,10 +119,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     else self.data.dock_status
                 )
 
-                # If the reported dock status differs from our target, restart the debounce timer
+                # If the reported dock status differs from our target,
+                # restart the debounce timer
                 if new_dock != target_dock:
                     _LOGGER.debug(
-                        f"Dock status change detected: {self.data.dock_status} -> {new_dock}. Starting debounce."
+                        "Dock status change detected: %s -> %s. Starting debounce.",
+                        self.data.dock_status,
+                        new_dock,
                     )
                     if self._dock_idle_cancel:
                         _LOGGER.debug("Cancelling existing debounce timer.")
@@ -134,7 +137,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     )
 
                 # Always update the rest of the state immediately
-                # But force dock_status to remain at the currently visible value until the timer fires
+                # But force dock_status to remain at the currently visible value
+                # until the timer fires
                 effective_current_status = self.data.dock_status
                 state_to_publish = replace(
                     new_state, dock_status=effective_current_status
