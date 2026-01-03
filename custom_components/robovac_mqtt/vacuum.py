@@ -94,6 +94,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         """Return the state attributes."""
         data = self.coordinator.data
         return {
+            "battery_level": data.battery_level,
+            "fan_speed": data.fan_speed,
             "cleaning_time": self.coordinator.data.cleaning_time,
             "cleaning_area": self.coordinator.data.cleaning_area,
             "task_status": self.coordinator.data.task_status,
