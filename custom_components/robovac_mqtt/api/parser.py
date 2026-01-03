@@ -213,12 +213,7 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
         if is_resumable:
             return "Charging (Resume)"
 
-        # Override "Completed" if the dock is actively performing washing tasks
-        # This prevents flapping when the robot briefly reports "Charging" during a wash cycle
-        if dock_status in ("Washing", "Adding clean water", "Recycling waste water"):
-            return "Washing Mop"
-
-        # If not resumable and not washing, the task is effectively done.
+        # If not resumable the task is effectively done.
         return "Completed"
 
     if s == 7:  # Returning / Go Home
