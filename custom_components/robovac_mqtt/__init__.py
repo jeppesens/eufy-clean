@@ -53,7 +53,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             continue
 
         _LOGGER.debug(
-            f"Found device: {device_info.get('deviceName', 'Unknown')} ({device_id})"
+            "Found device: %s (%s)", device_info.get("deviceName", "Unknown"), device_id
         )
 
         coordinator = EufyCleanCoordinator(hass, eufy_login, device_info)
