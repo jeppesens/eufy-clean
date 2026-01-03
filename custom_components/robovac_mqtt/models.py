@@ -62,6 +62,7 @@ class VacuumState:
     station_clean_water: int = 0  # Percentage?
     station_waste_water: int = 0
     dock_auto_cfg: dict[str, Any] = field(default_factory=dict)
+    trigger_source: str = "unknown"
 
     # Accessories
     accessories: AccessoryState = field(default_factory=AccessoryState)

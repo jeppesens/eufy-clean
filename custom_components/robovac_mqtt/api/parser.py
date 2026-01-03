@@ -77,6 +77,16 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             else:
                 changes["charging"] = False
 
+            # Check for trigger source
+            if work_status.HasField("trigger"):
+                changes["trigger_source"] = _map_trigger_source(
+                    work_status.trigger.source
+                )
+
+            # Fallback/Override if cleaning.scheduled_task is explicit
+            if work_status.HasField("cleaning") and work_status.cleaning.scheduled_task:
+                changes["trigger_source"] = "schedule"
+
             # Update dock_status from WorkStatus if available
             # This helps clear "stuck" states (like Drying) if StationResponse stops updating
             # but WorkStatus continues to report (e.g. as Charging/Idle).
@@ -122,6 +132,23 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
         try:
             if key == DPS_MAP["BATTERY_LEVEL"]:
                 changes["battery_level"] = int(value)
+
+            elif key == DPS_MAP["CLEAN_SPEED"]:
+                changes["fan_speed"] = _map_clean_speed(value)
+
+            elif key == DPS_MAP["ERROR_CODE"]:
+                error_proto = decode(ErrorCode, value)
+                _LOGGER.debug(f"Decoded ErrorCode: {error_proto}")
+                # Repeated Scalar Field (warn) acts like a list
+                if len(error_proto.warn) > 0:
+                    code = error_proto.warn[0]
+                    changes["error_code"] = code
+                    changes["error_message"] = EUFY_CLEAN_ERROR_CODES.get(
+                        code, "Unknown Error"
+                    )
+                else:
+                    changes["error_code"] = 0
+                    changes["error_message"] = ""
 
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug(f"Received ACCESSORIES_STATUS: {value}")
@@ -237,6 +264,27 @@ def _map_work_status(status: WorkStatus) -> str:
         return "cleaning"
 
     return "idle"
+
+
+def _map_trigger_source(value: int) -> str:
+    """Map Trigger.Source to string."""
+    # 0: UNKNOWN
+    # 1: APP
+    # 2: KEY
+    # 3: TIMING
+    # 4: ROBOT
+    # 5: REMOTE_CTRL
+    if value == 1:
+        return "app"
+    if value == 2:
+        return "button"
+    if value == 3:
+        return "schedule"
+    if value == 4:
+        return "robot"
+    if value == 5:
+        return "remote_control"
+    return "unknown"
 
 
 def _map_clean_speed(value: Any) -> str:
