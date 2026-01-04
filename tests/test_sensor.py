@@ -21,6 +21,8 @@ def mock_coordinator():
     coordinator.device_name = "Test Vac"
     coordinator.device_model = "T2118"
     coordinator.data = VacuumState()
+    # Mock last_update_success for availability check
+    coordinator.last_update_success = True
     return coordinator
 
 
@@ -65,23 +67,39 @@ def test_dock_status_sensor(mock_coordinator):
 
 
 def test_water_level_sensor(mock_coordinator):
-    """Test clean water level sensor."""
-    mock_coordinator.data.station_clean_water = 50
-
+    """Test water level sensor with availability based on device capability."""
+    # Create sensor with availability_fn that checks received_fields
     entity = RoboVacSensor(
         mock_coordinator,
         "water_level",
         "Water Level",
         lambda s: s.station_clean_water,
         unit=PERCENTAGE,
+        availability_fn=lambda s: "station_clean_water" in s.received_fields,
     )
 
+    # Initially received_fields is empty
+    # Should be unavailable until we receive station_clean_water data
+    assert "station_clean_water" not in mock_coordinator.data.received_fields
+    assert entity.available is False
+
+    # Simulate receiving water level data from device
+    mock_coordinator.data.received_fields.add("station_clean_water")
+    mock_coordinator.data.station_clean_water = 50
+
+    # Now sensor should be available
+    assert entity.available is True
     assert entity.native_value == 50
     assert entity.native_unit_of_measurement == PERCENTAGE
 
-    # Update state
+    # Test value updates
     mock_coordinator.data.station_clean_water = 20
     assert entity.native_value == 20
+
+    # Test 0% water level (X10 with empty tank) is still available
+    mock_coordinator.data.station_clean_water = 0
+    assert entity.available is True
+    assert entity.native_value == 0
 
 
 def test_error_message_sensor(mock_coordinator):

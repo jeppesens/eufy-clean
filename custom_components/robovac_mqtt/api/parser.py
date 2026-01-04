@@ -25,6 +25,20 @@ from ..utils import decode
 _LOGGER = logging.getLogger(__name__)
 
 
+def _track_field(state: VacuumState, changes: dict[str, Any], field_name: str) -> None:
+    """Track that a field has been received from the device.
+
+    This is used by sensors to determine availability.
+    Only updates if the field isn't already tracked.
+    """
+    if field_name not in state.received_fields:
+        _LOGGER.debug("Tracking new field for availability: %s", field_name)
+        # Get current set from changes if already modified, else from state
+        current = changes.get("received_fields", state.received_fields).copy()
+        current.add(field_name)
+        changes["received_fields"] = current
+
+
 def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
     """Update VacuumState with new DPS data."""
     # Build a kwargs dict for replace()
@@ -44,9 +58,11 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             new_dock_status = _map_dock_status(station)
             # Debouncing is handled in coordinator, not here
             changes["dock_status"] = new_dock_status
+            _track_field(state, changes, "dock_status")
 
             if station.HasField("clean_water"):
                 changes["station_clean_water"] = station.clean_water.value
+                _track_field(state, changes, "station_clean_water")
 
             # Auto Empty Config
             if station.HasField("auto_cfg_status"):
@@ -176,6 +192,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug("Received ACCESSORIES_STATUS: %s", value)
                 changes["accessories"] = _parse_accessories(state.accessories, value)
+                _track_field(state, changes, "accessories")
 
             elif key == DPS_MAP["CLEANING_STATISTICS"]:
                 stats = decode(CleanStatistics, value)
@@ -183,6 +200,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 if stats.HasField("single"):
                     changes["cleaning_time"] = stats.single.clean_duration
                     changes["cleaning_area"] = stats.single.clean_area
+                    _track_field(state, changes, "cleaning_stats")
 
             elif key == DPS_MAP["SCENE_INFO"]:
                 _LOGGER.debug("Received SCENE_INFO: %s", value)
@@ -194,9 +212,14 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 if map_info:
                     changes["map_id"] = map_info.get("map_id", 0)
                     changes["rooms"] = map_info.get("rooms", [])
+                    _track_field(state, changes, "map_id")
 
         except Exception as e:
             _LOGGER.warning("Error parsing DPS %s: %s", key, e, exc_info=True)
+
+    # Log received_fields for debugging sensor availability
+    if "received_fields" in changes:
+        _LOGGER.debug("Received fields now: %s", changes["received_fields"])
 
     return replace(state, **changes)
 
