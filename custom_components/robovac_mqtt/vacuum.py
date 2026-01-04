@@ -1,172 +1,168 @@
-import logging
-from typing import Literal
+from __future__ import annotations
 
-from homeassistant.components.vacuum import (StateVacuumEntity, VacuumActivity,
-                                             VacuumEntityFeature)
+import logging
+from typing import Any
+
+from homeassistant.components.vacuum import (
+    StateVacuumEntity,
+    VacuumActivity,
+    VacuumEntityFeature,
+)
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .constants.hass import DEVICES, DOMAIN, VACS
-from .constants.state import (EUFY_CLEAN_CLEAN_SPEED,
-                              EUFY_CLEAN_NOVEL_CLEAN_SPEED)
-from .controllers.MqttConnect import MqttConnect
-from .EufyClean import EufyClean
+from .api.commands import build_command
+from .const import DOMAIN, EUFY_CLEAN_NOVEL_CLEAN_SPEED
+from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
+    """Set up vacuum entities for Eufy Clean devices."""
+    data = hass.data[DOMAIN][config_entry.entry_id]
+    coordinators: list[EufyCleanCoordinator] = data["coordinators"]
 
-    """Initialize my test integration 2 config entry."""
+    entities = []
+    for coordinator in coordinators:
+        _LOGGER.debug("Adding vacuum entity for %s", coordinator.device_name)
+        entities.append(RoboVacMQTTEntity(coordinator))
 
-    for device_id, device in hass.data[DOMAIN][DEVICES].items():
-        _LOGGER.info("Adding vacuum %s", device_id)
-        entity = RoboVacMQTTEntity(device, hass)
-        hass.data[DOMAIN][VACS][device_id] = entity
-        async_add_entities([entity])
-
-        await entity.pushed_update_handler()
+    async_add_entities(entities)
 
 
-class RoboVacMQTTEntity(StateVacuumEntity):
-    def __init__(self, item: MqttConnect, hass: HomeAssistant) -> None:
-        super().__init__()
-        self.vacuum = item
-        self.hass = hass
-        self._attr_unique_id = item.device_id
-        self._attr_name = item.device_model_desc
-        self._attr_model = item.device_model
-        self._attr_available = True
+class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEntity):
+    """Eufy Clean Vacuum Entity."""
+
+    _attr_has_entity_name = True
+    _attr_name = None
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize the entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = coordinator.device_id
+
+        self._attr_device_info = coordinator.device_info
+
         self._attr_fan_speed_list = EUFY_CLEAN_NOVEL_CLEAN_SPEED
-        self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, item.device_id)},
-            name=item.device_model_desc,
-            manufacturer="Eufy",
-            model=item.device_model,
-        )
-        self._state = None
-        #self._attr_battery_level = None
-        self._attr_fan_speed = None
         self._attr_supported_features = (
             VacuumEntityFeature.START
             | VacuumEntityFeature.PAUSE
             | VacuumEntityFeature.STOP
             | VacuumEntityFeature.STATUS
             | VacuumEntityFeature.STATE
-            #| VacuumEntityFeature.BATTERY
             | VacuumEntityFeature.FAN_SPEED
             | VacuumEntityFeature.RETURN_HOME
             | VacuumEntityFeature.SEND_COMMAND
         )
 
-        def _threadsafe_update():
-            self.hass.loop.call_soon_threadsafe(
-                lambda: self.hass.async_create_task(self.pushed_update_handler())
-            )
-
-        item.add_listener(_threadsafe_update)
-
     @property
     def activity(self) -> VacuumActivity | None:
-        if not self._state:
-            return None
+        """Return the current vacuum activity."""
+        state = self.coordinator.data.activity
 
-        state = self._state.lower()
-
-        if state in ("docked", "charging"):
-            return VacuumActivity.DOCKED
-        elif state in ("cleaning", "auto_cleaning", "spot_cleaning"):
+        if state == "cleaning":
             return VacuumActivity.CLEANING
-        elif state in ("paused",):
-            return VacuumActivity.PAUSED
-        elif state in ("returning", "returning_to_base"):
-            return VacuumActivity.RETURNING
-        elif state in ("error", "stuck"):
+        elif state == "docked":
+            return VacuumActivity.DOCKED
+        elif state == "charging":
+            return VacuumActivity.DOCKED
+        elif state == "error":
             return VacuumActivity.ERROR
-        elif state in ("idle", "standby"):
+        elif state == "returning":
+            return VacuumActivity.RETURNING
+        elif state == "idle":
             return VacuumActivity.IDLE
-        else:
-            return None
+        elif state == "paused":
+            return VacuumActivity.PAUSED
+
+        return None
 
     @property
-    def extra_state_attributes(self):
+    def fan_speed(self) -> str | None:
+        """Return the fan speed of the vacuum."""
+        return self.coordinator.data.fan_speed
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the state attributes."""
+        data = self.coordinator.data
         return {
-            #"battery_level": self._attr_battery_level,
-            "fan_speed": self._attr_fan_speed,
-            "status": self._state,
+            "battery_level": data.battery_level,
+            "fan_speed": data.fan_speed,
+            "cleaning_time": data.cleaning_time,
+            "cleaning_area": data.cleaning_area,
+            "task_status": data.task_status,
+            "trigger_source": data.trigger_source,
+            "error_code": data.error_code,
+            "error_message": data.error_message,
+            "status_code": data.status_code,
         }
 
-    async def pushed_update_handler(self):
-        await self.update_entity_values()
-        self.async_write_ha_state()
+    async def async_return_to_base(self, **kwargs: Any) -> None:
+        """Set the vacuum cleaner to return to the dock."""
+        await self.coordinator.async_send_command(build_command("return_to_base"))
 
-    async def update_entity_values(self):
-        #self._attr_battery_level = await self.vacuum.get_battery_level()
-        self._state = await self.vacuum.get_work_status()
+    async def async_start(self, **kwargs: Any) -> None:
+        """Start or resume the cleaning task."""
+        if self.activity == VacuumActivity.PAUSED:
+            await self.coordinator.async_send_command(build_command("play"))
+        else:
+            await self.coordinator.async_send_command(build_command("start_auto"))
 
-        try:
-            fan_speed = await self.vacuum.get_clean_speed()
-            if isinstance(fan_speed, str):
-                self._attr_fan_speed = fan_speed.lower()
-            elif isinstance(fan_speed, int):
-                self._attr_fan_speed = str(fan_speed)
-            else:
-                self._attr_fan_speed = None
-        except Exception as e:
-            _LOGGER.warning("Failed to get fan speed: %s", e)
-            self._attr_fan_speed = None
+    async def async_pause(self, **kwargs: Any) -> None:
+        """Pause the cleaning task."""
+        await self.coordinator.async_send_command(build_command("pause"))
 
-        _LOGGER.debug("Vacuum state: %s", self._state)
+    async def async_stop(self, **kwargs: Any) -> None:
+        """Stop the cleaning task."""
+        await self.coordinator.async_send_command(build_command("stop"))
 
-    async def async_return_to_base(self, **kwargs):
-        await self.vacuum.go_home()
+    async def async_clean_spot(self, **kwargs: Any) -> None:
+        """Perform a spot clean-up."""
+        await self.coordinator.async_send_command(build_command("clean_spot"))
 
-    async def async_start(self, **kwargs):
-        await self.vacuum.auto_clean()
+    async def async_set_fan_speed(self, fan_speed: str, **kwargs: Any) -> None:
+        """Set fan speed."""
+        if fan_speed not in self.fan_speed_list:
+            raise ValueError(f"Fan speed {fan_speed} not supported")
 
-    async def async_pause(self, **kwargs):
-        await self.vacuum.pause()
-
-    async def async_stop(self, **kwargs):
-        await self.vacuum.stop()
-
-    async def async_clean_spot(self, **kwargs):
-        await self.vacuum.spot_clean()
-
-    async def async_set_fan_speed(self, fan_speed: str, **kwargs):
-        if fan_speed not in EUFY_CLEAN_CLEAN_SPEED:
-            raise ValueError(f"Invalid fan speed: {fan_speed}")
-        enum_value = next(x for x in EUFY_CLEAN_CLEAN_SPEED if x.value == fan_speed)
-        await self.vacuum.set_clean_speed(enum_value)
+        await self.coordinator.async_send_command(
+            build_command("set_fan_speed", fan_speed=fan_speed)
+        )
 
     async def async_send_command(
         self,
-        command: Literal['scene_clean', 'room_clean','set_clean_param'],
-        params: dict | list | None = None,
-        **kwargs,
+        command: str,
+        params: dict[str, Any] | list[Any] | None = None,
+        **kwargs: Any,
     ) -> None:
+        """Send a raw command to the vacuum."""
         if command == "scene_clean":
-            if not params or not isinstance(params, dict) or "scene" not in params:
-                raise ValueError("params[scene] is required for scene_clean command")
-            scene = params["scene"]
-            await self.vacuum.scene_clean(scene)
-        elif command == "room_clean":
-            if not params or not isinstance(params, dict) or not isinstance(params.get("rooms"), list):
-                raise ValueError("params[rooms] is required for room_clean command")
-            rooms = [int(r) for r in params['rooms']]
-            map_id = int(params.get("map_id", 0))
-            await self.vacuum.room_clean(rooms, map_id)
-        elif command == "set_clean_param":
-            # Allow full flexible param dict — multiple nested keys supported
-            # Needs to be hardened before merging back | For testing purposes only
-            if not isinstance(params, dict):
-                raise ValueError("params must be a dict for set_clean_param")
-            await self.vacuum.set_clean_param(params)
-        else:
-            raise NotImplementedError(f"Command {command} not implemented")
+            if isinstance(params, dict) and "scene_id" in params:
+                await self.coordinator.async_send_command(
+                    build_command("scene_clean", scene_id=params["scene_id"])
+                )
+                return
 
+        elif command == "room_clean":
+            if isinstance(params, dict) and "room_ids" in params:
+                map_id = params.get("map_id") or self.coordinator.data.map_id or 1
+                await self.coordinator.async_send_command(
+                    build_command(
+                        "room_clean", room_ids=params["room_ids"], map_id=map_id
+                    )
+                )
+                return
+
+        _LOGGER.warning(
+            "Command %s with params %s not fully implemented or invalid.",
+            command,
+            params,
+        )

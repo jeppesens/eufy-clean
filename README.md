@@ -1,21 +1,92 @@
-# Eufy-Clean
+# Eufy-Clean (Home Assistant Custom Component)
+
 ## Overview
-This Eufy Clean repo provides an interface to interact with Eufy cleaning devices. It includes functionalities to login, pair new devices, and manage cleaning operations through cloud and MQTT connections.
-It is originally based on [eufy-clean](https://github.com/martijnpoppen/eufy-clean) by [martijnpoppen](https://github.com/martijnpoppen) but has been rewritten to use Python and adding support for Home Assistant.
+This repository is a maintained fork of [eufy-clean](https://github.com/jeppesens/eufy-clean) by [jeppesens](https://github.com/jeppesens), which was originally based on [eufy-clean](https://github.com/martijnpoppen/eufy-clean) by martijnpoppen.
+
+This project provides an interface to interact with Eufy cleaning devices via MQTT, with a specific focus on maintaining a robust **Home Assistant Custom Component**. It allows you to control cleaning scenes, specific rooms, and manage station configurations (wash frequency, auto-empty, etc.) directly from your smart home dashboard.
 
 ## FAQ
 - This repo only has support for MQTT enabled Eufy Vacuums, which means you need to have a device that supports MQTT. E.g the Robovac X10 Pro Omni.
 - This code was ported and tested on a Robovac X10 Pro Omni, but it should work on other models as well 🤞🏼
-- This code is written by me for me, feel free to use it and open issues, and PRs. I will try to help as much as I can, but I can't guarantee anything.
+- This is a personal project maintained for Home Assistant users. Contributions are welcome!
 
+## Features
+
+This custom component provides comprehensive control over your Eufy robot vacuum and its cleaning station:
+
+### Vacuum Control
+- **Start/Stop/Pause** cleaning operations
+- **Return to dock** command
+- **Scene Selection** - Trigger pre-configured cleaning scenes (e.g., "Full Home Deep Clean") directly via a dynamic select entity or service call
+- **Room-specific cleaning** - Clean individual rooms or combinations of rooms
+- **Battery monitoring** - Track battery level and charging status
+
+### Dock tasks
+- **wash mop** - trigger washing of the mop
+- **dry mop** - trigger drying of the mop
+- **stop dry mop** - stop the drying process
+- **empty dust bin** - trigger emptying of the dust bin
+
+### Dock Configuration
+All dock settings are organized under the **Configuration** category in your device settings:
+
+#### Mop Washing Settings
+- **Wash Frequency Mode**: Choose between `ByRoom` (wash after each room) or `ByTime` (wash after set duration)
+- **Wash Frequency Value**: Set wash interval from 15-25 minutes (when using ByTime mode)
+- **Auto Mop Washing**: Enable/disable automatic mop washing
+
+#### Drying Settings
+- **Dry Duration**: Choose drying time - `2h`, `3h`, or `4h`
+
+#### Auto-Empty Settings
+- **Auto Empty**: Enable/disable the auto-empty feature
+- **Auto Empty Mode**: Configure emptying frequency:
+  - `Smart`: Intelligent auto-detection
+  - `15 min`, `30 min`, `45 min`, `60 min`: Fixed time intervals
+
+### Accessory Maintenance
+The integration tracks the usage of consumable accessories and allows you to reset them after replacement.
+
+#### Sensors
+-   **Consumable Life**: Monitors the remaining life (in hours) for:
+    -   Filter
+    -   Side Brush
+    -   Rolling Brush
+    -   Sensors
+    -   Mop
+    -   Cleaning Tray (Scrape)
+
+#### Reset Buttons
+-   Dedicated buttons are available to reset the usage counter for each accessory when you replace them.
+
+> [!NOTE]
+> The Eufy App displays two types of accessory tracking: "Maintenance" (recommended cleaning) and "Replacement". The "Maintenance" alerts are often calculated locally by the App based on time intervals and are **not** transmitted via MQTT. This integration only tracks the "Replacement" life, which is the actual usage data reported by the device firmware.
+
+### Sensors
+- Battery level percentage
+- Charging status
+- Work status and mode
+- **Extended Device Info**: Serial number, MAC address, and Firmware version are now available in the device info panel.
+- **Error Tracking**: Real-time error monitoring with detailed descriptions (e.g., "Wheel Stuck", "Sensor Dirty") available as attributes and sensors.
 
 ## Usage
 
-### Home Assistant
-If you want to use this code with Home Assistant, you should be able to install it with HACS by adding this repo.
-Login with credentials from the app and you should be able to see your devices in Home Assistant.
+### Installation via HACS
+1.  Open HACS in Home Assistant.
+2.  Add this repository as a custom repository.
+3.  Install "Eufy Robovac MQTT".
+4.  Restart Home Assistant.
 
-To clean scenes, you can use the following service call:
+### Configuration
+1.  Go to Settings -> Devices & Services.
+2.  Click "Add Integration".
+3.  Search for "Eufy Robovac MQTT" and follow the setup flow.
+4.  Login with your Eufy App credentials.
+
+### Cleaning Scenes
+The integration provides a dynamic **Scene** select entity (under the Configuration category) that automatically populates with all **valid** scenes from your Eufy app. Selecting an option in the UI will immediately trigger that cleaning routine.
+
+Alternatively, you can use the following service call:
 ```yaml
 action: vacuum.send_command
 metadata: {}
@@ -26,10 +97,15 @@ data:
 target:
     entity_id: vacuum.robovac_x10_pro_omni
 ```
-worth noting that the `scene` parameter is the scene number, which I have just guessed based on the app.
-Seems like there is 3 default scenes end then your scenes start from 4 and increments one in the order you created them.
+*Note: The `scene` parameter corresponds to scene numbers. Default scenes are typically 1-3, with custom scenes starting from 4.*
 
-To clean a specific room, you can use the following service call:
+### Cleaning Specific Rooms
+
+The integration provides two ways to clean specific rooms:
+
+1.  **Room Selection Entity**: A dynamic select entity (under the **Configuration** category) that automatically populates with all discovered rooms from your current active map. Selecting a room will trigger a clean for that specific room.
+2.  **Service Call**: For more advanced automation, you can use the following service call:
+
 ```yaml
 action: vacuum.send_command
 target:
@@ -42,74 +118,32 @@ data:
       - 3
       - 4
 ```
-So which IDs are your rooms? Seems like when mapping it goes to the next room to the left, so leaving the room with the base station and going to the left it will be 1, then 2, and so on. And your basestation is located in the last room. I mapped the ids by using `vacuum.room_clean` service and looking at the app. Is there a better way? I hope so, but I don't know it.
+
+### Map and Room Identification
+- **Active Map Sensor**: Use the `sensor.[vacuum_name]_active_map` entity to see which map the vacuum is currently on (e.g., `4`, `6`). This is useful for providing the correct `map_id` in service calls.
+- **Map Switching**: **Currently not supported.** If you need to switch the active map, you must do so within the official Eufy Clean app. Once switched, the integration will automatically update the `Active Map` sensor and `Room Selection` list.
+- **Room IDs**: If you are using service calls, you can find your room IDs directly in the **Room Selection** dropdown, where they are displayed alongside the room names (e.g., `Kitchen (ID: 3)`). This eliminates the need to dig through logs or the mobile app.
 
 > [!TIP]
-> If you need get an issue like "Unable to identify position" most likely, there's not a bug in this repo, but you have had many maps, and your default map is higher. Keep trying, 20 is not an abnormally high number!
-
-
-### Example
-If you want to use this code without using Home Assistant, you can use the `EufyClean` class directly. Here's a simple example of how to use it:
-
-```py
-import asyncio
-import os
-
-from custom_components.robovac_mqtt.EufyClean import EufyClean
-
-
-async def setup():
-    eufy_clean = EufyClean(os.getenv('EUFY_USERNAME'), os.getenv('EUFY_PASSWORD'))
-    await eufy_clean.init()
-    devices = await eufy_clean.get_devices()
-    print(devices)
-
-    device_id = next((d['deviceId'] for d in devices if d), None)
-    if not device_id:
-        return
-    device = await eufy_clean.init_device(device_id)
-    await device.connect()
-    print(device)
-    status = await device.get_work_status()
-    print(status)
-    battery_level = await device.get_battery_level()
-    print(battery_level)
-    await device.go_home()
-    # await device.set_clean_param({'clean_type': 'SWEEP_ONLY'})
-    """
-    // full home daily clean: 1
-    home: 1,
-    // full home deep clean: 2
-    // Post-Meal Clean: 3
-    morning: 4,
-    afternoon: 5,
-    weekly: 6,
-    """
-    await device.scene_clean(4)
-    # await device.play()
-    # await device.go_home()
-    status = await device.get_work_status()
-    mode = await device.get_work_mode()
-    print(status, mode)
-
-
-if __name__ == '__main__':
-    import dotenv
-    dotenv.load_dotenv()
-    asyncio.run(setup())
-```
-Added a battery charge sensor so I can quicky find out the charge level of the vac since we now have access to offpek charging so the vac can be recharged on cheap electric if you have access to it from you domestic electricity supplier
-![Screenshot](assets/eufy-battery.png)
+> If you get an error like "Unable to identify position", it's likely that the `map_id` provided in your service call doesn't match the vacuum's current hardware map. Check the **Active Map** sensor to verify.
 
 ## Development
-There is things left to do here, like adding more commands and testing on other devices. If you want to help, feel free to open a PR.
+This project is maintained as a Home Assistant component. Issues and PRs should be relevant to the integration's functionality within Home Assistant.
+
+### Pending Features
 - Clean room(s) with custom cleaning mode
-- Track consumables, water, dustbin, and filter etc
-- Track errors
 - Map management
 - Locate device
 - Current position
-- Many more...
+
+### Local Development & Testing
+Included in this repository is a `docker-compose.yml` file to facilitate local testing of the integration.
+
+1.  Ensure you have Docker and Docker Compose installed.
+2.  Run `docker compose up` in the root directory.
+3.  This will start a local Home Assistant instance accessible at `http://localhost:8123`.
+4.  The `custom_components/robovac_mqtt` directory is mounted into the container, making the custom component available in Home Assistant.
+5.  You will have to follow the steps mentioned in ### configuration to add your device to home assistant the first time you start the container. After that, you can stop the container and restart it whenever you want to make changes to the custom component.
 
 ## Contact
 For any questions or issues, please open an issue on the GitHub repository.
