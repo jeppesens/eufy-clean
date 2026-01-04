@@ -104,34 +104,45 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             # stops updating but WorkStatus continues to report (e.g. as Charging/Idle).
             if work_status.HasField("station"):
                 st = work_status.station
-                current_dock = changes.get("dock_status", state.dock_status)
+
+                # Track if any dock activity is detected in this message
+                has_dock_activity = False
 
                 # Washing / Drying
                 if st.HasField("washing_drying_system"):
+                    has_dock_activity = True
                     # 0=WASHING, 1=DRYING
                     if st.washing_drying_system.state == 1:
                         changes["dock_status"] = "Drying"
                     else:
                         changes["dock_status"] = "Washing"
-                elif current_dock in ("Washing", "Drying"):
-                    # If field missing but we were washing/drying, assume done
-                    changes["dock_status"] = "Idle"
 
                 # Dust Collection
                 if st.HasField("dust_collection_system"):
+                    has_dock_activity = True
                     # 0=EMPTYING
                     changes["dock_status"] = "Emptying dust"
-                elif current_dock == "Emptying dust":
-                    changes["dock_status"] = "Idle"
 
                 # Water Injection
                 if st.HasField("water_injection_system"):
+                    has_dock_activity = True
                     # 0=ADDING, 1=EMPTYING
                     if st.water_injection_system.state == 0:
                         changes["dock_status"] = "Adding clean water"
-                elif current_dock == "Adding clean water":
-                    # Only clear if we were adding water
-                    changes["dock_status"] = "Idle"
+
+                # Only reset to Idle if:
+                # 1. station field is present (we have positive info about dock)
+                # 2. No dock activity sub-fields are present
+                # 3. We were previously in a dock activity state
+                if not has_dock_activity:
+                    current_dock = changes.get("dock_status", state.dock_status)
+                    if current_dock in (
+                        "Washing",
+                        "Drying",
+                        "Emptying dust",
+                        "Adding clean water",
+                    ):
+                        changes["dock_status"] = "Idle"
 
         except Exception as e:
             _LOGGER.warning("Error parsing Work Status: %s", e, exc_info=True)
