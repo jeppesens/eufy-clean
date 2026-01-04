@@ -215,7 +215,18 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
         if is_resumable:
             return "Charging (Resume)"
 
-        # If not resumable the task is effectively done.
+        # Check if this is a mid-cleaning wash pause vs post-cleaning
+        # If cleaning field exists with PAUSED state while dock is washing,
+        # this is a mid-cleaning pause, not task completion
+        if status.HasField("cleaning") and status.cleaning.state == 1:  # PAUSED
+            if dock_status in (
+                "Washing",
+                "Adding clean water",
+                "Recycling waste water",
+            ):
+                return "Washing Mop"
+
+        # If not resumable and cleaning field is absent, the task is complete
         return "Completed"
 
     if s == 7:  # Returning / Go Home
