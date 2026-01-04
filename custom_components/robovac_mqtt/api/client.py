@@ -8,7 +8,7 @@ import tempfile
 import time
 from collections.abc import Callable
 from functools import partial
-from os import path, unlink
+from os import unlink
 from typing import Any
 
 from paho.mqtt import client as mqtt
@@ -114,7 +114,8 @@ class EufyCleanClient:
 
             # Outer wrapper
             # client_id needs to match what Eufy expects for the session?
-            # MqttConnect uses: f"android-{self.mqttCredentials['app_name']}-eufy_android_{self.openudid}_{self.mqttCredentials['user_id']}"
+            # MqttConnect uses:
+            # f"android-{self.mqttCredentials['app_name']}-eufy_android_{self.openudid}_{self.mqttCredentials['user_id']}"
             client_id = (
                 f"android-{self.app_name}-eufy_android_{self.openudid}_{self.user_id}"
             )
@@ -135,18 +136,21 @@ class EufyCleanClient:
             }
 
             topic = f"cmd/eufy_home/{self.device_model}/{self.device_id}/req"
-            _LOGGER.debug(f"Sending command to {topic}: {data_payload}")
+            _LOGGER.debug("Sending command to %s: %s", topic, data_payload)
 
             await self.send_bytes(topic, json.dumps(mqtt_val).encode())
 
         except Exception as e:
-            _LOGGER.error(f"Error sending command: {e}")
+            _LOGGER.error("Error sending command: %s", e)
 
     async def connect(self):
         """Connect to MQTT broker."""
         self._loop = asyncio.get_running_loop()
 
-        client_id = f"android-{self.app_name}-eufy_android_{self.openudid}_{self.user_id}-{int(time.time() * 1000)}"
+        client_id = (
+            f"android-{self.app_name}-eufy_android_{self.openudid}_{self.user_id}"
+            f"-{int(time.time() * 1000)}"
+        )
 
         _LOGGER.debug("Initializing MQTT client with ID: %s", client_id)
 
@@ -171,7 +175,7 @@ class EufyCleanClient:
         self._mqtt_client.on_disconnect = self._on_disconnect
 
         # Async connect
-        _LOGGER.debug(f"Connecting to MQTT broker at {self.endpoint}...")
+        _LOGGER.debug("Connecting to MQTT broker at %s...", self.endpoint)
         await self._loop.run_in_executor(
             None, partial(self._mqtt_client.connect, self.endpoint, 8883, 60)
         )

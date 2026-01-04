@@ -4,7 +4,6 @@ from typing import Any
 
 from ..const import (
     DPS_MAP,
-    EUFY_CLEAN_CLEAN_SPEED,
     EUFY_CLEAN_CONTROL,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
 )
@@ -72,7 +71,9 @@ def build_room_clean_command(room_ids: list[int], map_id: int = 3) -> dict[str, 
     )
     value = encode_message(
         ModeCtrlRequest(
-            method=int(EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN),  # type: ignore[arg-type]
+            method=int(
+                EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN
+            ),  # type: ignore[arg-type]
             select_rooms_clean=rooms_clean,
         )
     )

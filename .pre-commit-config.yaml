@@ -27,7 +27,7 @@ repos:
     rev: 7.3.0
     hooks:
       - id: flake8
-        files: ^(homeassistant|script|tests)/.+\.py$
+        files: ^(custom_components|homeassistant|script|tests)/.+\.py$
   - repo: https://github.com/PyCQA/isort
     rev: 7.0.0
     hooks:

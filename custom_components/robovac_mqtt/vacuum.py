@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Any, Literal
+from typing import Any
 
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
@@ -14,7 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.commands import build_command
-from .const import DOMAIN, EUFY_CLEAN_CLEAN_SPEED, EUFY_CLEAN_NOVEL_CLEAN_SPEED
+from .const import DOMAIN, EUFY_CLEAN_NOVEL_CLEAN_SPEED
 from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -162,5 +162,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                 return
 
         _LOGGER.warning(
-            f"Command {command} with params {params} not fully implemented or invalid."
+            "Command %s with params %s not fully implemented or invalid.",
+            command,
+            params,
         )

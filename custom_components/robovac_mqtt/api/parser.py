@@ -40,7 +40,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
         value = dps[DPS_MAP["STATION_STATUS"]]
         try:
             station = decode(StationResponse, value)
-            _LOGGER.debug(f"Decoded StationResponse: {station}")
+            _LOGGER.debug("Decoded StationResponse: %s", station)
             new_dock_status = _map_dock_status(station)
             # Debouncing is handled in coordinator, not here
             changes["dock_status"] = new_dock_status
@@ -54,14 +54,14 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                     station.auto_cfg_status, preserving_proto_field_name=True
                 )
         except Exception as e:
-            _LOGGER.warning(f"Error parsing Station Status: {e}", exc_info=True)
+            _LOGGER.warning("Error parsing Station Status: %s", e, exc_info=True)
 
     # Process Work Status
     if DPS_MAP["WORK_STATUS"] in dps:
         value = dps[DPS_MAP["WORK_STATUS"]]
         try:
             work_status = decode(WorkStatus, value)
-            _LOGGER.debug(f"Decoded WorkStatus: {work_status}")
+            _LOGGER.debug("Decoded WorkStatus: %s", work_status)
             changes["activity"] = _map_work_status(work_status)
             changes["status_code"] = work_status.state
 
@@ -83,11 +83,13 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 trigger_source = _map_trigger_source(work_status.trigger.source)
 
             # Infer trigger source from Work Mode if unknown
-            # Many robots (like X10 Pro Omni) do not send trigger field for specific cleaning modes
+            # Many robots (like X10 Pro Omni) do not send trigger field
+            # for specific cleaning modes
             if trigger_source == "unknown" and work_status.HasField("mode"):
                 mode_val = work_status.mode.value
                 # SELECT_ROOM (1), SELECT_ZONE (2), SPOT (3), FAST_MAPPING (4),
-                # GLOBAL_CRUISE (5), ZONES_CRUISE (6), POINT_CRUISE (7), SCENE (8), SMART_FOLLOW (9)
+                # GLOBAL_CRUISE (5), ZONES_CRUISE (6), POINT_CRUISE (7),
+                # SCENE (8), SMART_FOLLOW (9)
                 if mode_val in (1, 2, 3, 4, 5, 6, 7, 8, 9):
                     trigger_source = "app"
 
@@ -98,8 +100,8 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 changes["trigger_source"] = "schedule"
 
             # Update dock_status from WorkStatus if available
-            # This helps clear "stuck" states (like Drying) if StationResponse stops updating
-            # but WorkStatus continues to report (e.g. as Charging/Idle).
+            # This helps clear "stuck" states (like Drying) if StationResponse
+            # stops updating but WorkStatus continues to report (e.g. as Charging/Idle).
             if work_status.HasField("station"):
                 st = work_status.station
                 current_dock = changes.get("dock_status", state.dock_status)
@@ -132,7 +134,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                     changes["dock_status"] = "Idle"
 
         except Exception as e:
-            _LOGGER.warning(f"Error parsing Work Status: {e}", exc_info=True)
+            _LOGGER.warning("Error parsing Work Status: %s", e, exc_info=True)
 
     for key, value in dps.items():
         # specialized keys handled above, skip them here?
@@ -148,7 +150,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
 
             elif key == DPS_MAP["ERROR_CODE"]:
                 error_proto = decode(ErrorCode, value)
-                _LOGGER.debug(f"Decoded ErrorCode: {error_proto}")
+                _LOGGER.debug("Decoded ErrorCode: %s", error_proto)
                 # Repeated Scalar Field (warn) acts like a list
                 if len(error_proto.warn) > 0:
                     code = error_proto.warn[0]
@@ -161,29 +163,29 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                     changes["error_message"] = ""
 
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
-                _LOGGER.debug(f"Received ACCESSORIES_STATUS: {value}")
+                _LOGGER.debug("Received ACCESSORIES_STATUS: %s", value)
                 changes["accessories"] = _parse_accessories(state.accessories, value)
 
             elif key == DPS_MAP["CLEANING_STATISTICS"]:
                 stats = decode(CleanStatistics, value)
-                _LOGGER.debug(f"Decoded CleanStatistics: {stats}")
+                _LOGGER.debug("Decoded CleanStatistics: %s", stats)
                 if stats.HasField("single"):
                     changes["cleaning_time"] = stats.single.clean_duration
                     changes["cleaning_area"] = stats.single.clean_area
 
             elif key == DPS_MAP["SCENE_INFO"]:
-                _LOGGER.debug(f"Received SCENE_INFO: {value}")
+                _LOGGER.debug("Received SCENE_INFO: %s", value)
                 changes["scenes"] = _parse_scene_info(value)
 
             elif key == DPS_MAP["MAP_DATA"]:
-                _LOGGER.debug(f"Received MAP_DATA: {value}")
+                _LOGGER.debug("Received MAP_DATA: %s", value)
                 map_info = _parse_map_data(value)
                 if map_info:
                     changes["map_id"] = map_info.get("map_id", 0)
                     changes["rooms"] = map_info.get("rooms", [])
 
         except Exception as e:
-            _LOGGER.warning(f"Error parsing DPS {key}: {e}", exc_info=True)
+            _LOGGER.warning("Error parsing DPS %s: %s", key, e, exc_info=True)
 
     return replace(state, **changes)
 
@@ -213,7 +215,18 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
         if is_resumable:
             return "Charging (Resume)"
 
-        # If not resumable the task is effectively done.
+        # Check if this is a mid-cleaning wash pause vs post-cleaning
+        # If cleaning field exists with PAUSED state while dock is washing,
+        # this is a mid-cleaning pause, not task completion
+        if status.HasField("cleaning") and status.cleaning.state == 1:  # PAUSED
+            if dock_status in (
+                "Washing",
+                "Adding clean water",
+                "Recycling waste water",
+            ):
+                return "Washing Mop"
+
+        # If not resumable and cleaning field is absent, the task is complete
         return "Completed"
 
     if s == 7:  # Returning / Go Home
@@ -345,7 +358,7 @@ def _parse_scene_info(value: Any) -> list[dict[str, Any]]:
     """Parse SceneResponse from DPS."""
     try:
         scene_response = decode(SceneResponse, value, has_length=True)
-        _LOGGER.debug(f"Decoded SceneResponse: {scene_response}")
+        _LOGGER.debug("Decoded SceneResponse: %s", scene_response)
         if not scene_response or not scene_response.infos:
             return []
 
@@ -361,7 +374,7 @@ def _parse_scene_info(value: Any) -> list[dict[str, Any]]:
                 )
         return scenes
     except Exception as e:
-        _LOGGER.debug(f"Error parsing scene info: {e} | Raw: {value}")
+        _LOGGER.debug("Error parsing scene info: %s | Raw: %s", e, value)
         return []
 
 
@@ -371,27 +384,27 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
     try:
         universal_data = decode(UniversalDataResponse, value, has_length=True)
         if universal_data:
-            _LOGGER.debug(f"Decoded UniversalDataResponse: {universal_data}")
+            _LOGGER.debug("Decoded UniversalDataResponse: %s", universal_data)
         if universal_data and universal_data.cur_map_room.map_id:
             rooms = [
                 {"id": r.id, "name": r.name} for r in universal_data.cur_map_room.data
             ]
             return {"map_id": universal_data.cur_map_room.map_id, "rooms": rooms}
     except Exception as e:
-        _LOGGER.debug(f"UniversalDataResponse parse failed: {e}")
+        _LOGGER.debug("UniversalDataResponse parse failed: %s", e)
 
     # RoomParams
     try:
         room_params = decode(RoomParams, value, has_length=True)
         if room_params:
-            _LOGGER.debug(f"Decoded RoomParams: {room_params}")
+            _LOGGER.debug("Decoded RoomParams: %s", room_params)
         if room_params and room_params.map_id:
             rooms = [{"id": r.id, "name": r.name} for r in room_params.rooms]
             return {"map_id": room_params.map_id, "rooms": rooms}
     except Exception as e:
-        _LOGGER.debug(f"RoomParams parse failed: {e}")
+        _LOGGER.debug("RoomParams parse failed: %s", e)
 
-    _LOGGER.debug(f"Failed to parse map data. Raw: {value}")
+    _LOGGER.debug("Failed to parse map data. Raw: %s", value)
     return None
 
 
@@ -399,7 +412,7 @@ def _parse_accessories(current_state: AccessoryState, value: Any) -> AccessorySt
     """Parse ConsumableResponse from DPS."""
     try:
         response = decode(ConsumableResponse, value)
-        _LOGGER.debug(f"Decoded ConsumableResponse: {response}")
+        _LOGGER.debug("Decoded ConsumableResponse: %s", response)
         if not response.HasField("runtime"):
             return current_state
 
@@ -428,5 +441,5 @@ def _parse_accessories(current_state: AccessoryState, value: Any) -> AccessorySt
         return replace(current_state, **changes)
 
     except Exception as e:
-        _LOGGER.debug(f"Error parsing accessory info: {e}")
+        _LOGGER.debug("Error parsing accessory info: %s", e)
         return current_state

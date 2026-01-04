@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from base64 import b64decode, b64encode
-from typing import Any, Type, TypeVar
+from typing import Any, TypeVar
 
 from google.protobuf.message import Message
 
@@ -11,7 +11,7 @@ async def sleep(ms: int):
     await asyncio.sleep(ms / 1000)
 
 
-# This code comes from here: https://github.com/CodeFoodPixels/robovac/issues/68#issuecomment-2119573501
+# This code comes from here: https://github.com/CodeFoodPixels/robovac/issues/68#issuecomment-2119573501  # noqa: E501
 
 T = TypeVar("T", bound=Message)
 
