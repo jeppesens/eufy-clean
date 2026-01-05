@@ -27,7 +27,7 @@ def test_mid_cleaning_wash_no_flapping():
 
     # Sequence 1: Robot is cleaning (state 5)
     # DPS 153: WorkStatus - state: CLEANING, scheduled_task: true
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "EgoCCAEQBRoAMgIYAXICIgB6AA=="}
     )
     assert state.task_status == "Cleaning"
@@ -35,7 +35,7 @@ def test_mid_cleaning_wash_no_flapping():
 
     # Sequence 2: Robot pauses for mid-cleaning wash
     # DPS 153: WorkStatus - state: CLEANING, cleaning.state: PAUSED, go_wash.mode: WASHING
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "HAoCCAEQBRoAMgQIARgBOgIQAXIGCgIIASIAegA="}
     )
     first_status = state.task_status
@@ -45,7 +45,7 @@ def test_mid_cleaning_wash_no_flapping():
 
     # Sequence 3: Dock starts adding clean water
     # DPS 173: StationResponse - state: WASHING, clear_water_adding: true
-    state = update_state(
+    state, _ = update_state(
         state,
         {
             DPS_MAP[
@@ -57,7 +57,7 @@ def test_mid_cleaning_wash_no_flapping():
 
     # Sequence 4: Robot reports CLEANING again (continuing wash)
     # DPS 153: WorkStatus - state: CLEANING, scheduled_task: true (no go_wash means still at dock)
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "EgoCCAEQBRoAMgIYAXICIgB6AA=="}
     )
     # Task status can transition between Washing Mop and Cleaning during dock operations
@@ -68,14 +68,14 @@ def test_mid_cleaning_wash_no_flapping():
 
     # Sequence 5: Robot pauses again with wash mode
     # DPS 153: WorkStatus - state: CLEANING, cleaning.state: PAUSED, go_wash.mode: WASHING
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "GgoCCAEQBRoAMgQIARgBOgIQAXIECgAiAHoA"}
     )
     assert state.task_status == "Washing Mop"
 
     # Sequence 6: Dock finishes adding water, goes idle
     # DPS 173: StationResponse - state: IDLE
-    state = update_state(
+    state, _ = update_state(
         state,
         {
             DPS_MAP[
@@ -87,7 +87,7 @@ def test_mid_cleaning_wash_no_flapping():
 
     # Sequence 7: Dock starts washing with recycled water
     # DPS 173: StationResponse - state: WASHING, waste_water_recycling: true
-    state = update_state(
+    state, _ = update_state(
         state,
         {
             DPS_MAP[
@@ -99,7 +99,7 @@ def test_mid_cleaning_wash_no_flapping():
 
     # Sequence 8: Robot reports CLEANING again during wash
     # DPS 153: WorkStatus - state: CLEANING, scheduled_task: true
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "EgoCCAEQBRoAMgIYAXICIgB6AA=="}
     )
     assert state.task_status in (
@@ -120,7 +120,7 @@ def test_post_cleaning_stays_completed():
 
     # Sequence 1: Cleaning completes - robot in CHARGING state with NO cleaning field
     # DPS 153: WorkStatus - state: CHARGING (state 3), no cleaning field
-    state = update_state(state, {DPS_MAP["WORK_STATUS"]: "ChADGgByAiIAegA="})
+    state, _ = update_state(state, {DPS_MAP["WORK_STATUS"]: "ChADGgByAiIAegA="})
     assert (
         state.task_status == "Completed"
     ), "Should be Completed when charging and no cleaning field"
@@ -128,7 +128,7 @@ def test_post_cleaning_stays_completed():
 
     # Sequence 2: Dock starts washing (post-cleaning final wash)
     # DPS 173: StationResponse - state: WASHING
-    state = update_state(
+    state, _ = update_state(
         state,
         {
             DPS_MAP[
@@ -140,14 +140,14 @@ def test_post_cleaning_stays_completed():
 
     # Sequence 3: Robot still in CHARGING state (no cleaning field)
     # Task status should STAY "Completed" even though dock is washing
-    state = update_state(state, {DPS_MAP["WORK_STATUS"]: "ChADGgByAiIAegA="})
+    state, _ = update_state(state, {DPS_MAP["WORK_STATUS"]: "ChADGgByAiIAegA="})
     assert (
         state.task_status == "Completed"
     ), "Task status should stay Completed after cleaning ends, even during final wash"
 
     # Sequence 4: Dock does recycling
     # DPS 173: StationResponse - waste_water_recycling: true
-    state = update_state(
+    state, _ = update_state(
         state,
         {
             DPS_MAP[
@@ -159,7 +159,7 @@ def test_post_cleaning_stays_completed():
 
     # Sequence 5: Robot still reports CHARGING (no cleaning field)
     # Task status should STILL be "Completed"
-    state = update_state(state, {DPS_MAP["WORK_STATUS"]: "ChADGgByAiIAegA="})
+    state, _ = update_state(state, {DPS_MAP["WORK_STATUS"]: "ChADGgByAiIAegA="})
     assert (
         state.task_status == "Completed"
     ), "Task status must stay Completed, not change to Washing Mop post-cleaning"
@@ -177,7 +177,7 @@ def test_mid_cleaning_with_paused_state():
     state = VacuumState()
 
     # Set initial state with dock washing
-    state = update_state(
+    state, _ = update_state(
         state,
         {
             DPS_MAP[
@@ -190,7 +190,7 @@ def test_mid_cleaning_with_paused_state():
     # KEY SCENARIO 1: Robot reports CHARGING but cleaning.state: PAUSED is present
     # DPS 153: WorkStatus - state: CHARGING (3), cleaning.state: PAUSED
     # This is the critical flapping trigger
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "EgoCCAEQAxoAMgIIAXICIgB6AA=="}
     )
 
@@ -204,7 +204,7 @@ def test_mid_cleaning_with_paused_state():
 
     # KEY SCENARIO 2: Robot alternates to CLEANING with go_wash.mode: WASHING
     # DPS 153: state: CLEANING, cleaning.state: PAUSED, go_wash.mode: WASHING
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "GAoCCAEQBRoAMgIIAToCEAFyBAoAIgB6AA=="}
     )
     assert (
@@ -213,7 +213,7 @@ def test_mid_cleaning_with_paused_state():
 
     # KEY SCENARIO 3: Back to CHARGING again
     # This would cause flapping without the fix
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "EgoCCAEQAxoAMgIIAXICIgB6AA=="}
     )
     assert (
@@ -221,7 +221,7 @@ def test_mid_cleaning_with_paused_state():
     ), "Should STAY 'Washing Mop', not flap back to 'Completed'"
 
     # Clean up - dock finishes washing
-    state = update_state(
+    state, _ = update_state(
         state,
         {
             DPS_MAP[
@@ -232,7 +232,7 @@ def test_mid_cleaning_with_paused_state():
     assert state.dock_status == "Idle"
 
     # Now robot should show Completed
-    state = update_state(
+    state, _ = update_state(
         state, {DPS_MAP["WORK_STATUS"]: "EgoCCAEQAxoAMgIIAXICIgB6AA=="}
     )
     # After washing is done (dock_status is Idle, not washing), it should be Completed

@@ -20,7 +20,7 @@ def test_update_state_battery():
     """Test updating battery level."""
     state = VacuumState()
     dps = {DPS_MAP["BATTERY_LEVEL"]: "85"}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.battery_level == 85
 
 
@@ -36,7 +36,7 @@ def test_update_state_work_status(mock_decode):
     mock_decode.return_value = mock_status
 
     dps = {DPS_MAP["WORK_STATUS"]: "some_encoded_string"}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
 
     assert new_state.activity == "cleaning"
     assert new_state.status_code == 4
@@ -53,7 +53,7 @@ def test_update_state_error_code(mock_decode):
     mock_decode.return_value = mock_error
 
     dps = {DPS_MAP["ERROR_CODE"]: "some_encoded_string"}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
 
     assert new_state.error_code == 1
     assert new_state.error_message == "CRASH BUFFER STUCK"
@@ -79,7 +79,7 @@ def test_update_state_station_status(mock_decode):
     mock_decode.return_value = mock_station
 
     dps = {DPS_MAP["STATION_STATUS"]: "some_encoded_string"}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
 
     assert new_state.dock_status == "Emptying dust"
 

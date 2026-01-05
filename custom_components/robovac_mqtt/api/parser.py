@@ -39,8 +39,17 @@ def _track_field(state: VacuumState, changes: dict[str, Any], field_name: str) -
         changes["received_fields"] = current
 
 
-def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
-    """Update VacuumState with new DPS data."""
+def update_state(
+    state: VacuumState, dps: dict[str, Any]
+) -> tuple[VacuumState, dict[str, Any]]:
+    """Update VacuumState with new DPS data.
+
+    Returns:
+        A tuple of (new_state, changes_dict) where changes_dict contains
+        only the fields that were explicitly set from this DPS message.
+        This allows callers to distinguish between a field being actively
+        set vs inherited from previous state.
+    """
     # Build a kwargs dict for replace()
     changes: dict[str, Any] = {}
 
@@ -221,7 +230,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
     if "received_fields" in changes:
         _LOGGER.debug("Received fields now: %s", changes["received_fields"])
 
-    return replace(state, **changes)
+    return replace(state, **changes), changes
 
 
 def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:

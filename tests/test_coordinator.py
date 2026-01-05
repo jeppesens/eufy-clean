@@ -38,7 +38,7 @@ def test_coordinator_init(mock_hass, mock_login):
     with patch(
         "custom_components.robovac_mqtt.coordinator.update_state"
     ) as mock_update:
-        mock_update.return_value = VacuumState(battery_level=100)
+        mock_update.return_value = (VacuumState(battery_level=100), {})
 
         coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
 
@@ -125,7 +125,7 @@ def test_handle_mqtt_message(mock_hass, mock_login):
         "custom_components.robovac_mqtt.coordinator.update_state"
     ) as mock_update:
         new_state = VacuumState(battery_level=50)
-        mock_update.return_value = new_state
+        mock_update.return_value = (new_state, {})
 
         coordinator._handle_mqtt_message(payload_bytes)
 

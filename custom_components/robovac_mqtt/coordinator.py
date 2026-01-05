@@ -49,7 +49,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
         self._pending_dock_status: str | None = None
         if dps := device_info.get("dps"):
-            self.data = update_state(self.data, dps)
+            self.data, _ = update_state(self.data, dps)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -109,32 +109,37 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
             if dps := payload_data.get("data"):
                 # Calculate new state based on connection
-                new_state = update_state(self.data, dps)
-                new_dock = new_state.dock_status
+                new_state, changes = update_state(self.data, dps)
 
-                # Determine the status we are currently "heading towards"
-                target_dock = (
-                    self._pending_dock_status
-                    if self._pending_dock_status
-                    else self.data.dock_status
-                )
+                # Only consider debounce if dock_status was explicitly set in this message
+                # This prevents messages without dock info (like DPS 154) from
+                # incorrectly resetting the debounce timer
+                if "dock_status" in changes:
+                    new_dock = changes["dock_status"]
 
-                # If the reported dock status differs from our target,
-                # restart the debounce timer
-                if new_dock != target_dock:
-                    _LOGGER.debug(
-                        "Dock status change detected: %s -> %s. Starting debounce.",
-                        self.data.dock_status,
-                        new_dock,
+                    # Determine the status we are currently "heading towards"
+                    target_dock = (
+                        self._pending_dock_status
+                        if self._pending_dock_status
+                        else self.data.dock_status
                     )
-                    if self._dock_idle_cancel:
-                        _LOGGER.debug("Cancelling existing debounce timer.")
-                        self._dock_idle_cancel()
 
-                    self._pending_dock_status = new_dock
-                    self._dock_idle_cancel = async_call_later(
-                        self.hass, 2.0, self._async_commit_dock_status
-                    )
+                    # If the reported dock status differs from our target,
+                    # restart the debounce timer
+                    if new_dock != target_dock:
+                        _LOGGER.debug(
+                            "Dock status change detected: %s -> %s. Starting debounce.",
+                            self.data.dock_status,
+                            new_dock,
+                        )
+                        if self._dock_idle_cancel:
+                            _LOGGER.debug("Cancelling existing debounce timer.")
+                            self._dock_idle_cancel()
+
+                        self._pending_dock_status = new_dock
+                        self._dock_idle_cancel = async_call_later(
+                            self.hass, 2.0, self._async_commit_dock_status
+                        )
 
                 # Always update the rest of the state immediately
                 # But force dock_status to remain at the currently visible value
