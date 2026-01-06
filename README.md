@@ -114,7 +114,7 @@ data:
   command: room_clean
   params:
     map_id: 4
-    rooms:
+    room_ids:
       - 3
       - 4
 ```
