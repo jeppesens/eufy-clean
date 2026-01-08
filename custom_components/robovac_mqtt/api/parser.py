@@ -7,6 +7,7 @@ from typing import Any
 from google.protobuf.json_format import MessageToDict
 
 from ..const import (
+    DOCK_ACTIVITY_STATES,
     DPS_MAP,
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
@@ -155,18 +156,17 @@ def update_state(
                     if st.water_injection_system.state == 0:
                         changes["dock_status"] = "Adding clean water"
 
-                # Only reset to Idle if:
-                # 1. station field is present (we have positive info about dock)
-                # 2. No dock activity sub-fields are present
-                # 3. We were previously in a dock activity state
+                # Reset to Idle if station field is present but no activity
                 if not has_dock_activity:
                     current_dock = changes.get("dock_status", state.dock_status)
-                    if current_dock in (
-                        "Washing",
-                        "Drying",
-                        "Emptying dust",
-                        "Adding clean water",
-                    ):
+                    if current_dock in DOCK_ACTIVITY_STATES:
+                        changes["dock_status"] = "Idle"
+
+            else:
+                # No station field - if charging and was in dock activity, reset to Idle
+                if work_status.state == 3:  # CHARGING
+                    current_dock = changes.get("dock_status", state.dock_status)
+                    if current_dock in DOCK_ACTIVITY_STATES:
                         changes["dock_status"] = "Idle"
 
         except Exception as e:
