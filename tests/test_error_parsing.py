@@ -14,6 +14,6 @@ def test_error_code_mapping():
     error.warn.append(6011)
     dps = {DPS_MAP["ERROR_CODE"]: encode_message(error)}
 
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.error_code == 6011
     assert new_state.error_message == "STATION LOW CLEAN WATER"

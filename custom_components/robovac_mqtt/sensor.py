@@ -89,6 +89,7 @@ async def async_setup_entry(
                 unit="s",
                 state_class=SensorStateClass.MEASUREMENT,
                 icon="mdi:clock-outline",
+                availability_fn=lambda s: "cleaning_stats" in s.received_fields,
             )
         )
 
@@ -103,10 +104,12 @@ async def async_setup_entry(
                 unit="m²",
                 state_class=SensorStateClass.MEASUREMENT,
                 icon="mdi:floor-plan",
+                availability_fn=lambda s: "cleaning_stats" in s.received_fields,
             )
         )
 
         # Water level sensor (Station Clean Water)
+        # Uses availability_fn to hide sensor on devices that don't report water level
         entities.append(
             RoboVacSensor(
                 coordinator,
@@ -116,6 +119,7 @@ async def async_setup_entry(
                 device_class=None,
                 unit=PERCENTAGE,
                 state_class=SensorStateClass.MEASUREMENT,
+                availability_fn=lambda s: "station_clean_water" in s.received_fields,
             )
         )
 
@@ -130,6 +134,7 @@ async def async_setup_entry(
                 unit=None,
                 state_class=None,
                 category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "dock_status" in s.received_fields,
             )
         )
 
@@ -145,6 +150,7 @@ async def async_setup_entry(
                 state_class=None,
                 icon="mdi:map-marker-path",
                 category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "map_id" in s.received_fields,
             )
         )
 
@@ -191,6 +197,7 @@ async def async_setup_entry(
                     icon=icon,
                     category=EntityCategory.DIAGNOSTIC,
                     extra_state_attributes_fn=get_attributes,
+                    availability_fn=lambda s: "accessories" in s.received_fields,
                 )
             )
 
@@ -214,11 +221,13 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
         extra_state_attributes_fn: (
             Callable[[VacuumState], dict[str, Any]] | None
         ) = None,
+        availability_fn: Callable[[VacuumState], bool] | None = None,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
         self._value_fn = value_fn
         self._extra_attrs_fn = extra_state_attributes_fn
+        self._availability_fn = availability_fn
         self._attr_unique_id = f"{coordinator.device_id}_{id_suffix}"
 
         # Use Home Assistant standard naming
@@ -236,6 +245,18 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
         self._attr_entity_category = category
         if icon:
             self._attr_icon = icon
+
+    @property
+    def available(self) -> bool:
+        """Return True if entity is available.
+
+        Checks coordinator availability and optional custom availability function.
+        """
+        if not super().available:
+            return False
+        if self._availability_fn is not None:
+            return self._availability_fn(self.coordinator.data)
+        return True
 
     @property
     def native_value(self) -> Any:

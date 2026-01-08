@@ -29,7 +29,7 @@ def test_parse_accessories_status():
     dps = {DPS_MAP["ACCESSORIES_STATUS"]: encoded_value}
 
     state = VacuumState()
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
 
     acc = new_state.accessories
     assert acc.filter_usage == 10
@@ -58,7 +58,7 @@ def test_parse_accessories_partial():
     initial_acc = AccessoryState(main_brush_usage=55)
     state = VacuumState(accessories=initial_acc)
 
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
 
     acc = new_state.accessories
     assert acc.side_brush_usage == 100

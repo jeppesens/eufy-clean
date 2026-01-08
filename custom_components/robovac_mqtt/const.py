@@ -316,3 +316,15 @@ ACCESSORY_MAX_LIFE = {
     "scrape_usage": 30,  # Cleaning Tray maintain/clean interval
     "mop_usage": 180,
 }
+
+# Dock statuses that indicate active dock operations
+# Used to determine when to reset to Idle
+DOCK_ACTIVITY_STATES = (
+    "Washing",
+    "Drying",
+    "Emptying dust",
+    "Adding clean water",
+    "Recycling waste water",
+    "Making disinfectant",
+    "Cutting hair",
+)

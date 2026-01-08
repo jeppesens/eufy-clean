@@ -72,3 +72,7 @@ class VacuumState:
 
     # Raw data for fallback/diagnostics
     raw_dps: dict[str, Any] = field(default_factory=dict)
+
+    # Track which optional fields have ever been received from the device
+    # Used by sensors to determine availability (e.g., water level on C20)
+    received_fields: set[str] = field(default_factory=set)

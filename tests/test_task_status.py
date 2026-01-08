@@ -33,7 +33,7 @@ def test_task_status_mapping():
     ws = WorkStatus()
     ws.state = 5  # Cleaning
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Cleaning"
 
     # Case 2: Washing Mop
@@ -41,7 +41,7 @@ def test_task_status_mapping():
     ws.state = 5
     ws.go_wash.mode = 1  # Washing
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Washing Mop"
 
     # Case 3: Drying Mop (effectively Completed/Maintenance)
@@ -49,7 +49,7 @@ def test_task_status_mapping():
     ws.state = 5
     ws.go_wash.mode = 2  # Drying
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Completed"
 
     # Case 4: Returning to Wash
@@ -57,7 +57,7 @@ def test_task_status_mapping():
     ws.state = 5
     ws.go_wash.mode = 0  # Navigation
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Returning to Wash"
 
     # Case 5: Recharge & Resume (Returning)
@@ -65,7 +65,7 @@ def test_task_status_mapping():
     ws.state = 7  # Go Home
     ws.breakpoint.state = 0  # Doing (Resumable)
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Returning to Charge"
 
     # Case 6: Recharge & Resume (Charging)
@@ -73,7 +73,7 @@ def test_task_status_mapping():
     ws.state = 3  # Charging
     ws.breakpoint.state = 0  # Resumable
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Charging (Resume)"
 
     # Case 7: Normal Charging (effectively Completed)
@@ -81,7 +81,7 @@ def test_task_status_mapping():
     ws.state = 3
     # No breakpoint
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Completed"
 
     # Case 8: Returning to Empty Dust
@@ -89,28 +89,28 @@ def test_task_status_mapping():
     ws.state = 7
     ws.go_home.mode = 1  # COLLECT_DUST
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Returning to Empty"
 
     # Case 9: Positioning
     ws = WorkStatus()
     ws.state = 4
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Positioning"
 
     # Case 10: Error
     ws = WorkStatus()
     ws.state = 2
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Error"
 
     # Case 11: Remote Control
     ws = WorkStatus()
     ws.state = 6
     dps = {DPS_MAP["WORK_STATUS"]: encode_message(ws)}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
     assert new_state.task_status == "Remote Control"
 
 

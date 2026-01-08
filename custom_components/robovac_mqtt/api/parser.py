@@ -7,6 +7,7 @@ from typing import Any
 from google.protobuf.json_format import MessageToDict
 
 from ..const import (
+    DOCK_ACTIVITY_STATES,
     DPS_MAP,
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
@@ -25,8 +26,31 @@ from ..utils import decode
 _LOGGER = logging.getLogger(__name__)
 
 
-def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
-    """Update VacuumState with new DPS data."""
+def _track_field(state: VacuumState, changes: dict[str, Any], field_name: str) -> None:
+    """Track that a field has been received from the device.
+
+    This is used by sensors to determine availability.
+    Only updates if the field isn't already tracked.
+    """
+    if field_name not in state.received_fields:
+        _LOGGER.debug("Tracking new field for availability: %s", field_name)
+        # Get current set from changes if already modified, else from state
+        current = changes.get("received_fields", state.received_fields).copy()
+        current.add(field_name)
+        changes["received_fields"] = current
+
+
+def update_state(
+    state: VacuumState, dps: dict[str, Any]
+) -> tuple[VacuumState, dict[str, Any]]:
+    """Update VacuumState with new DPS data.
+
+    Returns:
+        A tuple of (new_state, changes_dict) where changes_dict contains
+        only the fields that were explicitly set from this DPS message.
+        This allows callers to distinguish between a field being actively
+        set vs inherited from previous state.
+    """
     # Build a kwargs dict for replace()
     changes: dict[str, Any] = {}
 
@@ -44,9 +68,11 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             new_dock_status = _map_dock_status(station)
             # Debouncing is handled in coordinator, not here
             changes["dock_status"] = new_dock_status
+            _track_field(state, changes, "dock_status")
 
             if station.HasField("clean_water"):
                 changes["station_clean_water"] = station.clean_water.value
+                _track_field(state, changes, "station_clean_water")
 
             # Auto Empty Config
             if station.HasField("auto_cfg_status"):
@@ -104,34 +130,44 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             # stops updating but WorkStatus continues to report (e.g. as Charging/Idle).
             if work_status.HasField("station"):
                 st = work_status.station
-                current_dock = changes.get("dock_status", state.dock_status)
+
+                # Track if any dock activity is detected in this message
+                has_dock_activity = False
 
                 # Washing / Drying
                 if st.HasField("washing_drying_system"):
+                    has_dock_activity = True
                     # 0=WASHING, 1=DRYING
                     if st.washing_drying_system.state == 1:
                         changes["dock_status"] = "Drying"
                     else:
                         changes["dock_status"] = "Washing"
-                elif current_dock in ("Washing", "Drying"):
-                    # If field missing but we were washing/drying, assume done
-                    changes["dock_status"] = "Idle"
 
                 # Dust Collection
                 if st.HasField("dust_collection_system"):
+                    has_dock_activity = True
                     # 0=EMPTYING
                     changes["dock_status"] = "Emptying dust"
-                elif current_dock == "Emptying dust":
-                    changes["dock_status"] = "Idle"
 
                 # Water Injection
                 if st.HasField("water_injection_system"):
+                    has_dock_activity = True
                     # 0=ADDING, 1=EMPTYING
                     if st.water_injection_system.state == 0:
                         changes["dock_status"] = "Adding clean water"
-                elif current_dock == "Adding clean water":
-                    # Only clear if we were adding water
-                    changes["dock_status"] = "Idle"
+
+                # Reset to Idle if station field is present but no activity
+                if not has_dock_activity:
+                    current_dock = changes.get("dock_status", state.dock_status)
+                    if current_dock in DOCK_ACTIVITY_STATES:
+                        changes["dock_status"] = "Idle"
+
+            else:
+                # No station field - if charging and was in dock activity, reset to Idle
+                if work_status.state == 3:  # CHARGING
+                    current_dock = changes.get("dock_status", state.dock_status)
+                    if current_dock in DOCK_ACTIVITY_STATES:
+                        changes["dock_status"] = "Idle"
 
         except Exception as e:
             _LOGGER.warning("Error parsing Work Status: %s", e, exc_info=True)
@@ -165,6 +201,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug("Received ACCESSORIES_STATUS: %s", value)
                 changes["accessories"] = _parse_accessories(state.accessories, value)
+                _track_field(state, changes, "accessories")
 
             elif key == DPS_MAP["CLEANING_STATISTICS"]:
                 stats = decode(CleanStatistics, value)
@@ -172,6 +209,7 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 if stats.HasField("single"):
                     changes["cleaning_time"] = stats.single.clean_duration
                     changes["cleaning_area"] = stats.single.clean_area
+                    _track_field(state, changes, "cleaning_stats")
 
             elif key == DPS_MAP["SCENE_INFO"]:
                 _LOGGER.debug("Received SCENE_INFO: %s", value)
@@ -183,11 +221,16 @@ def update_state(state: VacuumState, dps: dict[str, Any]) -> VacuumState:
                 if map_info:
                     changes["map_id"] = map_info.get("map_id", 0)
                     changes["rooms"] = map_info.get("rooms", [])
+                    _track_field(state, changes, "map_id")
 
         except Exception as e:
             _LOGGER.warning("Error parsing DPS %s: %s", key, e, exc_info=True)
 
-    return replace(state, **changes)
+    # Log received_fields for debugging sensor availability
+    if "received_fields" in changes:
+        _LOGGER.debug("Received fields now: %s", changes["received_fields"])
+
+    return replace(state, **changes), changes
 
 
 def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:

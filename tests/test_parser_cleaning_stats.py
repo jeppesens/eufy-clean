@@ -43,7 +43,7 @@ def test_parsing_cleaning_stats():
     encoded_value = encode_message(stats)
 
     dps = {DPS_MAP["CLEANING_STATISTICS"]: encoded_value}
-    new_state = update_state(state, dps)
+    new_state, _ = update_state(state, dps)
 
     assert new_state.cleaning_time == 2700
     assert new_state.cleaning_area == 50
