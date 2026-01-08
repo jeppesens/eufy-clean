@@ -128,9 +128,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     # restart the debounce timer
                     if new_dock != target_dock:
                         _LOGGER.debug(
-                            "Dock status change detected: %s -> %s. Starting debounce.",
-                            self.data.dock_status,
+                            "Dock status change: %s -> %s (committed: %s). Restarting debounce.",
+                            target_dock,
                             new_dock,
+                            self.data.dock_status,
                         )
                         if self._dock_idle_cancel:
                             _LOGGER.debug("Cancelling existing debounce timer.")
