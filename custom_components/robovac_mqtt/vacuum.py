@@ -50,8 +50,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         self._attr_device_info = coordinator.device_info
 
-        self._attr_fan_speed_list = [
-            str(speed) for speed in EUFY_CLEAN_NOVEL_CLEAN_SPEED
+        self._attr_fan_speed_list: list[str] = [
+            speed.value for speed in EUFY_CLEAN_NOVEL_CLEAN_SPEED
         ]
         self._attr_supported_features = (
             VacuumEntityFeature.START
