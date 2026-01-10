@@ -50,7 +50,9 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         self._attr_device_info = coordinator.device_info
 
-        self._attr_fan_speed_list = EUFY_CLEAN_NOVEL_CLEAN_SPEED
+        self._attr_fan_speed_list = [
+            str(speed) for speed in EUFY_CLEAN_NOVEL_CLEAN_SPEED
+        ]
         self._attr_supported_features = (
             VacuumEntityFeature.START
             | VacuumEntityFeature.PAUSE
@@ -154,11 +156,51 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         elif command == "room_clean":
             if isinstance(params, dict) and "room_ids" in params:
                 map_id = params.get("map_id") or self.coordinator.data.map_id or 1
-                await self.coordinator.async_send_command(
-                    build_command(
-                        "room_clean", room_ids=params["room_ids"], map_id=map_id
+                fan_speed = params.get("fan_speed")
+                water_level = params.get("water_level")
+                clean_times = params.get("clean_times")
+                clean_mode = params.get("clean_mode")
+                clean_intensity = params.get("clean_intensity")
+                edge_mopping = params.get("edge_mopping")
+
+                custom_params = [
+                    fan_speed,
+                    water_level,
+                    clean_times,
+                    clean_mode,
+                    clean_intensity,
+                ]
+                # Check if any standard params are set OR if edge_mopping is explicitly provided (bool)
+                if any(custom_params) or edge_mopping is not None:
+                    # 1. Configure Room Params
+                    await self.coordinator.async_send_command(
+                        build_command(
+                            "set_room_custom",
+                            room_ids=params["room_ids"],
+                            map_id=map_id,
+                            fan_speed=fan_speed,
+                            water_level=water_level,
+                            clean_times=clean_times,
+                            clean_mode=clean_mode,
+                            clean_intensity=clean_intensity,
+                            edge_mopping=edge_mopping,
+                        )
                     )
-                )
+                    # 2. Start Clean with Custom Mode
+                    await self.coordinator.async_send_command(
+                        build_command(
+                            "room_clean",
+                            room_ids=params["room_ids"],
+                            map_id=map_id,
+                            mode="CUSTOMIZE",
+                        )
+                    )
+                else:
+                    await self.coordinator.async_send_command(
+                        build_command(
+                            "room_clean", room_ids=params["room_ids"], map_id=map_id
+                        )
+                    )
                 return
 
         _LOGGER.warning(

@@ -103,8 +103,9 @@ target:
 
 The integration provides two ways to clean specific rooms:
 
+
 1.  **Room Selection Entity**: A dynamic select entity (under the **Configuration** category) that automatically populates with all discovered rooms from your current active map. Selecting a room will trigger a clean for that specific room.
-2.  **Service Call**: For more advanced automation, you can use the following service call:
+2.  **Service Call**: For more advanced automation, you can use the following service call. You can optionally specify `fan_speed`, `water_level`, and `clean_times` to customize the cleaning for these rooms.
 
 ```yaml
 action: vacuum.send_command
@@ -117,6 +118,13 @@ data:
     room_ids:
       - 3
       - 4
+    # Optional Custom Parameters
+    fan_speed: "Turbo"         # Options: Quiet, Standard, Turbo, Max
+    water_level: "High"        # Options: Low, Standard, High
+    clean_times: 2             # Number of cleaning passes
+    clean_mode: "vacuum_mop"   # Options: vacuum, mop, vacuum_mop (or vacuum_and_mop, sweep_and_mop)
+    clean_intensity: "Deep"    # Options: Fast, Standard, Deep
+    edge_mopping: true         # Options: true, false (Enable edge-hugging mopping)
 ```
 
 ### Map and Room Identification
@@ -131,7 +139,6 @@ data:
 This project is maintained as a Home Assistant component. Issues and PRs should be relevant to the integration's functionality within Home Assistant.
 
 ### Pending Features
-- Clean room(s) with custom cleaning mode
 - Map management
 - Locate device
 - Current position

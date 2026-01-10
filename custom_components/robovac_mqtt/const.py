@@ -3,6 +3,8 @@ from __future__ import annotations
 from enum import Enum
 from typing import Final
 
+from .proto.cloud.clean_param_pb2 import CleanExtent, CleanType, MopMode
+
 DOMAIN: Final = "robovac_mqtt"
 VACS: Final = "vacs"
 DEVICES: Final = "devices"
@@ -280,7 +282,37 @@ EUFY_CLEAN_ERROR_CODES = {
     6011: "STATION LOW CLEAN WATER",
     6025: "STATION FULL DIRTY WATER OR DIRTY WATER TANK NOT CONNECTED",
     6030: "STATION CLEANING TRAY NOT INSTALLED",
-    6113: "STATION NO DUST BAG INSTALLED"
+    6113: "STATION NO DUST BAG INSTALLED",
+}
+
+
+# Mapping for Custom Room Parameters
+
+CLEAN_TYPE_MAP = {
+    "vacuum": CleanType.SWEEP_ONLY,
+    "mop": CleanType.MOP_ONLY,
+    "vacuum_mop": CleanType.SWEEP_AND_MOP,
+    "vacuum_and_mop": CleanType.SWEEP_AND_MOP,
+    "sweep_and_mop": CleanType.SWEEP_AND_MOP,
+}
+
+CLEAN_EXTENT_MAP = {
+    "fast": CleanExtent.QUICK,
+    "standard": CleanExtent.NORMAL,
+    "deep": CleanExtent.NARROW,
+}
+
+MOP_CORNER_MAP = {
+    True: MopMode.DEEP,
+    False: MopMode.NORMAL,
+}
+
+MOP_LEVEL_MAP = {
+    "low": MopMode.LOW,
+    "middle": MopMode.MIDDLE,
+    "standard": MopMode.MIDDLE,
+    "medium": MopMode.MIDDLE,
+    "high": MopMode.HIGH,
 }
 
 
@@ -304,6 +336,7 @@ DPS_MAP = {
     "MULTI_MAP_SW": "156",
     "MAP_STREAM": "166",
     "UNSETTING": "176",
+    "MAP_EDIT_REQUEST": "170",
     "MAP_MANAGE": "169",
 }
 
