@@ -119,10 +119,13 @@ data:
       - 3
       - 4
     # Optional Custom Parameters
+    # NOTE: The robot does NOT support partial updates. If you provide ONE of these,
+    # you should provide ALL of them. Omitted parameters will revert to factory defaults
+    # (e.g., Standard Suction, Standard Intensity, Vacuum Only).
     fan_speed: "Turbo"         # Options: Quiet, Standard, Turbo, Max
     water_level: "High"        # Options: Low, Standard, High
-    clean_times: 2             # Number of cleaning passes
-    clean_mode: "vacuum_mop"   # Options: vacuum, mop, vacuum_mop (or vacuum_and_mop, sweep_and_mop)
+    clean_times: 2             # Number of cleaning passes (1-3)
+    clean_mode: "vacuum_mop"   # Options: vacuum, mop, vacuum_mop (aliases: vacuum_and_mop, sweep_and_mop)
     clean_intensity: "Deep"    # Options: Fast, Standard, Deep
     edge_mopping: true         # Options: true, false (Enable edge-hugging mopping)
 ```

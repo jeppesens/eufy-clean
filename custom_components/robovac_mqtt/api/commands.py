@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from ..const import (
     CLEAN_EXTENT_MAP,
@@ -84,8 +84,8 @@ def build_room_clean_command(
     )
     value = encode_message(
         ModeCtrlRequest(
-            method=ModeCtrlRequest.Method(
-                int(EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN)
+            method=cast(
+                ModeCtrlRequest.Method, int(EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN)
             ),
             select_rooms_clean=rooms_clean,
         )
@@ -131,7 +131,7 @@ def build_set_room_custom_command(
             variants = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED]
             if speed_lower in variants:
                 val = variants.index(speed_lower)
-                custom_cfg.fan.suction = Fan.Suction(val)
+                custom_cfg.fan.suction = cast(Fan.Suction, val)
         except ValueError:
             pass
 
