@@ -106,8 +106,9 @@ The integration provides two ways to clean specific rooms:
 
 1.  **Room Selection Entity**: A dynamic select entity (under the **Configuration** category) that automatically populates with all discovered rooms from your current active map. Selecting a room will trigger a clean for that specific room.
 2.  **Service Call**: For more advanced automation, you can use the following service call. You can optionally specify `fan_speed`, `water_level`, and `clean_times` to customize the cleaning for these rooms.
-    > [!NOTE]
-    > The custom parameters provided will be applied to **ALL** selected rooms in the list. It is currently not possible to specify different parameters for different rooms in a single service call (e.g., "Turbo" for Kitchen but "Standard" for Living Room).
+    > [!TIP]
+    > You can apply the same custom parameters to ALL selected rooms using the simple list format below.
+    > For advanced per-room configuration (e.g., Turbo in Kitchen, Standard in Hallway), see the **Advanced: Multi-Room Custom Settings** section.
 
 ```yaml
 action: vacuum.send_command
@@ -117,19 +118,31 @@ data:
   command: room_clean
   params:
     map_id: 4
-    room_ids:
-      - 3
-      - 4
-    # Optional Custom Parameters
-    # NOTE: The robot does NOT support partial updates. If you provide ONE of these,
-    # you should provide ALL of them. Omitted parameters will revert to factory defaults
-    # (e.g., Standard Suction, Standard Intensity, Vacuum Only).
-    fan_speed: "Turbo"         # Options: Quiet, Standard, Turbo, Max
-    water_level: "High"        # Options: Low, Standard, High
-    clean_times: 2             # Number of cleaning passes (1-3)
-    clean_mode: "vacuum_mop"   # Options: vacuum, mop, vacuum_mop (aliases: vacuum_and_mop, sweep_and_mop)
-    clean_intensity: "Deep"    # Options: Fast, Standard, Deep
-    edge_mopping: true         # Options: true, false (Enable edge-hugging mopping)
+    room_ids: [3, 4]
+    # global params applied to both rooms...
+    fan_speed: "Turbo"
+```
+
+### Advanced: Multi-Room Custom Settings
+
+To replicate the Eufy App's functionality of setting different parameters for different rooms in a single session, use the `rooms` parameter (list of objects) instead of `room_ids`.
+
+```yaml
+action: vacuum.send_command
+target:
+  entity_id: vacuum.robovac_x10_pro_omni
+data:
+  command: room_clean
+  params:
+    map_id: 4
+    rooms:
+      - id: 3  # Kitchen
+        fan_speed: "Turbo"
+        clean_mode: "vacuum_mop"
+        water_level: "High"
+      - id: 4  # Hallway
+        fan_speed: "Quiet"
+        clean_mode: "vacuum"
 ```
 
 ### Map and Room Identification

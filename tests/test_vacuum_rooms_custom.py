@@ -61,9 +61,10 @@ async def test_room_clean_custom(mock_coordinator):
         await entity.async_send_command("room_clean", params=params)
 
         # Verify calls to build_command
+        # Note: 'room_ids' was renamed to 'room_config' in build_command call for set_room_custom
         first_call = call(
             "set_room_custom",
-            room_ids=[1, 2],
+            room_config=[1, 2],
             map_id=1,
             fan_speed="Turbo",
             water_level="High",
@@ -97,7 +98,7 @@ async def test_room_clean_custom_partial_params(mock_coordinator):
         # Verify calls to build_command
         first_call = call(
             "set_room_custom",
-            room_ids=[3],
+            room_config=[3],
             map_id=1,
             fan_speed=None,
             water_level=None,
@@ -107,5 +108,38 @@ async def test_room_clean_custom_partial_params(mock_coordinator):
             edge_mopping=None,
         )
         second_call = call("room_clean", room_ids=[3], map_id=1, mode="CUSTOMIZE")
+
+        mock_build.assert_has_calls([first_call, second_call])
+
+
+@pytest.mark.asyncio
+async def test_room_clean_multi_room_config(mock_coordinator):
+    """Test room clean with different settings per room (list of dicts)."""
+    entity = RoboVacMQTTEntity(mock_coordinator)
+
+    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
+        mock_build.side_effect = [{"cmd": "config"}, {"cmd": "start"}]
+
+        # New params structure
+        params = {
+            "rooms": [
+                {"id": 1, "fan_speed": "Turbo", "clean_mode": "vacuum_mop"},
+                {"id": 2, "fan_speed": "Quiet", "clean_mode": "vacuum"},
+            ]
+        }
+
+        await entity.async_send_command("room_clean", params=params)
+
+        # Verify calls to build_command
+        first_call = call(
+            "set_room_custom",
+            room_config=[
+                {"id": 1, "fan_speed": "Turbo", "clean_mode": "vacuum_mop"},
+                {"id": 2, "fan_speed": "Quiet", "clean_mode": "vacuum"},
+            ],
+            map_id=1,
+        )
+        # room_clean should receive the extracted IDs
+        second_call = call("room_clean", room_ids=[1, 2], map_id=1, mode="CUSTOMIZE")
 
         mock_build.assert_has_calls([first_call, second_call])

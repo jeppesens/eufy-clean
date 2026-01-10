@@ -94,8 +94,9 @@ def build_room_clean_command(
 
 
 def build_set_room_custom_command(
-    room_ids: list[int],
+    room_config: list[dict[str, Any]] | list[int],
     map_id: int = 3,
+    # Legacy arguments for backward compatibility (used if room_config is list[int])
     fan_speed: str | None = None,
     water_level: str | None = None,
     clean_times: int | None = None,
@@ -103,70 +104,98 @@ def build_set_room_custom_command(
     clean_intensity: str | None = None,
     edge_mopping: bool | None = None,
 ) -> dict[str, str]:
-    """Build command to set custom parameters for specific rooms.
+    """Build command to set custom cleaning parameters for specific rooms.
 
-    This sends a MapEditRequest (Method 5: SET_ROOMS_CUSTOM).
-    It is typically sent immediately before starting a room clean with mode=CUSTOMIZE.
+    Supports two formats for `room_config`:
+    1. list[int]: Simple list of room IDs. Applies global params (fan_speed, etc.) to all.
+    2. list[dict]: List of room objects {id: 1, fan_speed: "Turbo", ...}.
     """
-    # 1. Prepare common custom config
-    custom_cfg = MapEditRequest.RoomsCustom.Parm.Room.Custom()
-
-    # Clean Mode
-    if clean_mode and clean_mode.lower() in CLEAN_TYPE_MAP:
-        custom_cfg.clean_type.value = CLEAN_TYPE_MAP[clean_mode.lower()]
-
-    # Clean Intensity (Extent)
-    if clean_intensity and clean_intensity.lower() in CLEAN_EXTENT_MAP:
-        custom_cfg.clean_extent.value = CLEAN_EXTENT_MAP[clean_intensity.lower()]
-
-    # Edge Mopping (Corner Clean)
-    if edge_mopping is not None and edge_mopping in MOP_CORNER_MAP:
-        custom_cfg.mop_mode.corner_clean = MOP_CORNER_MAP[edge_mopping]
-
-    # Fan Speed (Suction)
-    # Keeping existing logic for Fan Speed as it uses a list index lookup from `EUFY_CLEAN_NOVEL_CLEAN_SPEED`
-    if fan_speed:
-        try:
-            speed_lower = fan_speed.lower()
-            variants = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED]
-            if speed_lower in variants:
-                val = variants.index(speed_lower)
-                custom_cfg.fan.suction = cast(Fan.Suction, val)
-        except ValueError:
-            pass
-
-    # Water Level (Mop Mode)
-    if water_level and water_level.lower() in MOP_LEVEL_MAP:
-        custom_cfg.mop_mode.level = MOP_LEVEL_MAP[water_level.lower()]
-
-    # Clean Times
-    if clean_times is not None and clean_times > 0:
-        custom_cfg.clean_times = clean_times
-
-    # 2. Build Room Params List
-    # We apply the SAME custom config to all selected rooms for now,
-    # because the HA service call typically comes with one set of params for the action.
     rooms_parm = MapEditRequest.RoomsCustom.Parm()
-    for rid in room_ids:
-        r = rooms_parm.rooms.add()
-        r.id = rid
-        r.custom.CopyFrom(custom_cfg)
 
-    # 3. Build MapEditRequest
+    # Normalize input to list of dicts
+    normalized_rooms: list[dict[str, Any]] = []
+
+    if room_config and isinstance(room_config[0], int):
+        # Legacy format: [1, 2] + global params
+        for r_id in room_config:
+            normalized_rooms.append(
+                {
+                    "id": r_id,
+                    "fan_speed": fan_speed,
+                    "water_level": water_level,
+                    "clean_times": clean_times,
+                    "clean_mode": clean_mode,
+                    "clean_intensity": clean_intensity,
+                    "edge_mopping": edge_mopping,
+                }
+            )
+    elif room_config:
+        # New format: [{id: 1, fan_speed: ...}, ...]
+        normalized_rooms = cast(list[dict[str, Any]], room_config)
+
+    for room_data in normalized_rooms:
+        room_id = room_data.get("id")
+        if not room_id:
+            continue
+
+        custom_cfg = MapEditRequest.RoomsCustom.Parm.Room.Custom()
+
+        # Extract per-room params
+        r_fan_speed = room_data.get("fan_speed")
+        r_water_level = room_data.get("water_level")
+        r_clean_times = room_data.get("clean_times")
+        r_clean_mode = room_data.get("clean_mode")
+        r_clean_intensity = room_data.get("clean_intensity")
+        r_edge_mopping = room_data.get("edge_mopping")
+
+        # Clean Mode
+        if r_clean_mode:
+            clean_type_val = CLEAN_TYPE_MAP.get(r_clean_mode.lower())
+            if clean_type_val:
+                custom_cfg.clean_type.value = clean_type_val
+
+        # Clean Times (Repeats)
+        if r_clean_times:
+            custom_cfg.clean_times = int(r_clean_times)
+
+        # Clean Intensity (Extent)
+        if r_clean_intensity and r_clean_intensity.lower() in CLEAN_EXTENT_MAP:
+            custom_cfg.clean_extent.value = CLEAN_EXTENT_MAP[r_clean_intensity.lower()]
+
+        # Edge Mopping (Corner Clean)
+        if r_edge_mopping is not None and r_edge_mopping in MOP_CORNER_MAP:
+            custom_cfg.mop_mode.corner_clean = MOP_CORNER_MAP[r_edge_mopping]
+
+        # Fan Speed (Suction)
+        if r_fan_speed:
+            try:
+                speed_lower = r_fan_speed.lower()
+                variants = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED]
+                if speed_lower in variants:
+                    val = variants.index(speed_lower)
+                    custom_cfg.fan.suction = cast(Fan.Suction, val)
+            except ValueError:
+                pass
+
+        # Water Level (Mop Mode)
+        if r_water_level and r_water_level.lower() in MOP_LEVEL_MAP:
+            custom_cfg.mop_mode.level = MOP_LEVEL_MAP[r_water_level.lower()]
+
+        # Create Room Message
+        room_msg = MapEditRequest.RoomsCustom.Parm.Room()
+        room_msg.id = int(room_id)
+        room_msg.custom.CopyFrom(custom_cfg)
+        rooms_parm.rooms.append(room_msg)
+
+    # Wrap in MapEditRequest
     req = MapEditRequest(
+        map_id=int(map_id),
         method=MapEditRequest.SET_ROOMS_CUSTOM,
-        map_id=map_id,
         rooms_custom=MapEditRequest.RoomsCustom(
             rooms_parm=rooms_parm,
-            # We might need to set condition=GENERAL (0) or others, default is 0
         ),
     )
 
-    # 4. Return encoded command on DPS 170
-    # Note: Using encode_message might produce a different result than encode if wrappers are involved.
-    # The existing commands use `encode` or `encode_message`.
-    # `encode` takes (Type, dict_data), `encode_message` takes (proto_message).
-    # Since we built the object, we use `encode_message`.
     value = encode_message(req)
     return {DPS_MAP["MAP_EDIT_REQUEST"]: value}
 
@@ -227,7 +256,7 @@ def build_command(command: str, **kwargs: Any) -> dict[str, str]:
         )
     if cmd == "set_room_custom":
         return build_set_room_custom_command(
-            kwargs.get("room_ids", []),
+            kwargs.get("room_config", []),
             kwargs.get("map_id", 3),
             kwargs.get("fan_speed"),
             kwargs.get("water_level"),
