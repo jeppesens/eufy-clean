@@ -110,7 +110,7 @@ async def test_set_fan_speed(mock_coordinator):
     with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
         mock_build.return_value = {"cmd": "speed"}
 
-        speed_max = EUFY_CLEAN_CLEAN_SPEED.MAX
+        speed_max = str(EUFY_CLEAN_CLEAN_SPEED.MAX)
         await entity.async_set_fan_speed(speed_max)
         mock_build.assert_called_with("set_fan_speed", fan_speed=speed_max)
         mock_coordinator.async_send_command.assert_called_with({"cmd": "speed"})
