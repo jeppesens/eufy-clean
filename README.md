@@ -106,6 +106,8 @@ The integration provides two ways to clean specific rooms:
 
 1.  **Room Selection Entity**: A dynamic select entity (under the **Configuration** category) that automatically populates with all discovered rooms from your current active map. Selecting a room will trigger a clean for that specific room.
 2.  **Service Call**: For more advanced automation, you can use the following service call. You can optionally specify `fan_speed`, `water_level`, and `clean_times` to customize the cleaning for these rooms.
+    > [!NOTE]
+    > The custom parameters provided will be applied to **ALL** selected rooms in the list. It is currently not possible to specify different parameters for different rooms in a single service call (e.g., "Turbo" for Kitchen but "Standard" for Living Room).
 
 ```yaml
 action: vacuum.send_command
