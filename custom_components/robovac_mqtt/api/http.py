@@ -89,13 +89,15 @@ class EufyHTTPClient:
             ) as response:
                 if response.status == 200:
                     self.user_info = await response.json()
-                    if not self.user_info.get("user_center_id"):  # type: ignore
+                    if self.user_info is None or not self.user_info.get(
+                        "user_center_id"
+                    ):
                         _LOGGER.error("No user_center_id found")
                         return None
 
                     # Generate GToken
-                    self.user_info["gtoken"] = hashlib.md5(  # type: ignore
-                        self.user_info["user_center_id"].encode()  # type: ignore
+                    self.user_info["gtoken"] = hashlib.md5(
+                        self.user_info["user_center_id"].encode()
                     ).hexdigest()
                     return self.user_info
 

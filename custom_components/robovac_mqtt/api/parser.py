@@ -359,7 +359,7 @@ def _map_clean_speed(value: Any) -> str:
             return str(value)
 
         if 0 <= idx < len(EUFY_CLEAN_NOVEL_CLEAN_SPEED):
-            return EUFY_CLEAN_NOVEL_CLEAN_SPEED[idx]
+            return EUFY_CLEAN_NOVEL_CLEAN_SPEED[idx].value
     except Exception:
         pass
     return "Standard"

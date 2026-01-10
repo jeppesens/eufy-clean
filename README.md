@@ -103,8 +103,12 @@ target:
 
 The integration provides two ways to clean specific rooms:
 
+
 1.  **Room Selection Entity**: A dynamic select entity (under the **Configuration** category) that automatically populates with all discovered rooms from your current active map. Selecting a room will trigger a clean for that specific room.
-2.  **Service Call**: For more advanced automation, you can use the following service call:
+2.  **Service Call**: For more advanced automation, you can use the following service call. You can optionally specify `fan_speed`, `water_level`, and `clean_times` to customize the cleaning for these rooms.
+    > [!TIP]
+    > You can apply the same custom parameters to ALL selected rooms using the simple list format below.
+    > For advanced per-room configuration (e.g., Turbo in Kitchen, Standard in Hallway), see the **Advanced: Multi-Room Custom Settings** section.
 
 ```yaml
 action: vacuum.send_command
@@ -114,9 +118,31 @@ data:
   command: room_clean
   params:
     map_id: 4
-    room_ids:
-      - 3
-      - 4
+    room_ids: [3, 4]
+    # global params applied to both rooms...
+    fan_speed: "Turbo"
+```
+
+### Advanced: Multi-Room Custom Settings
+
+To replicate the Eufy App's functionality of setting different parameters for different rooms in a single session, use the `rooms` parameter (list of objects) instead of `room_ids`.
+
+```yaml
+action: vacuum.send_command
+target:
+  entity_id: vacuum.robovac_x10_pro_omni
+data:
+  command: room_clean
+  params:
+    map_id: 4
+    rooms:
+      - id: 3  # Kitchen
+        fan_speed: "Turbo"
+        clean_mode: "vacuum_mop"
+        water_level: "High"
+      - id: 4  # Hallway
+        fan_speed: "Quiet"
+        clean_mode: "vacuum"
 ```
 
 ### Map and Room Identification
@@ -131,7 +157,6 @@ data:
 This project is maintained as a Home Assistant component. Issues and PRs should be relevant to the integration's functionality within Home Assistant.
 
 ### Pending Features
-- Clean room(s) with custom cleaning mode
 - Map management
 - Locate device
 - Current position
