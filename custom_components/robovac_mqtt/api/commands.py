@@ -154,7 +154,7 @@ def build_set_room_custom_command(
         # Clean Mode
         if r_clean_mode:
             clean_type_val = CLEAN_TYPE_MAP.get(r_clean_mode.lower())
-            if clean_type_val:
+            if clean_type_val is not None:
                 custom_cfg.clean_type.value = clean_type_val
             else:
                 _LOGGER.warning("Invalid clean_mode '%s' ignored", r_clean_mode)
