@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, cast
 
 from ..const import (
@@ -17,6 +18,8 @@ from ..proto.cloud.control_pb2 import AutoClean, ModeCtrlRequest, SelectRoomsCle
 from ..proto.cloud.map_edit_pb2 import MapEditRequest
 from ..proto.cloud.station_pb2 import StationRequest
 from ..utils import encode, encode_message
+
+_LOGGER = logging.getLogger(__name__)
 
 
 def _build_mode_ctrl(method: int) -> dict[str, str]:
@@ -153,18 +156,30 @@ def build_set_room_custom_command(
             clean_type_val = CLEAN_TYPE_MAP.get(r_clean_mode.lower())
             if clean_type_val:
                 custom_cfg.clean_type.value = clean_type_val
+            else:
+                _LOGGER.warning("Invalid clean_mode '%s' ignored", r_clean_mode)
 
         # Clean Times (Repeats)
         if r_clean_times:
             custom_cfg.clean_times = int(r_clean_times)
 
         # Clean Intensity (Extent)
-        if r_clean_intensity and r_clean_intensity.lower() in CLEAN_EXTENT_MAP:
-            custom_cfg.clean_extent.value = CLEAN_EXTENT_MAP[r_clean_intensity.lower()]
+        if r_clean_intensity:
+            if r_clean_intensity.lower() in CLEAN_EXTENT_MAP:
+                custom_cfg.clean_extent.value = CLEAN_EXTENT_MAP[
+                    r_clean_intensity.lower()
+                ]
+            else:
+                _LOGGER.warning(
+                    "Invalid clean_intensity '%s' ignored", r_clean_intensity
+                )
 
         # Edge Mopping (Corner Clean)
-        if r_edge_mopping is not None and r_edge_mopping in MOP_CORNER_MAP:
-            custom_cfg.mop_mode.corner_clean = MOP_CORNER_MAP[r_edge_mopping]
+        if r_edge_mopping is not None:
+            if r_edge_mopping in MOP_CORNER_MAP:
+                custom_cfg.mop_mode.corner_clean = MOP_CORNER_MAP[r_edge_mopping]
+            else:
+                _LOGGER.warning("Invalid edge_mopping '%s' ignored", r_edge_mopping)
 
         # Fan Speed (Suction)
         if r_fan_speed:
@@ -174,12 +189,17 @@ def build_set_room_custom_command(
                 if speed_lower in variants:
                     val = variants.index(speed_lower)
                     custom_cfg.fan.suction = cast(Fan.Suction, val)
+                else:
+                    _LOGGER.warning("Invalid fan_speed '%s' ignored", r_fan_speed)
             except ValueError:
-                pass
+                _LOGGER.warning("Error processing fan_speed '%s'", r_fan_speed)
 
         # Water Level (Mop Mode)
-        if r_water_level and r_water_level.lower() in MOP_LEVEL_MAP:
-            custom_cfg.mop_mode.level = MOP_LEVEL_MAP[r_water_level.lower()]
+        if r_water_level:
+            if r_water_level.lower() in MOP_LEVEL_MAP:
+                custom_cfg.mop_mode.level = MOP_LEVEL_MAP[r_water_level.lower()]
+            else:
+                _LOGGER.warning("Invalid water_level '%s' ignored", r_water_level)
 
         # Create Room Message
         room_msg = MapEditRequest.RoomsCustom.Parm.Room()
