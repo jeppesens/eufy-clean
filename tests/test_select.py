@@ -142,13 +142,13 @@ async def test_scene_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Scene"
-    assert entity.options == ["Scene 1", "Scene 2"]
+    assert entity.options == ["Scene 1 (ID: 1)", "Scene 2 (ID: 2)"]
     assert entity.current_option is None
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
         mock_build.return_value = {"cmd": "scene_cmd"}
 
-        await entity.async_select_option("Scene 2")
+        await entity.async_select_option("Scene 2 (ID: 2)")
 
         mock_build.assert_called_with("scene_clean", scene_id=2)
         mock_coordinator.async_send_command.assert_called_with({"cmd": "scene_cmd"})
