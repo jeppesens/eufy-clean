@@ -221,7 +221,8 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available scenes."""
-        return [scene["name"] for scene in self.coordinator.data.scenes]
+        scenes = self.coordinator.data.scenes
+        return [f"{s.get('name') or 'Scene'} (ID: {s['id']})" for s in scenes]
 
     @property
     def current_option(self) -> str | None:
@@ -230,14 +231,22 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Trigger the selected scene."""
+        scenes = self.coordinator.data.scenes
         scene = next(
-            (s for s in self.coordinator.data.scenes if s["name"] == option), None
+            (
+                s
+                for s in scenes
+                if f"{s.get('name') or 'Scene'} (ID: {s['id']})" == option
+            ),
+            None,
         )
         if not scene:
             _LOGGER.error("Scene '%s' not found", option)
             return
 
-        command = build_command("scene_clean", scene_id=scene["id"])
+        scene_id = scene["id"]
+
+        command = build_command("scene_clean", scene_id=scene_id)
         await self.coordinator.async_send_command(command)
 
         self.async_write_ha_state()
