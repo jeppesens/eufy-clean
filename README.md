@@ -93,11 +93,11 @@ metadata: {}
 data:
     command: scene_clean
     params:
-        scene: 5
+        scene_id: 5
 target:
     entity_id: vacuum.robovac_x10_pro_omni
 ```
-*Note: The `scene` parameter corresponds to scene numbers. Default scenes are typically 1-3, with custom scenes starting from 4.*
+*Note: The `scene_id` parameter corresponds to scene numbers. Default scenes are typically 1-3, with custom scenes starting from 4.*
 
 ### Cleaning Specific Rooms
 
