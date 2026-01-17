@@ -226,7 +226,22 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
     @property
     def current_option(self) -> str | None:
-        """Scenes are action-triggers, they don't have a persistent 'current' state."""
+        """Return the currently active scene."""
+        # Check by ID first if we have a scene running
+        current_id = self.coordinator.data.current_scene_id
+        if current_id > 0:
+            # Try to match by ID in the list to return the name from the list
+            # This ensures we return a valid option even if the name format varies slightly
+            scene = next(
+                (s for s in self.coordinator.data.scenes if s["id"] == current_id), None
+            )
+            if scene:
+                return f"{scene.get('name') or 'Scene'} (ID: {scene['id']})"
+
+            # Fallback to reported name if available (even if not in options list)
+            if self.coordinator.data.current_scene_name:
+                return f"{self.coordinator.data.current_scene_name} (ID: {current_id})"
+
         return None
 
     async def async_select_option(self, option: str) -> None:

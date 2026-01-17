@@ -169,11 +169,29 @@ def update_state(
                     if current_dock in DOCK_ACTIVITY_STATES:
                         changes["dock_status"] = "Idle"
 
+            # Process Current Scene
+            # 1. If explicit scene info provided, use it.
+            if work_status.HasField("current_scene"):
+                changes["current_scene_id"] = work_status.current_scene.id
+                changes["current_scene_name"] = work_status.current_scene.name
+
+            # 2. If explicit Mode provided and it's NOT Scene (8), clear it.
+            # 8 = SCENE mode
+            elif work_status.HasField("mode") and work_status.mode.value != 8:
+                changes["current_scene_id"] = 0
+                changes["current_scene_name"] = None
+
+            # 3. If State is explicitly Charging (3) or Go Home (7), clear it.
+            # We avoid clearing on 0 (Standby) because partial updates might default to 0.
+            elif work_status.state in [3, 7]:
+                changes["current_scene_id"] = 0
+                changes["current_scene_name"] = None
+
         except Exception as e:
             _LOGGER.warning("Error parsing Work Status: %s", e, exc_info=True)
 
     for key, value in dps.items():
-        # specialized keys handled above, skip them here?
+        # Specialized keys are handled in the decode loop above
         if key in (DPS_MAP["WORK_STATUS"], DPS_MAP["STATION_STATUS"]):
             continue
 
