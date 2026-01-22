@@ -232,7 +232,13 @@ def build_set_auto_action_cfg_command(cfg_dict: dict[str, Any]) -> dict[str, str
     return {DPS_MAP["GO_HOME"]: value}
 
 
-def build_command(command: str, **kwargs: Any) -> dict[str, str]:
+def build_find_robot_command(active: bool) -> dict[str, Any]:
+    """Build command to find robot."""
+    # false = stop finding, true = start finding
+    return {DPS_MAP["FIND_ROBOT"]: active}
+
+
+def build_command(command: str, **kwargs: Any) -> dict[str, Any]:
     """Unified command builder."""
     cmd = command.lower()
 
@@ -249,9 +255,8 @@ def build_command(command: str, **kwargs: Any) -> dict[str, str]:
         return _build_mode_ctrl(EUFY_CLEAN_CONTROL.START_GOHOME)
     if cmd == "clean_spot":
         return _build_mode_ctrl(EUFY_CLEAN_CONTROL.START_SPOT_CLEAN)
-    if cmd == "locate":
-        # Placeholder
-        return {}
+    if cmd in ("locate", "find_robot"):
+        return build_find_robot_command(kwargs.get("active", True))
 
     # Manual Control
     if cmd == "go_dry":

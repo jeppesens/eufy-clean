@@ -241,6 +241,9 @@ def update_state(
                     changes["rooms"] = map_info.get("rooms", [])
                     _track_field(state, changes, "map_id")
 
+            elif key == DPS_MAP["FIND_ROBOT"]:
+                changes["find_robot"] = str(value).lower() == "true"
+
         except Exception as e:
             _LOGGER.warning("Error parsing DPS %s: %s", key, e, exc_info=True)
 

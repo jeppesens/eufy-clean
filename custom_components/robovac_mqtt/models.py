@@ -49,6 +49,7 @@ class VacuumState:
 
     # Advanced Status
     task_status: str = "idle"
+    find_robot: bool = False
 
     # Map
     map_id: int = 0

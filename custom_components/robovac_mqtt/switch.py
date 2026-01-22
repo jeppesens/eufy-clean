@@ -40,7 +40,7 @@ async def async_setup_entry(
                 lambda cfg: cfg.get("collectdust_v2", {})
                 .get("sw", {})
                 .get("value", False),
-                _set_collect_dust,
+                set_collect_dust,
                 icon="mdi:delete-restore",
             )
         )
@@ -51,15 +51,17 @@ async def async_setup_entry(
                 "auto_wash",
                 "Auto Wash",
                 lambda cfg: cfg.get("wash", {}).get("cfg", "CLOSE") == "STANDARD",
-                _set_wash_cfg,
+                set_wash_cfg,
                 icon="mdi:water-sync",
             )
         )
 
+        entities.append(FindRobotSwitchEntity(coordinator))
+
     async_add_entities(entities)
 
 
-def _set_collect_dust(cfg: dict[str, Any], val: bool) -> None:
+def set_collect_dust(cfg: dict[str, Any], val: bool) -> None:
     """Helper to set collect dust state in config dict."""
     if "collectdust_v2" not in cfg:
         cfg["collectdust_v2"] = {"sw": {"value": val}}
@@ -70,7 +72,7 @@ def _set_collect_dust(cfg: dict[str, Any], val: bool) -> None:
             cfg["collectdust_v2"]["sw"]["value"] = val
 
 
-def _set_wash_cfg(cfg: dict[str, Any], val: bool) -> None:
+def set_wash_cfg(cfg: dict[str, Any], val: bool) -> None:
     """Helper to set wash state in config dict."""
     if "wash" not in cfg:
         cfg["wash"] = {"cfg": 1 if val else 0}
@@ -78,7 +80,7 @@ def _set_wash_cfg(cfg: dict[str, Any], val: bool) -> None:
         cfg["wash"]["cfg"] = 1 if val else 0
 
 
-def _set_dry_cfg(cfg: dict[str, Any], val: bool) -> None:
+def set_dry_cfg(cfg: dict[str, Any], val: bool) -> None:
     """Helper to set dry state in config dict."""
     if "dry" not in cfg:
         cfg["dry"] = {"cfg": 1 if val else 0}
@@ -141,3 +143,31 @@ class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
         await self.coordinator.async_send_command(command)
 
         self.async_write_ha_state()
+
+
+class FindRobotSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
+    """Switch for Find Robot feature."""
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize the find robot switch."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_find_robot"
+        self._attr_has_entity_name = True
+        self._attr_name = "Find Robot"
+        self._attr_icon = "mdi:robot-vacuum-variant"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if switch is on."""
+        return self.coordinator.data.find_robot
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn the switch on."""
+        command = build_command("find_robot", active=True)
+        await self.coordinator.async_send_command(command)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn the switch off."""
+        command = build_command("find_robot", active=False)
+        await self.coordinator.async_send_command(command)
