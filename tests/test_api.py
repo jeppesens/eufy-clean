@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, PropertyMock, patch
 
 from custom_components.robovac_mqtt.api.commands import (
     build_command,
+    build_find_robot_command,
     build_room_clean_command,
     build_scene_clean_command,
     build_set_auto_action_cfg_command,
@@ -134,3 +135,28 @@ def test_build_set_auto_cfg(mock_encode):
 
     args, _ = mock_encode.call_args
     assert args[1]["auto_cfg"] == cfg
+
+
+def test_build_find_robot_command():
+    """Test building find robot command."""
+    cmd = build_find_robot_command(True)
+    assert cmd == {DPS_MAP["FIND_ROBOT"]: True}
+
+    cmd = build_find_robot_command(False)
+    assert cmd == {DPS_MAP["FIND_ROBOT"]: False}
+
+
+def test_update_state_find_robot():
+    """Test updating find robot state."""
+    state = VacuumState()
+
+    # Test True
+    dps = {DPS_MAP["FIND_ROBOT"]: True}
+    new_state, changes = update_state(state, dps)
+    assert new_state.find_robot is True
+    assert changes["find_robot"] is True
+
+    # Test False string
+    dps = {DPS_MAP["FIND_ROBOT"]: "false"}
+    new_state, changes = update_state(state, dps)
+    assert new_state.find_robot is False
