@@ -20,6 +20,7 @@ This custom component provides comprehensive control over your Eufy robot vacuum
 - **Scene Selection** - Trigger pre-configured cleaning scenes (e.g., "Full Home Deep Clean") directly via a dynamic select entity or service call
 - **Room-specific cleaning** - Clean individual rooms or combinations of rooms
 - **Battery monitoring** - Track battery level and charging status
+- **Find Robot** - Locate your device by playing a sound (toggle via switch)
 
 ### Dock tasks
 - **wash mop** - trigger washing of the mop
@@ -158,7 +159,6 @@ This project is maintained as a Home Assistant component. Issues and PRs should 
 
 ### Pending Features
 - Map management
-- Locate device
 - Current position
 
 ### Local Development & Testing
