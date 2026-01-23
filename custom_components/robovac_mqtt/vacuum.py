@@ -62,6 +62,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             | VacuumEntityFeature.FAN_SPEED
             | VacuumEntityFeature.RETURN_HOME
             | VacuumEntityFeature.SEND_COMMAND
+            | VacuumEntityFeature.LOCATE
         )
 
     @property
@@ -137,6 +138,12 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         await self.coordinator.async_send_command(
             build_command("set_fan_speed", fan_speed=fan_speed)
+        )
+
+    async def async_locate(self, **kwargs: Any) -> None:
+        """Locate the vacuum cleaner."""
+        await self.coordinator.async_send_command(
+            build_command("find_robot", active=True)
         )
 
     async def async_send_command(
