@@ -98,6 +98,10 @@ async def test_vacuum_commands(mock_coordinator):
         await entity.async_clean_spot()
         mock_build.assert_called_with("clean_spot")
 
+        # Locate
+        await entity.async_locate()
+        mock_build.assert_called_with("find_robot", active=True)
+
 
 @pytest.mark.asyncio
 async def test_set_fan_speed(mock_coordinator):
