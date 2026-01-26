@@ -504,3 +504,17 @@ DOCK_ACTIVITY_STATES = (
     "Making disinfectant",
     "Cutting hair",
 )
+
+
+# Modes that imply APP trigger source
+EUFY_CLEAN_APP_TRIGGER_MODES = {
+    1,  # SELECT_ROOM
+    2,  # SELECT_ZONE
+    3,  # SPOT
+    4,  # FAST_MAPPING
+    5,  # GLOBAL_CRUISE
+    6,  # ZONES_CRUISE
+    7,  # POINT_CRUISE
+    8,  # SCENE
+    9,  # SMART_FOLLOW
+}
