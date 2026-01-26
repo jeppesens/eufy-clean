@@ -73,7 +73,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             if not creds:
                 raise UpdateFailed("Failed to retrieve MQTT credentials")
 
-            self.client = EufyCleanClient(  # type: ignore[unreachable]
+            self.client = EufyCleanClient(
                 device_id=self.device_id,
                 user_id=creds["user_id"],
                 app_name=creds["app_name"],
