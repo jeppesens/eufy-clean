@@ -191,7 +191,8 @@ class DockSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             return None
         try:
             return self._getter(cfg)
-        except Exception:
+        except Exception as e:
+            _LOGGER.debug("Error getting select option for %s: %s", self.name, e)
             return None
 
     async def async_select_option(self, option: str) -> None:

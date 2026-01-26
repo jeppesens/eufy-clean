@@ -106,7 +106,8 @@ class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
             return None
         try:
             return self._getter(cfg)
-        except Exception:
+        except Exception as e:
+            _LOGGER.debug("Error getting number value for %s: %s", self.name, e)
             return None
 
     async def async_set_native_value(self, value: float) -> None:
