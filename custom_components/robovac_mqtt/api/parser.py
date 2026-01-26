@@ -391,12 +391,14 @@ def _map_dock_status(value: StationResponse) -> str:
     try:
         status = value.status
         _LOGGER.debug(
-            f"Dock status raw: state={status.state}, "
-            f"collecting_dust={status.collecting_dust}, "
-            f"clear_water_adding={status.clear_water_adding}, "
-            f"waste_water_recycling={status.waste_water_recycling}, "
-            f"disinfectant_making={status.disinfectant_making}, "
-            f"cutting_hair={status.cutting_hair}"
+            "Dock status raw: state=%s, collecting_dust=%s, clear_water_adding=%s, "
+            "waste_water_recycling=%s, disinfectant_making=%s, cutting_hair=%s",
+            status.state,
+            status.collecting_dust,
+            status.clear_water_adding,
+            status.waste_water_recycling,
+            status.disinfectant_making,
+            status.cutting_hair,
         )
 
         if status.collecting_dust:

@@ -92,7 +92,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         except Exception as e:
             _LOGGER.error(
-                f"Failed to initialize coordinator for {self.device_name}: {e}"
+                "Failed to initialize coordinator for %s: %s", self.device_name, e
             )
             raise
 
@@ -159,7 +159,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
     def _async_commit_dock_status(self, _now: Any) -> None:
         """Commit the pending dock status."""
         _LOGGER.debug(
-            f"Debounce timer fired. Committing status: {self._pending_dock_status}"
+            "Debounce timer fired. Committing status: %s", self._pending_dock_status
         )
         self._dock_idle_cancel = None
         final_dock = self._pending_dock_status
