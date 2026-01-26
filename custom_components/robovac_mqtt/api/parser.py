@@ -400,8 +400,8 @@ def _map_clean_speed(value: Any) -> str:
 
         if 0 <= idx < len(EUFY_CLEAN_NOVEL_CLEAN_SPEED):
             return EUFY_CLEAN_NOVEL_CLEAN_SPEED[idx].value
-    except Exception:
-        pass
+    except Exception as e:
+        _LOGGER.debug("Error mapping clean speed: %s", e)
     return "Standard"
 
 
@@ -435,7 +435,8 @@ def _map_dock_status(value: StationResponse) -> str:
         state_name = StationResponse.StationStatus.State.Name(state)
         state_string = state_name.strip().lower().replace("_", " ")
         return state_string[:1].upper() + state_string[1:]
-    except Exception:
+    except Exception as e:
+        _LOGGER.debug("Error mapping dock status: %s", e)
         return "Unknown"
 
 
