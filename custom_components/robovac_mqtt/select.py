@@ -12,7 +12,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.commands import build_command
-from .const import DOMAIN
+from .const import DOMAIN, DRY_DURATION_MAP
 from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -59,7 +59,7 @@ async def async_setup_entry(
                 coordinator,
                 "dry_duration",
                 "Dry Duration",
-                ["2h", "3h", "4h"],
+                list(DRY_DURATION_MAP.values()),
                 _get_dry_duration,
                 _set_dry_duration,
                 icon="mdi:timer-sand",
@@ -92,34 +92,22 @@ def _set_wash_freq_mode(cfg: dict[str, Any], val: str) -> None:
 
 def _get_dry_duration(cfg: dict[str, Any]) -> str:
     """Helper to get dry duration."""
-    levels = ["SHORT", "MEDIUM", "LONG"]
-    displays = ["2h", "3h", "4h"]
-
     dry = cfg.get("dry", {})
     level = dry.get("duration", {}).get("level", "SHORT")
-
-    try:
-        idx = levels.index(level)
-        return displays[idx]
-    except ValueError:
-        return "3h"
+    return DRY_DURATION_MAP.get(level, "3h")
 
 
 def _set_dry_duration(cfg: dict[str, Any], val: str) -> None:
     """Helper to set dry duration."""
-    levels = ["SHORT", "MEDIUM", "LONG"]
-    displays = ["2h", "3h", "4h"]
-    try:
-        idx = displays.index(val)
-        level_str = levels[idx]
-
-        if "dry" not in cfg:
-            cfg["dry"] = {}
-        if "duration" not in cfg["dry"]:
-            cfg["dry"]["duration"] = {}
-        cfg["dry"]["duration"]["level"] = level_str
-    except ValueError:
-        pass
+    # Find key by value
+    for level, display in DRY_DURATION_MAP.items():
+        if display == val:
+            if "dry" not in cfg:
+                cfg["dry"] = {}
+            if "duration" not in cfg["dry"]:
+                cfg["dry"]["duration"] = {}
+            cfg["dry"]["duration"]["level"] = level
+            return
 
 
 def _get_collect_dust_mode(cfg: dict[str, Any]) -> str:

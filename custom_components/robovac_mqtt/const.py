@@ -518,3 +518,5 @@ EUFY_CLEAN_APP_TRIGGER_MODES = {
     8,  # SCENE
     9,  # SMART_FOLLOW
 }
+
+DRY_DURATION_MAP = {"SHORT": "2h", "MEDIUM": "3h", "LONG": "4h"}
