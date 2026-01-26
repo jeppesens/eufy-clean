@@ -9,7 +9,7 @@
     "dependencies": [],
     "documentation": "https://github.com/jeppesens/eufy-clean",
     "integration_type": "device",
-    "iot_class": "cloud_polling",
+    "iot_class": "cloud_push",
     "issue_tracker": "https://github.com/jeppesens/eufy-clean/issues",
     "requirements": [],
     "version": "1.6.0"
