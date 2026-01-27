@@ -9,6 +9,7 @@ from google.protobuf.json_format import MessageToDict
 from ..const import (
     DOCK_ACTIVITY_STATES,
     DPS_MAP,
+    EUFY_CLEAN_APP_TRIGGER_MODES,
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
 )
@@ -51,7 +52,6 @@ def update_state(
         This allows callers to distinguish between a field being actively
         set vs inherited from previous state.
     """
-    # Build a kwargs dict for replace()
     changes: dict[str, Any] = {}
 
     # Always update raw_dps
@@ -59,139 +59,164 @@ def update_state(
     new_raw_dps.update(dps)
     changes["raw_dps"] = new_raw_dps
 
-    # Process Station Status first to ensure dock_status is up to date for task mapping
-    if DPS_MAP["STATION_STATUS"] in dps:
-        value = dps[DPS_MAP["STATION_STATUS"]]
-        try:
-            station = decode(StationResponse, value)
-            _LOGGER.debug("Decoded StationResponse: %s", station)
-            new_dock_status = _map_dock_status(station)
-            # Debouncing is handled in coordinator, not here
-            changes["dock_status"] = new_dock_status
-            _track_field(state, changes, "dock_status")
+    # Helper functions to process specific DPS groups
+    _process_station_status(state, dps, changes)
+    _process_work_status(state, dps, changes)
+    _process_other_dps(state, dps, changes)
 
-            if station.HasField("clean_water"):
-                changes["station_clean_water"] = station.clean_water.value
-                _track_field(state, changes, "station_clean_water")
+    # Log received_fields for debugging sensor availability
+    if "received_fields" in changes:
+        _LOGGER.debug("Received fields now: %s", changes["received_fields"])
 
-            # Auto Empty Config
-            if station.HasField("auto_cfg_status"):
-                changes["dock_auto_cfg"] = MessageToDict(
-                    station.auto_cfg_status, preserving_proto_field_name=True
-                )
-        except Exception as e:
-            _LOGGER.warning("Error parsing Station Status: %s", e, exc_info=True)
+    return replace(state, **changes), changes
 
-    # Process Work Status
-    if DPS_MAP["WORK_STATUS"] in dps:
-        value = dps[DPS_MAP["WORK_STATUS"]]
-        try:
-            work_status = decode(WorkStatus, value)
-            _LOGGER.debug("Decoded WorkStatus: %s", work_status)
-            changes["activity"] = _map_work_status(work_status)
-            changes["status_code"] = work_status.state
 
-            # Use current or updated dock status
-            current_dock_status = changes.get("dock_status", state.dock_status)
-            changes["task_status"] = _map_task_status(work_status, current_dock_status)
+def _process_station_status(
+    state: VacuumState, dps: dict[str, Any], changes: dict[str, Any]
+) -> None:
+    """Process Station Status DPS."""
+    if DPS_MAP["STATION_STATUS"] not in dps:
+        return
 
-            # Check for charging status
-            # If the charging sub-message exists, we trust it regardless of main state
-            if work_status.HasField("charging"):
-                # Charging.State.DOING is 0
-                changes["charging"] = work_status.charging.state == 0
-            else:
-                changes["charging"] = False
+    value = dps[DPS_MAP["STATION_STATUS"]]
+    try:
+        station = decode(StationResponse, value)
+        _LOGGER.debug("Decoded StationResponse: %s", station)
+        new_dock_status = _map_dock_status(station)
+        # Debouncing is handled in coordinator, not here
+        changes["dock_status"] = new_dock_status
+        _track_field(state, changes, "dock_status")
 
-            # Check for trigger source
-            trigger_source = "unknown"
-            if work_status.HasField("trigger"):
-                trigger_source = _map_trigger_source(work_status.trigger.source)
+        if station.HasField("clean_water"):
+            changes["station_clean_water"] = station.clean_water.value
+            _track_field(state, changes, "station_clean_water")
 
-            # Infer trigger source from Work Mode if unknown
-            # Many robots (like X10 Pro Omni) do not send trigger field
-            # for specific cleaning modes
-            if trigger_source == "unknown" and work_status.HasField("mode"):
-                mode_val = work_status.mode.value
-                # SELECT_ROOM (1), SELECT_ZONE (2), SPOT (3), FAST_MAPPING (4),
-                # GLOBAL_CRUISE (5), ZONES_CRUISE (6), POINT_CRUISE (7),
-                # SCENE (8), SMART_FOLLOW (9)
-                if mode_val in (1, 2, 3, 4, 5, 6, 7, 8, 9):
-                    trigger_source = "app"
+        # Auto Empty Config
+        if station.HasField("auto_cfg_status"):
+            changes["dock_auto_cfg"] = MessageToDict(
+                station.auto_cfg_status, preserving_proto_field_name=True
+            )
+    except Exception as e:
+        _LOGGER.warning("Error parsing Station Status: %s", e, exc_info=True)
 
-            changes["trigger_source"] = trigger_source
 
-            # Fallback/Override if cleaning.scheduled_task is explicit
-            if work_status.HasField("cleaning") and work_status.cleaning.scheduled_task:
-                changes["trigger_source"] = "schedule"
+def _process_work_status(
+    state: VacuumState, dps: dict[str, Any], changes: dict[str, Any]
+) -> None:
+    """Process Work Status DPS."""
+    if DPS_MAP["WORK_STATUS"] not in dps:
+        return
 
-            # Update dock_status from WorkStatus if available
-            # This helps clear "stuck" states (like Drying) if StationResponse
-            # stops updating but WorkStatus continues to report (e.g. as Charging/Idle).
-            if work_status.HasField("station"):
-                st = work_status.station
+    value = dps[DPS_MAP["WORK_STATUS"]]
+    try:
+        work_status = decode(WorkStatus, value)
+        _LOGGER.debug("Decoded WorkStatus: %s", work_status)
+        changes["activity"] = _map_work_status(work_status)
+        changes["status_code"] = work_status.state
 
-                # Track if any dock activity is detected in this message
-                has_dock_activity = False
+        # Use current or updated dock status
+        current_dock_status = changes.get("dock_status", state.dock_status)
+        changes["task_status"] = _map_task_status(work_status, current_dock_status)
 
-                # Washing / Drying
-                if st.HasField("washing_drying_system"):
-                    has_dock_activity = True
-                    # 0=WASHING, 1=DRYING
-                    if st.washing_drying_system.state == 1:
-                        changes["dock_status"] = "Drying"
-                    else:
-                        changes["dock_status"] = "Washing"
+        # Check for charging status
+        # If the charging sub-message exists, we trust it regardless of main state
+        if work_status.HasField("charging"):
+            # Charging.State.DOING is 0
+            changes["charging"] = work_status.charging.state == 0
+        else:
+            changes["charging"] = False
 
-                # Dust Collection
-                if st.HasField("dust_collection_system"):
-                    has_dock_activity = True
-                    # 0=EMPTYING
-                    changes["dock_status"] = "Emptying dust"
+        # Check for trigger source
+        trigger_source = "unknown"
+        if work_status.HasField("trigger"):
+            trigger_source = _map_trigger_source(work_status.trigger.source)
 
-                # Water Injection
-                if st.HasField("water_injection_system"):
-                    has_dock_activity = True
-                    # 0=ADDING, 1=EMPTYING
-                    if st.water_injection_system.state == 0:
-                        changes["dock_status"] = "Adding clean water"
+        # Infer trigger source from Work Mode if unknown
+        # Many robots (like X10 Pro Omni) do not send trigger field
+        # for specific cleaning modes
+        if trigger_source == "unknown" and work_status.HasField("mode"):
+            mode_val = work_status.mode.value
+            if mode_val in EUFY_CLEAN_APP_TRIGGER_MODES:
+                trigger_source = "app"
 
-                # Reset to Idle if station field is present but no activity
-                if not has_dock_activity:
-                    current_dock = changes.get("dock_status", state.dock_status)
-                    if current_dock in DOCK_ACTIVITY_STATES:
-                        changes["dock_status"] = "Idle"
+        changes["trigger_source"] = trigger_source
 
-            else:
-                # No station field - if charging and was in dock activity, reset to Idle
-                if work_status.state == 3:  # CHARGING
-                    current_dock = changes.get("dock_status", state.dock_status)
-                    if current_dock in DOCK_ACTIVITY_STATES:
-                        changes["dock_status"] = "Idle"
+        # Fallback/Override if cleaning.scheduled_task is explicit
+        if work_status.HasField("cleaning") and work_status.cleaning.scheduled_task:
+            changes["trigger_source"] = "schedule"
 
-            # Process Current Scene
-            # 1. If explicit scene info provided, use it.
-            if work_status.HasField("current_scene"):
-                changes["current_scene_id"] = work_status.current_scene.id
-                changes["current_scene_name"] = work_status.current_scene.name
+        # Update dock_status from WorkStatus if available
+        # This helps clear "stuck" states (like Drying) if StationResponse
+        # stops updating but WorkStatus continues to report (e.g. as Charging/Idle).
+        if work_status.HasField("station"):
+            st = work_status.station
 
-            # 2. If explicit Mode provided and it's NOT Scene (8), clear it.
-            # 8 = SCENE mode
-            elif work_status.HasField("mode") and work_status.mode.value != 8:
-                changes["current_scene_id"] = 0
-                changes["current_scene_name"] = None
+            # Track if any dock activity is detected in this message
+            has_dock_activity = False
 
-            # 3. If State is explicitly Charging (3) or Go Home (7), clear it.
-            # We avoid clearing on 0 (Standby) because partial updates might default to 0.
-            elif work_status.state in [3, 7]:
-                changes["current_scene_id"] = 0
-                changes["current_scene_name"] = None
+            # Washing / Drying
+            if st.HasField("washing_drying_system"):
+                has_dock_activity = True
+                # 0=WASHING, 1=DRYING
+                if st.washing_drying_system.state == 1:
+                    changes["dock_status"] = "Drying"
+                else:
+                    changes["dock_status"] = "Washing"
 
-        except Exception as e:
-            _LOGGER.warning("Error parsing Work Status: %s", e, exc_info=True)
+            # Dust Collection
+            if st.HasField("dust_collection_system"):
+                has_dock_activity = True
+                # 0=EMPTYING
+                changes["dock_status"] = "Emptying dust"
 
+            # Water Injection
+            if st.HasField("water_injection_system"):
+                has_dock_activity = True
+                # 0=ADDING, 1=EMPTYING
+                if st.water_injection_system.state == 0:
+                    changes["dock_status"] = "Adding clean water"
+
+            # Reset to Idle if station field is present but no activity
+            if not has_dock_activity:
+                current_dock = changes.get("dock_status", state.dock_status)
+                if current_dock in DOCK_ACTIVITY_STATES:
+                    changes["dock_status"] = "Idle"
+
+        else:
+            # No station field - if charging and was in dock activity, reset to Idle
+            if work_status.state == 3:  # CHARGING
+                current_dock = changes.get("dock_status", state.dock_status)
+                if current_dock in DOCK_ACTIVITY_STATES:
+                    changes["dock_status"] = "Idle"
+
+        # Process Current Scene
+        # 1. If explicit scene info provided, use it.
+        if work_status.HasField("current_scene"):
+            changes["current_scene_id"] = work_status.current_scene.id
+            changes["current_scene_name"] = work_status.current_scene.name
+
+        # 2. If explicit Mode provided and it's NOT Scene (8), clear it.
+        # 8 = SCENE mode
+        elif work_status.HasField("mode") and work_status.mode.value != 8:
+            changes["current_scene_id"] = 0
+            changes["current_scene_name"] = None
+
+        # 3. If State is explicitly Charging (3) or Go Home (7), clear it.
+        # We avoid clearing on 0 (Standby) because partial updates might default to 0.
+        elif work_status.state in [3, 7]:
+            changes["current_scene_id"] = 0
+            changes["current_scene_name"] = None
+
+    except Exception as e:
+        _LOGGER.warning("Error parsing Work Status: %s", e, exc_info=True)
+
+
+def _process_other_dps(
+    state: VacuumState, dps: dict[str, Any], changes: dict[str, Any]
+) -> None:
+    """Process other DPS items."""
     for key, value in dps.items():
-        # Specialized keys are handled in the decode loop above
+        # Specialized keys are handled in their respective functions
         if key in (DPS_MAP["WORK_STATUS"], DPS_MAP["STATION_STATUS"]):
             continue
 
@@ -246,12 +271,6 @@ def update_state(
 
         except Exception as e:
             _LOGGER.warning("Error parsing DPS %s: %s", key, e, exc_info=True)
-
-    # Log received_fields for debugging sensor availability
-    if "received_fields" in changes:
-        _LOGGER.debug("Received fields now: %s", changes["received_fields"])
-
-    return replace(state, **changes), changes
 
 
 def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
@@ -381,8 +400,8 @@ def _map_clean_speed(value: Any) -> str:
 
         if 0 <= idx < len(EUFY_CLEAN_NOVEL_CLEAN_SPEED):
             return EUFY_CLEAN_NOVEL_CLEAN_SPEED[idx].value
-    except Exception:
-        pass
+    except Exception as e:
+        _LOGGER.debug("Error mapping clean speed: %s", e)
     return "Standard"
 
 
@@ -391,12 +410,14 @@ def _map_dock_status(value: StationResponse) -> str:
     try:
         status = value.status
         _LOGGER.debug(
-            f"Dock status raw: state={status.state}, "
-            f"collecting_dust={status.collecting_dust}, "
-            f"clear_water_adding={status.clear_water_adding}, "
-            f"waste_water_recycling={status.waste_water_recycling}, "
-            f"disinfectant_making={status.disinfectant_making}, "
-            f"cutting_hair={status.cutting_hair}"
+            "Dock status raw: state=%s, collecting_dust=%s, clear_water_adding=%s, "
+            "waste_water_recycling=%s, disinfectant_making=%s, cutting_hair=%s",
+            status.state,
+            status.collecting_dust,
+            status.clear_water_adding,
+            status.waste_water_recycling,
+            status.disinfectant_making,
+            status.cutting_hair,
         )
 
         if status.collecting_dust:
@@ -414,7 +435,8 @@ def _map_dock_status(value: StationResponse) -> str:
         state_name = StationResponse.StationStatus.State.Name(state)
         state_string = state_name.strip().lower().replace("_", " ")
         return state_string[:1].upper() + state_string[1:]
-    except Exception:
+    except Exception as e:
+        _LOGGER.debug("Error mapping dock status: %s", e)
         return "Unknown"
 
 

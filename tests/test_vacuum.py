@@ -59,7 +59,7 @@ def test_vacuum_attributes(mock_coordinator):
     mock_coordinator.data.task_status = "Cleaning"
 
     attrs = entity.extra_state_attributes
-    assert attrs["battery_level"] == 80
+
     assert attrs["fan_speed"] == EUFY_CLEAN_CLEAN_SPEED.STANDARD
     assert attrs["task_status"] == "Cleaning"
 

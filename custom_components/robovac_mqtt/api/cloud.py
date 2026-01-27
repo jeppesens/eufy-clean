@@ -20,7 +20,7 @@ class EufyLogin:
         self.password = password
         self.openudid = openudid
         self.sid = None
-        self.mqtt_credentials = None
+        self.mqtt_credentials: dict[str, Any] | None = None
         self.mqtt_devices: list[dict[str, Any]] = []
         self.eufy_api_devices: list[dict[str, Any]] = []
 
