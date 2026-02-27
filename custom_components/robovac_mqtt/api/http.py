@@ -51,7 +51,7 @@ class EufyHTTPClient:
                     "openudid": self.openudid,
                     "Content-Type": "application/json",
                     "clientType": "1",
-                    "User-Agent": "EufyHome-iOS-2.14.0-6",
+                    "User-Agent": "EufyHome-Android-3.1.3-753",
                     "Connection": "keep-alive",
                 },
                 json={
@@ -67,7 +67,11 @@ class EufyHTTPClient:
                         _LOGGER.debug("eufyLogin successful")
                         self.session = response_json
                         return response_json
-                _LOGGER.error("Login failed: %s", await response.json())
+                try:
+                    body = await response.json()
+                except Exception:
+                    body = await response.text()
+                _LOGGER.error("Login failed: %s %s", response.status, body)
                 return None
 
     async def get_user_info(self) -> dict[str, Any] | None:
