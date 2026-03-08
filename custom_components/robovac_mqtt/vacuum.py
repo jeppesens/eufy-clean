@@ -180,12 +180,6 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         """Return whether config-entry-backed segment persistence is available."""
         return self._config_entry is not None
 
-    def _get_stored_segments_payload(self) -> list[dict[str, Any]] | None:
-        """Return stored serialized segments from the config entry."""
-        if self._config_entry is None:
-            return None
-        return self._config_entry.data.get(_LAST_SEEN_SEGMENTS_KEY)
-
     def _get_room_clean_defaults(self) -> dict[str, Any]:
         """Return default room-clean parameters derived from coordinator state."""
         defaults: dict[str, Any] = {}
@@ -344,7 +338,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
     @property
     def last_seen_segments(self) -> list[Segment] | None:
         """Return segments as seen by the user, when last mapping the areas."""
-        stored_segments = self._get_stored_segments_payload()
+        stored_segments = self.coordinator.last_seen_segments
         if stored_segments is None:
             return None
         return _deserialize_segments(stored_segments)
@@ -487,17 +481,9 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
     def _store_last_seen_segments(self, segments: list[Segment]) -> None:
         """Store the current segments as last seen and clear any existing issue."""
-        if not self._has_config_entry():
-            _LOGGER.warning("Cannot store last seen segments: no config entry available")
-            return
         serialized_segments = _serialize_segments(segments)
-        new_data = {
-            **self._config_entry.data,
-            _LAST_SEEN_SEGMENTS_KEY: serialized_segments,
-        }
-        self.coordinator.hass.config_entries.async_update_entry(
-            self._config_entry,
-            data=new_data,
+        self.coordinator.hass.async_create_task(
+            self.coordinator.async_save_segments(serialized_segments)
         )
         
         # Clear any existing segment change issue

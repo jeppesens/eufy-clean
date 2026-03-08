@@ -8,6 +8,7 @@ from typing import Any
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EufyCleanClient
@@ -49,6 +50,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
         self._pending_dock_status: str | None = None
         self._vacuum_entity = None  # Will be set by vacuum entity
+        self.last_seen_segments: list[Any] | None = None
+        self._store = Store(hass, 1, f"{DOMAIN}.{self.device_id}")
+
         if dps := device_info.get("dps"):
             self.data, _ = update_state(self.data, dps)
 
@@ -94,6 +98,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
             self.client.set_on_message(self._handle_mqtt_message)
             await self.client.connect()
+            await self.async_load_storage()
 
         except Exception as e:
             _LOGGER.error(
@@ -196,3 +201,23 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         For now, just return current state.
         """
         return self.data
+
+    async def async_load_storage(self) -> None:
+        """Load data from storage."""
+        if data := await self._store.async_load():
+            self.last_seen_segments = data.get("last_seen_segments")
+            _LOGGER.debug(
+                "Loaded %s segments from storage for %s",
+                len(self.last_seen_segments) if self.last_seen_segments else 0,
+                self.device_name,
+            )
+
+    async def async_save_segments(self, segments_payload: list[dict[str, Any]]) -> None:
+        """Save segments to storage."""
+        self.last_seen_segments = segments_payload
+        await self._store.async_save({"last_seen_segments": segments_payload})
+        _LOGGER.debug(
+            "Saved %s segments to storage for %s",
+            len(segments_payload),
+            self.device_name,
+        )

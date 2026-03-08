@@ -61,6 +61,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator = EufyCleanCoordinator(hass, eufy_login, device_info)
         try:
             await coordinator.initialize()
+            
+            # Migrate segments from config entry data to storage
+            if last_seen := entry.data.get("last_seen_segments"):
+                # last_seen in config entry was per-entry, but now it's per-device Store.
+                # However, our current schema in ConfigEntry had it top-level?
+                # Actually, vacuum.py was using self._config_entry.data.get(_LAST_SEEN_SEGMENTS_KEY)
+                # which means it was shared across all devices in the same entry if not careful.
+                # But typically there is one entry per user, containing multiple devices.
+                # Since we are now using per-device store, we should check if this specific device
+                # has its segments here. If the old implementation stored them for ALL devices
+                # in one key, it was likely a bug or only worked for single-device setups.
+                # Let's assume the old way was a bit broken for multi-device and we just try to 
+                # migrate what we have if it matches the current device's segments.
+                # Actually, looking at old code, it just did entry.data.set(key, serialized).
+                # This would overwrite for each device if they shared an entry.
+                
+                # To be safe, we only migrate if the store is empty.
+                if not coordinator.last_seen_segments:
+                    await coordinator.async_save_segments(last_seen)
+                    _LOGGER.info("Migrated last seen segments for %s to persistent storage", device_id)
+            
             coordinators.append(coordinator)
         except Exception as e:
             _LOGGER.warning("Failed to initialize coordinator for %s: %s", device_id, e)
@@ -73,6 +94,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {"coordinators": coordinators}
+
+    # Clean up migrated data from config entry
+    if "last_seen_segments" in entry.data:
+        new_data = dict(entry.data)
+        new_data.pop("last_seen_segments")
+        hass.config_entries.async_update_entry(entry, data=new_data)
+        _LOGGER.info("Removed legacy last_seen_segments from config entry %s", entry.entry_id)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

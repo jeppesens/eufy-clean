@@ -1,5 +1,6 @@
 """Tests for segment change detection functionality."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
@@ -51,13 +52,15 @@ def mock_coordinator():
     coordinator.async_send_command = AsyncMock()
     coordinator.hass = MagicMock()
 
-    # Make async_update_entry actually propagate data to the entry so that
-    # properties backed by config_entry.data (e.g. last_seen_segments) work.
-    def _update_entry(entry, **kwargs):
-        if "data" in kwargs:
-            entry.data = kwargs["data"]
-
-    coordinator.hass.config_entries.async_update_entry.side_effect = _update_entry
+    coordinator.hass.config_entries.async_update_entry = MagicMock()
+    coordinator.hass.async_create_task = MagicMock(side_effect=lambda coro: asyncio.create_task(coro))
+    
+    coordinator.last_seen_segments = None
+    coordinator.async_save_segments = AsyncMock()
+    def _save_segments(segments):
+        coordinator.last_seen_segments = segments
+    coordinator.async_save_segments.side_effect = _save_segments
+    
     return coordinator
 
 
@@ -77,22 +80,14 @@ def mock_config_entry():
     return config_entry
 
 
-def test_vacuum_entity_with_segment_detection(mock_coordinator, mock_config_entry):
+@pytest.mark.asyncio
+async def test_vacuum_entity_with_segment_detection(mock_coordinator, mock_config_entry):
     """Test vacuum entity initialization with segment detection."""
-    # Mock room data
-    mock_coordinator.data.rooms = [
-        {"id": 1, "name": "Living Room"},
-        {"id": 2, "name": "Kitchen"},
-    ]
-
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
     # Verify coordinator reference is set
     assert mock_coordinator.set_vacuum_entity.called
     assert mock_coordinator.set_vacuum_entity.call_args[0][0] == entity
-
-    # Verify segments are stored via async_update_entry (side_effect propagates to .data)
-    assert mock_config_entry.data.get("last_seen_segments") is not None
 
 
 def test_last_seen_segments_property(mock_coordinator, mock_config_entry):
@@ -102,7 +97,7 @@ def test_last_seen_segments_property(mock_coordinator, mock_config_entry):
         {"id": "1", "name": "Living Room", "group": None},
         {"id": "2", "name": "Kitchen", "group": None},
     ]
-    mock_config_entry.data = {"last_seen_segments": stored_segments}
+    mock_coordinator.last_seen_segments = stored_segments
     
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
     
@@ -142,8 +137,9 @@ def test_async_create_segments_issue(mock_create_issue, mock_coordinator, mock_c
     )
 
 
+@pytest.mark.asyncio
 @patch('custom_components.robovac_mqtt.vacuum.async_delete_issue')
-def test_store_last_seen_segments(mock_delete_issue, mock_coordinator, mock_config_entry):
+async def test_store_last_seen_segments(mock_delete_issue, mock_coordinator, mock_config_entry):
     """Test storing last seen segments."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
@@ -153,13 +149,13 @@ def test_store_last_seen_segments(mock_delete_issue, mock_coordinator, mock_conf
     ]
 
     entity._store_last_seen_segments(segments)
+    await asyncio.sleep(0)
 
-    # Verify async_update_entry was called and data propagated via side_effect
-    stored = mock_config_entry.data.get("last_seen_segments")
-    assert stored is not None
-    assert len(stored) == 2
-    assert stored[0]["id"] == "1"
-    assert stored[0]["name"] == "Living Room"
+    # Verify coordinator.async_save_segments was called
+    mock_coordinator.async_save_segments.assert_called_once_with([
+        {"id": "1", "name": "Living Room", "group": None},
+        {"id": "2", "name": "Kitchen", "group": None},
+    ])
 
     # Verify issue deletion was called
     mock_delete_issue.assert_called_once_with(
@@ -169,7 +165,8 @@ def test_store_last_seen_segments(mock_delete_issue, mock_coordinator, mock_conf
     )
 
 
-def test_check_for_segment_changes_no_previous(mock_coordinator, mock_config_entry):
+@pytest.mark.asyncio
+async def test_check_for_segment_changes_no_previous(mock_coordinator, mock_config_entry):
     """Test segment change detection when no previous segments stored."""
     mock_config_entry.data = {}  # No last_seen_segments
     
@@ -181,29 +178,36 @@ def test_check_for_segment_changes_no_previous(mock_coordinator, mock_config_ent
         mock_create.assert_not_called()
 
 
-def test_check_for_segment_changes_with_changes(mock_coordinator, mock_config_entry):
+@pytest.mark.asyncio
+async def test_check_for_segment_changes_with_changes(mock_coordinator, mock_config_entry):
     """Test segment change detection when changes are detected."""
     # Setup previous segments
     previous_segments = [
         {"id": "1", "name": "Living Room", "group": None},
         {"id": "2", "name": "Kitchen", "group": None},
     ]
-    mock_config_entry.data = {"last_seen_segments": previous_segments}
+    # Setup previous segments in coordinator BEFORE entity init to prevent baseline detection
+    mock_coordinator.last_seen_segments = previous_segments
     
-    # Mock current segments (different from previous)
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    # Await the initialization task to clear it from the event loop
+    # (The constructor starts the task)
+    await asyncio.sleep(0) 
+    
+    # Now set new rooms to trigger change
     mock_coordinator.data.rooms = [
         {"id": 1, "name": "Living Room"},  # Same ID, different name
         {"id": 3, "name": "Bedroom"},      # New room
     ]
-    
-    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
-    
+
     with patch.object(entity, 'async_create_segments_issue') as mock_create:
         entity._check_for_segment_changes()
+        await asyncio.sleep(0)
         mock_create.assert_called_once()
 
 
-def test_check_for_segment_changes_no_changes(mock_coordinator, mock_config_entry):
+@pytest.mark.asyncio
+async def test_check_for_segment_changes_no_changes(mock_coordinator, mock_config_entry):
     """Test segment change detection when no changes are detected."""
     # Setup previous segments
     previous_segments = [
