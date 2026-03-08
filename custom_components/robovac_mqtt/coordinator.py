@@ -48,8 +48,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             None  # Timer for dock IDLE debounce
         )
         self._pending_dock_status: str | None = None
+        self._vacuum_entity = None  # Will be set by vacuum entity
         if dps := device_info.get("dps"):
             self.data, _ = update_state(self.data, dps)
+
+    def set_vacuum_entity(self, vacuum_entity) -> None:
+        """Set reference to vacuum entity for segment change detection."""
+        self._vacuum_entity = vacuum_entity
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -151,6 +156,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 )
 
                 self.async_set_updated_data(state_to_publish)
+
+                # Check for segment changes if rooms were updated
+                if "rooms" in changes and self._vacuum_entity:
+                    self._vacuum_entity._check_for_segment_changes()
 
         except Exception as e:
             _LOGGER.warning("Error handling MQTT message: %s", e)

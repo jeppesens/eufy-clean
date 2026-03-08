@@ -72,6 +72,14 @@ class VacuumState:
 
     # Preferences
     preferences: CleaningPreferences = field(default_factory=CleaningPreferences)
+    cleaning_mode: str = "Vacuum"  # Matter-compatible cleaning mode preference
+    mop_water_level: str = "Medium"  # Global mop water level from DPS 154
+    
+    # Additional DPS 154 fields for enhanced functionality
+    cleaning_intensity: str = "Normal"  # Clean extent from DPS 154
+    carpet_strategy: str = "Auto Raise"  # Clean carpet strategy from DPS 154
+    corner_cleaning: str = "Normal"  # Mop corner cleaning from DPS 154
+    smart_mode: bool = False  # Smart mode switch from DPS 154
 
     # Raw data for fallback/diagnostics
     raw_dps: dict[str, Any] = field(default_factory=dict)

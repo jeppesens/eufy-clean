@@ -12,7 +12,7 @@ from ..const import (
     MOP_CORNER_MAP,
     MOP_LEVEL_MAP,
 )
-from ..proto.cloud.clean_param_pb2 import Fan
+from ..proto.cloud.clean_param_pb2 import CleanParam, CleanParamRequest, Fan
 from ..proto.cloud.consumable_pb2 import ConsumableRequest
 from ..proto.cloud.control_pb2 import AutoClean, ModeCtrlRequest, SelectRoomsClean
 from ..proto.cloud.map_edit_pb2 import MapEditRequest
@@ -20,6 +20,25 @@ from ..proto.cloud.station_pb2 import StationRequest
 from ..utils import encode, encode_message
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _normalize_clean_mode(clean_mode: str) -> str:
+    """Normalize a cleaning mode label into a map lookup key."""
+    return clean_mode.strip().lower().replace(" ", "_")
+
+
+def build_set_cleaning_mode_command(clean_mode: str) -> dict[str, str]:
+    """Build command to set global cleaning mode."""
+    clean_type_val = CLEAN_TYPE_MAP.get(_normalize_clean_mode(clean_mode))
+    if clean_type_val is None:
+        _LOGGER.warning("Invalid clean_mode '%s' ignored", clean_mode)
+        return {}
+
+    req = CleanParamRequest(
+        clean_param=CleanParam(clean_type={"value": clean_type_val}),
+    )
+    value = encode_message(req)
+    return {DPS_MAP["CLEANING_PARAMETERS"]: value}
 
 
 def _build_mode_ctrl(method: int) -> dict[str, str]:
@@ -54,6 +73,35 @@ def build_set_clean_speed_command(clean_speed: str) -> dict[str, str]:
         pass
 
     return {}
+
+
+def build_set_water_level_command(water_level: str) -> dict[str, str]:
+    """Build command to set global mop water level."""
+    level_val = MOP_LEVEL_MAP.get(water_level.lower())
+    if level_val is None:
+        _LOGGER.warning("Invalid water_level '%s' ignored", water_level)
+        return {}
+    req = CleanParamRequest(
+        clean_param=CleanParam(mop_mode={"level": level_val}),
+    )
+    value = encode_message(req)
+    return {DPS_MAP["CLEANING_PARAMETERS"]: value}
+
+
+def build_set_cleaning_intensity_command(cleaning_intensity: str) -> dict[str, str]:
+    """Build command to set global cleaning intensity."""
+    extent_val = CLEAN_EXTENT_MAP.get(cleaning_intensity.lower())
+    if extent_val is None:
+        _LOGGER.warning(
+            "Invalid cleaning_intensity '%s' ignored", cleaning_intensity
+        )
+        return {}
+
+    req = CleanParamRequest(
+        clean_param=CleanParam(clean_extent={"value": extent_val}),
+    )
+    value = encode_message(req)
+    return {DPS_MAP["CLEANING_PARAMETERS"]: value}
 
 
 def build_scene_clean_command(scene_id: int) -> dict[str, str]:
@@ -153,7 +201,7 @@ def build_set_room_custom_command(
 
         # Clean Mode
         if r_clean_mode:
-            clean_type_val = CLEAN_TYPE_MAP.get(r_clean_mode.lower())
+            clean_type_val = CLEAN_TYPE_MAP.get(_normalize_clean_mode(r_clean_mode))
             if clean_type_val is not None:
                 custom_cfg.clean_type.value = clean_type_val
             else:
@@ -269,8 +317,16 @@ def build_command(command: str, **kwargs: Any) -> dict[str, Any]:
         return _build_manual_cmd("go_collect_dust", True)
 
     # Complex
+    if cmd == "set_cleaning_mode":
+        return build_set_cleaning_mode_command(kwargs.get("clean_mode", ""))
+    if cmd == "set_cleaning_intensity":
+        return build_set_cleaning_intensity_command(
+            kwargs.get("cleaning_intensity", "")
+        )
     if cmd == "set_fan_speed":
         return build_set_clean_speed_command(kwargs.get("fan_speed", ""))
+    if cmd == "set_water_level":
+        return build_set_water_level_command(kwargs.get("water_level", ""))
     if cmd == "scene_clean":
         return build_scene_clean_command(int(kwargs.get("scene_id", 0)))
     if cmd == "room_clean":
