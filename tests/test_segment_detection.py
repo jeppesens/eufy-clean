@@ -4,11 +4,11 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
-from homeassistant.components.vacuum import Segment
 from homeassistant.helpers.issue_registry import IssueSeverity
 
 from custom_components.robovac_mqtt.vacuum import (
     RoboVacMQTTEntity,
+    Segment,
     _serialize_segments,
     _deserialize_segments,
 )
