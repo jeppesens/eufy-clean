@@ -455,6 +455,7 @@ class MopIntensitySelectEntity(_StateBackedSelectEntity):
     _attr_name = "Mop Intensity"
     _attr_icon = "mdi:water"
     _attr_options = ["Quiet", "Automatic", "Max"]
+    _attr_entity_category = EntityCategory.CONFIG
     _command_name = "set_water_level"
     _command_arg_name = "water_level"
     _state_field = "mop_water_level"
