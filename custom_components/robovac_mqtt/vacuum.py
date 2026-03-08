@@ -374,8 +374,13 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         # New-style: 'rooms' is a list of dicts with per-room config
         rooms_config = params.get("rooms")
         if rooms_config and isinstance(rooms_config, list):
+            # Extract IDs for the clean command
             room_ids = [int(r["id"]) for r in rooms_config if "id" in r]
+
+            # 1. Configure Room Params (Pass the list of dicts)
             await self._async_send_room_custom(rooms_config, map_id)
+
+            # 2. Start Clean with Custom Mode
             await self._async_send_room_clean(room_ids, map_id, mode="CUSTOMIZE")
             return
 
@@ -398,6 +403,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         )
 
         if has_explicit_custom:
+            # 1. Configure Room Params
             await self._async_send_room_custom(
                 room_ids,
                 map_id,
@@ -408,8 +414,10 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                 clean_intensity=clean_intensity,
                 edge_mopping=edge_mopping,
             )
+            # 2. Start Clean with Custom Mode
             await self._async_send_room_clean(room_ids, map_id, mode="CUSTOMIZE")
         else:
+            # Standard room clean (no custom settings)
             await self._async_send_room_clean(room_ids, map_id)
 
     async def async_send_command(

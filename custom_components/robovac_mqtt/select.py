@@ -254,11 +254,15 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         """Return the currently active scene."""
         current_id = self.coordinator.data.current_scene_id
         if current_id > 0:
+            # Try to match by ID in the list to return the name from the list
+            # This ensures we return a valid option even if the name format varies slightly
             scene = next(
                 (s for s in self.coordinator.data.scenes if s["id"] == current_id), None
             )
             if scene:
                 return _format_option_label(scene, "Scene")
+
+            # Fallback to reported name if available (even if not in options list)
             if self.coordinator.data.current_scene_name:
                 return f"{self.coordinator.data.current_scene_name} (ID: {current_id})"
 
@@ -267,6 +271,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Trigger the selected scene."""
         scenes = self.coordinator.data.scenes
+        # Find scene ID by matching the formatted option string
         scene = next(
             (s for s in scenes if _format_option_label(s, "Scene") == option),
             None,
@@ -276,6 +281,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             return
 
         scene_id = scene["id"]
+        _LOGGER.info("Triggering scene '%s' (ID: %s)", option, scene_id)
 
         command = build_command("scene_clean", scene_id=scene_id)
         await self.coordinator.async_send_command(command)
@@ -309,6 +315,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
         rooms = self.coordinator.data.rooms
+        # Find room ID by matching the formatted option string
         room = next(
             (r for r in rooms if _format_option_label(r, "Room") == option),
             None,
@@ -318,7 +325,14 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             return
 
         room_id = room["id"]
+        # Use discovered map_id if available, otherwise fallback to 1
         map_id = self.coordinator.data.map_id or 1
+        _LOGGER.info(
+            "Triggering cleaning for room '%s' (ID: %s, Map ID: %s)",
+            option,
+            room_id,
+            map_id,
+        )
 
         command = build_command("room_clean", room_ids=[room_id], map_id=map_id)
         await self.coordinator.async_send_command(command)

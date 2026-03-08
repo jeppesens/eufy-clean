@@ -388,7 +388,15 @@ def _map_work_status(status: WorkStatus) -> str:
 
 
 def _map_trigger_source(value: int) -> str:
-    """Map Trigger.Source to string."""
+    """Map Trigger.Source to string.
+
+    0: UNKNOWN
+    1: APP
+    2: KEY
+    3: TIMING
+    4: ROBOT
+    5: REMOTE_CTRL
+    """
     return TRIGGER_SOURCE_NAMES.get(value, "unknown")
 
 
