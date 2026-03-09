@@ -496,9 +496,6 @@ def _parse_scene_info(value: Any) -> list[dict[str, Any]]:
         return []
 
 
-
-
-
 def _parse_map_data(value: Any) -> dict[str, Any] | None:
     """Parse Map Data (Universal or RoomParams) from DPS."""
     # UniversalDataResponse
@@ -510,7 +507,7 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
             rooms = []
             for r in universal_data.cur_map_room.data:
                 name = (r.name or "").strip() or f"Room {r.id}"
-                rooms.append({"id": r.id, "name": f"{name} (ID: {r.id})"})
+                rooms.append({"id": r.id, "name": name})
             return {"map_id": universal_data.cur_map_room.map_id, "rooms": rooms}
     except Exception as e:
         _LOGGER.debug("UniversalDataResponse parse failed: %s", e)
@@ -524,7 +521,7 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
             rooms = []
             for r in room_params.rooms:
                 name = (r.name or "").strip() or f"Room {r.id}"
-                rooms.append({"id": r.id, "name": f"{name} (ID: {r.id})"})
+                rooms.append({"id": r.id, "name": name})
             return {"map_id": room_params.map_id, "rooms": rooms}
     except Exception as e:
         _LOGGER.debug("RoomParams parse failed: %s", e)
@@ -624,10 +621,7 @@ def _process_cleaning_parameters(
         _LOGGER.debug("DPS 154: mop_mode not present in cleaning parameters")
 
     # Extract Corner Cleaning Mode
-    if (
-        clean_param.HasField("mop_mode")
-        and clean_param.mop_mode.corner_clean != 0
-    ):
+    if clean_param.HasField("mop_mode"):
         corner_val = clean_param.mop_mode.corner_clean
         changes["corner_cleaning"] = CORNER_CLEANING_NAMES.get(corner_val, "Normal")
         _track_field(state, changes, "corner_cleaning")

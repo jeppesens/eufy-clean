@@ -198,7 +198,7 @@ FAN_SUCTION_NAMES = {
     1: "Standard", 
     2: "Turbo",
     3: "Max",
-    4: "Max Plus",
+    4: "Boost IQ",
 }
 
 

@@ -37,13 +37,9 @@ class MockFan:
 class MockMopMode:
     def __init__(self, has_corner=True):
         self.level = 1  # MIDDLE
-        # Protobuf uses 0 as the default / "not set" sentinel for integer fields,
-        # not None.  Using None here caused `None != 0` → True, letting the
-        # corner_clean extraction run even when the field was absent.
+        # corner_clean is a scalar field on mop_mode; 0 = Normal, 1 = Deep.
+        # The parser now tracks corner_clean whenever mop_mode is present.
         self.corner_clean = 1 if has_corner else 0
-
-    def HasField(self, field_name):
-        return field_name == "corner_clean" and self.corner_clean != 0
 
 
 class MockCleanExtent:
@@ -105,7 +101,10 @@ def test_process_cleaning_parameters_partial():
     expected_fields = {
         'cleaning_mode': 'Vacuum and mop',
         'cleaning_intensity': 'Narrow',
-        'smart_mode': True
+        'smart_mode': True,
+        # corner_cleaning is now tracked whenever mop_mode is present
+        # (corner_clean=0 maps to "Normal")
+        'corner_cleaning': 'Normal',
     }
     
     # Should have expected fields
@@ -114,7 +113,7 @@ def test_process_cleaning_parameters_partial():
         assert changes[field] == expected_value, f"Field {field}: expected {expected_value}, got {changes[field]}"
     
     # Should NOT have missing fields
-    missing_fields = ['fan_speed', 'corner_cleaning', 'carpet_strategy']
+    missing_fields = ['fan_speed', 'carpet_strategy']
     for field in missing_fields:
         assert field not in changes, f"Field {field} should be absent but found: {changes.get(field)}"
 

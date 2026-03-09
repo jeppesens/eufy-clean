@@ -337,7 +337,12 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             map_id,
         )
 
-        command = build_command("room_clean", room_ids=[room_id], map_id=map_id)
+        # Always use CUSTOMIZE mode to apply user preferences from select
+        # entities.  This ensures room cleaning respects the cleaning_mode,
+        # suction_level, and mop_intensity settings the user has configured.
+        command = build_command(
+            "room_clean", room_ids=[room_id], map_id=map_id, mode="CUSTOMIZE"
+        )
         await self.coordinator.async_send_command(command)
 
         self.async_write_ha_state()
@@ -400,7 +405,10 @@ class _StateBackedSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEn
 
 
 class SuctionLevelSelectEntity(_StateBackedSelectEntity):
-    """Select entity for adjusting suction level."""
+    """Select entity for adjusting suction level.
+
+    Hidden until a fan speed value is reported from DPS 154.
+    """
 
     _attr_has_entity_name = True
     _attr_name = "Suction Level"
@@ -410,6 +418,7 @@ class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     _command_name = "set_fan_speed"
     _command_arg_name = "fan_speed"
     _state_field = "fan_speed"
+    _available_field = "fan_speed"
     _log_label = "Suction level"
 
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
@@ -418,7 +427,10 @@ class SuctionLevelSelectEntity(_StateBackedSelectEntity):
 
 
 class CleaningModeSelectEntity(_StateBackedSelectEntity):
-    """Select entity for adjusting cleaning mode."""
+    """Select entity for adjusting cleaning mode.
+
+    Hidden until a cleaning mode value is reported from DPS 154.
+    """
 
     _attr_has_entity_name = True
     _attr_name = "Cleaning Mode"
@@ -428,6 +440,7 @@ class CleaningModeSelectEntity(_StateBackedSelectEntity):
     _command_name = "set_cleaning_mode"
     _command_arg_name = "clean_mode"
     _state_field = "cleaning_mode"
+    _available_field = "cleaning_mode"
     _log_label = "Cleaning mode"
 
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
@@ -436,7 +449,14 @@ class CleaningModeSelectEntity(_StateBackedSelectEntity):
 
 
 class WaterLevelSelectEntity(_StateBackedSelectEntity):
-    """Select entity for adjusting global mop water level."""
+    """Select entity for adjusting global mop water level.
+
+    This entity and MopIntensitySelectEntity both control the device's
+    water level — WaterLevelSelectEntity uses the raw device names
+    (Low/Medium/High) while MopIntensitySelectEntity uses Matter-
+    compatible aliases (Quiet/Automatic/Max).  Both are intentional:
+    the Matter bridge discovers MopIntensitySelectEntity.
+    """
 
     _attr_has_entity_name = True
     _attr_name = "Water Level"

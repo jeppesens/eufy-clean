@@ -455,17 +455,17 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         # Handle Apple Home app_segment_clean command
         if command == "app_segment_clean" and isinstance(params, list):
-            # Convert to room_clean format
-            room_ids = [int(room_id) for room_id in params if isinstance(room_id, (int, str, float)) and str(room_id).isdigit()]
+            # Convert to room_clean format; handle int, str, and float IDs from JSON
+            room_ids = []
+            for room_id in params:
+                try:
+                    room_ids.append(int(room_id))
+                except (ValueError, TypeError):
+                    pass
             if room_ids:
                 await self._async_handle_room_clean({"room_ids": room_ids})
                 return
             return
-
-        # Check if this is a basic start command that might need room info
-        if command == "start" or command == "start_cleaning":
-            # TODO: Add logic here to check for selected rooms and convert to room_clean
-            pass
 
         command_kwargs: dict[str, Any] = {}
         if isinstance(params, dict):
