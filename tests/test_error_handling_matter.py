@@ -1,5 +1,9 @@
 import pytest
-"""Unit tests for error handling in Matter-aligned entities."""
+"""Unit tests for error handling in Matter-aligned entities.
+
+Tests ensure robust error handling and graceful degradation when working
+with the home-assistant-matter-hub bridge and Matter protocol.
+"""
 
 # pylint: disable=redefined-outer-name
 
@@ -185,15 +189,15 @@ def test_cleaning_mode_current_option(mock_coordinator):
 
 
 # ============================================================================
-# Backward Compatibility Tests (Requirements 5.1, 5.2, 5.3, 5.4, 5.5)
+# Backward Compatibility Tests
 # ============================================================================
 
 
 def test_vacuum_entity_features_unchanged(mock_coordinator):
     """Test that vacuum entity still supports all existing features.
 
-    Validates: Requirement 5.1 - Vacuum entity continues to support all existing
-    VacuumEntityFeature flags. CLEAN_AREA was added for HA 2026.3 support.
+    Ensures backward compatibility with existing VacuumEntityFeature flags.
+    CLEAN_AREA was added for HA 2026.3 support.
     """
     from homeassistant.components.vacuum import VacuumEntityFeature
 
@@ -223,8 +227,7 @@ def test_vacuum_entity_features_unchanged(mock_coordinator):
 async def test_vacuum_entity_async_set_fan_speed_unchanged(mock_coordinator):
     """Test that vacuum entity async_set_fan_speed method still works.
 
-    Validates: Requirement 5.2 - Existing fan_speed property and async_set_fan_speed
-    method remain functional.
+    Ensures backward compatibility for fan speed control.
     """
     entity = RoboVacMQTTEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -244,7 +247,7 @@ async def test_vacuum_entity_async_set_fan_speed_unchanged(mock_coordinator):
 async def test_vacuum_entity_fan_speed_property_unchanged(mock_coordinator):
     """Test that vacuum entity fan_speed property still works.
 
-    Validates: Requirement 5.2 - Existing fan_speed property remains functional.
+    Ensures backward compatibility for fan speed property access.
     """
     # Set fan speed in coordinator
     mock_coordinator.data.fan_speed = "Turbo"
@@ -260,8 +263,7 @@ async def test_vacuum_entity_fan_speed_property_unchanged(mock_coordinator):
 async def test_vacuum_entity_send_command_room_clean_unchanged(mock_coordinator):
     """Test that vacuum entity send_command for room_clean still works.
 
-    Validates: Requirement 5.3 - Existing send_command interface for room_clean
-    remains unchanged.
+    Ensures backward compatibility for room cleaning commands.
     """
     entity = RoboVacMQTTEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -280,8 +282,7 @@ async def test_vacuum_entity_send_command_room_clean_unchanged(mock_coordinator)
 async def test_vacuum_entity_send_command_scene_clean_unchanged(mock_coordinator):
     """Test that vacuum entity send_command for scene_clean still works.
 
-    Validates: Requirement 5.3 - Existing send_command interface for scene_clean
-    remains unchanged.
+    Ensures backward compatibility for scene cleaning commands.
     """
     entity = RoboVacMQTTEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -299,8 +300,7 @@ async def test_vacuum_entity_send_command_scene_clean_unchanged(mock_coordinator
 def test_existing_select_entity_unique_ids_unchanged(mock_coordinator):
     """Test that existing select entities maintain their unique IDs.
 
-    Validates: Requirement 5.5 - When new entities are added, existing entity
-    unique IDs shall not change.
+    Ensures that adding new entities doesn't change existing unique IDs.
     """
     from custom_components.robovac_mqtt.select import (
         RoomSelectEntity,
@@ -319,8 +319,7 @@ def test_existing_select_entity_unique_ids_unchanged(mock_coordinator):
 def test_new_select_entity_unique_ids_format(mock_coordinator):
     """Test that new select entities follow consistent unique ID format.
 
-    Validates: Requirement 5.5 - New entities use consistent unique ID forma
-    that doesn't conflict with existing entities.
+    Ensures new entities use consistent unique ID format that doesn't conflict.
     """
     # Create new select entities
     suction_entity = SuctionLevelSelectEntity(mock_coordinator)
@@ -338,7 +337,7 @@ def test_new_select_entity_unique_ids_format(mock_coordinator):
 def test_vacuum_entity_unique_id_unchanged(mock_coordinator):
     """Test that vacuum entity unique ID remains unchanged.
 
-    Validates: Requirement 5.5 - Vacuum entity unique ID has not changed.
+    Ensures backward compatibility for vacuum entity identification.
     """
     entity = RoboVacMQTTEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -350,7 +349,7 @@ def test_vacuum_entity_unique_id_unchanged(mock_coordinator):
 def test_battery_sensor_unique_id_format(mock_coordinator):
     """Test that battery sensor entity follows consistent unique ID format.
 
-    Validates: Requirement 5.5 - Battery sensor uses consistent unique ID format.
+    Ensures battery sensor uses consistent unique ID format.
     """
     entity = BatterySensorEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -363,8 +362,7 @@ def test_battery_sensor_unique_id_format(mock_coordinator):
 async def test_existing_scene_select_entity_still_functions(mock_coordinator):
     """Test that existing scene select entity continues to function.
 
-    Validates: Requirement 5.4 - Existing select entities (Scene, Room, Dock settings)
-    continue to function as before.
+    Ensures backward compatibility for scene select functionality.
     """
     from custom_components.robovac_mqtt.select import SceneSelectEntity
 
@@ -394,8 +392,7 @@ async def test_existing_scene_select_entity_still_functions(mock_coordinator):
 async def test_existing_room_select_entity_still_functions(mock_coordinator):
     """Test that existing room select entity continues to function.
 
-    Validates: Requirement 5.4 - Existing select entities (Scene, Room, Dock settings)
-    continue to function as before.
+    Ensures backward compatibility for room select functionality.
     """
     from custom_components.robovac_mqtt.select import RoomSelectEntity
 
@@ -425,8 +422,7 @@ async def test_existing_room_select_entity_still_functions(mock_coordinator):
 def test_vacuum_entity_extra_state_attributes_includes_legacy_fields(mock_coordinator):
     """Test that vacuum entity extra_state_attributes includes all legacy fields.
 
-    Validates: Requirement 5.1 - Vacuum entity continues to expose all existing
-    state attributes.
+    Ensures backward compatibility for state attribute exposure.
     """
     # Setup coordinator data with all legacy fields
     mock_coordinator.data.fan_speed = "Standard"
@@ -465,8 +461,7 @@ def test_vacuum_entity_extra_state_attributes_includes_legacy_fields(mock_coordi
 async def test_vacuum_entity_all_existing_methods_still_work(mock_coordinator):
     """Test that all existing vacuum entity methods still work.
 
-    Validates: Requirement 5.1, 5.2 - All existing vacuum entity methods remain
-    functional.
+    Ensures backward compatibility for all vacuum entity methods.
     """
     entity = RoboVacMQTTEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -495,7 +490,7 @@ async def test_vacuum_entity_all_existing_methods_still_work(mock_coordinator):
 def test_vacuum_entity_fan_speed_list_unchanged(mock_coordinator):
     """Test that vacuum entity fan_speed_list property is unchanged.
 
-    Validates: Requirement 5.2 - Existing fan_speed_list property remains functional.
+    Ensures backward compatibility for fan speed list property.
     """
     entity = RoboVacMQTTEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -511,14 +506,13 @@ def test_vacuum_entity_fan_speed_list_unchanged(mock_coordinator):
 
 
 # ============================================================================
-# Matter Bridge Compatibility Tests (Requirements 6.1-6.7)
+# Matter Bridge Compatibility Tests
 # ============================================================================
 
 
 def test_vacuum_entity_id_format_matches_matter_expectations(mock_coordinator):
     """Test that vacuum entity ID follows expected format for Matter Bridge.
 
-    Validates: Requirement 6.1 - Entity ID format matches Matter Bridge expectations.
     Matter Bridge expects entity IDs in format: vacuum.{device_name}
     """
     entity = RoboVacMQTTEntity(mock_coordinator)
@@ -533,7 +527,6 @@ def test_vacuum_entity_id_format_matches_matter_expectations(mock_coordinator):
 def test_suction_level_entity_id_format_matches_matter_expectations(mock_coordinator):
     """Test that suction level entity ID follows expected format for Matter Bridge.
 
-    Validates: Requirement 6.3 - Suction level entity ID format matches Matter Bridge expectations.
     Matter Bridge expects entity IDs in format: select.{vacuum_name}_suction_level
     """
     entity = SuctionLevelSelectEntity(mock_coordinator)
@@ -551,7 +544,6 @@ def test_suction_level_entity_id_format_matches_matter_expectations(mock_coordin
 def test_cleaning_mode_entity_id_format_matches_matter_expectations(mock_coordinator):
     """Test that cleaning mode entity ID follows expected format for Matter Bridge.
 
-    Validates: Requirement 6.2 - Cleaning mode entity ID format matches Matter Bridge expectations.
     Matter Bridge expects entity IDs in format: select.{vacuum_name}_cleaning_mode
     """
     entity = CleaningModeSelectEntity(mock_coordinator)
@@ -569,7 +561,6 @@ def test_cleaning_mode_entity_id_format_matches_matter_expectations(mock_coordin
 def test_battery_entity_id_format_matches_matter_expectations(mock_coordinator):
     """Test that battery entity ID follows expected format for Matter Bridge.
 
-    Validates: Requirement 6.4 - Battery entity ID format matches Matter Bridge expectations.
     Matter Bridge expects entity IDs in format: sensor.{vacuum_name}_battery
     """
     entity = BatterySensorEntity(mock_coordinator)
@@ -587,7 +578,6 @@ def test_battery_entity_id_format_matches_matter_expectations(mock_coordinator):
 def test_rooms_attribute_format_matches_matter_expectations(mock_coordinator):
     """Test that rooms attribute format matches Matter Bridge expectations.
 
-    Validates: Requirement 6.5 - Rooms attribute format matches Matter Bridge expectations.
     Matter Bridge expects rooms as array of objects with "id" and "name" properties.
     """
     # Setup vacuum entity with valid room data
@@ -626,7 +616,7 @@ def test_rooms_attribute_format_matches_matter_expectations(mock_coordinator):
 def test_rooms_attribute_empty_list_when_no_data(mock_coordinator):
     """Test that rooms attribute is empty list when no room data available.
 
-    Validates: Requirement 6.5 - Rooms attribute provides empty list when no data available.
+    Ensures graceful handling when no room data is available.
     """
     # Setup vacuum entity with no room data
     mock_coordinator.data.rooms = None
@@ -646,8 +636,7 @@ def test_rooms_attribute_empty_list_when_no_data(mock_coordinator):
 def test_vacuum_entity_exposes_fan_speed_list_for_matter_discovery(mock_coordinator):
     """Test that vacuum entity exposes fan_speed_list for Matter Bridge discovery.
 
-    Validates: Requirement 6.6 - Vacuum entity exposes fan_speed_list property for
-    Matter Bridge to discover available suction levels.
+    Matter Bridge uses fan_speed_list property to discover available suction levels.
     """
     entity = RoboVacMQTTEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -668,8 +657,7 @@ def test_vacuum_entity_exposes_fan_speed_list_for_matter_discovery(mock_coordina
 def test_vacuum_entity_provides_rvc_operational_state_attributes(mock_coordinator):
     """Test that vacuum entity provides all attributes required by RVC Operational State cluster.
 
-    Validates: Requirement 6.1 - Vacuum entity provides all attributes required by
-    RVC_Operational_State cluster (activity, battery_level, error_code).
+    Ensures compatibility with RVC_Operational_State cluster requirements.
     """
     # Setup coordinator data
     mock_coordinator.data.activity = "cleaning"
@@ -694,7 +682,7 @@ def test_vacuum_entity_provides_rvc_operational_state_attributes(mock_coordinato
 def test_entity_metadata_follows_matter_conventions(mock_coordinator):
     """Test that entity metadata follows Matter Bridge conventions.
 
-    Validates: Requirement 6.7 - Entity metadata follows conventions expected by Matter Bridge.
+    Ensures proper entity naming and metadata for Matter discovery.
     All entities should use has_entity_name=True for proper device association.
     """
     # Test vacuum entity

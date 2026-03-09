@@ -306,9 +306,7 @@ async def test_mqtt_comprehensive_message_updates_all_entities(coordinator):
 async def test_mqtt_state_synchronization_timing(coordinator):
     """Test that entity state synchronization happens immediately after MQTT update.
 
-    **Validates: Requirement 8.4**
-
-    This test verifies that when the device reports state changes via MQTT,
+    Verifies that when the device reports state changes via MQTT,
     all entities update within 2 seconds (actually immediate in our implementation).
     """
     # Create all entities
@@ -433,9 +431,7 @@ async def test_mqtt_room_data_empty_to_populated(coordinator):
 async def test_mqtt_room_data_update_preserves_other_state(coordinator):
     """Test that MQTT room data update doesn't affect other entity states.
 
-    **Validates: Requirement 1.5**
-
-    This test verifies that when only room data is updated via MQTT,
+    Verifies that when only room data is updated via MQTT,
     other entity states remain unchanged.
     """
     # Create all entities
@@ -602,8 +598,6 @@ async def test_mqtt_rapid_state_changes_maintain_consistency(coordinator):
 @pytest.mark.asyncio
 async def test_room_clean_applies_user_preferences(coordinator):
     """Test that room_clean command applies user preferences from select entities.
-
-    **Validates: Requirement 8.4 - Room cleaning respects user preferences**
     """
     # Setup: Set user preferences in coordinator state
     coordinator.data.fan_speed = "Turbo"
@@ -638,8 +632,6 @@ async def test_room_clean_applies_user_preferences(coordinator):
 @pytest.mark.asyncio
 async def test_room_clean_with_explicit_params_overrides_preferences(coordinator):
     """Test that explicit params override user preferences.
-
-    **Validates: Requirement 8.4 - Explicit params take precedence**
     """
     # Setup: Set user preferences
     coordinator.data.fan_speed = "Turbo"
@@ -667,8 +659,6 @@ async def test_room_clean_with_explicit_params_overrides_preferences(coordinator
 @pytest.mark.asyncio
 async def test_room_clean_mop_mode_applies_water_level(coordinator):
     """Test that mop mode applies water level preference.
-
-    **Validates: Requirement 8.4 - Mop mode uses water level**
     """
     # Setup: Set mop mode
     coordinator.data.fan_speed = "Standard"

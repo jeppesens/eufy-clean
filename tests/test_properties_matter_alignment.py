@@ -1,9 +1,10 @@
 """Unit tests for Matter specification alignment - Room data structure validation.
 
 This module contains unit tests to verify room data structure validation
-for the Matter specification alignment implementation.
+for the Matter specification alignment with home-assistant-matter-hub.
 
-**Validates: Requirements 1.2, 1.3, 6.5**
+Tests ensure proper room ID handling, name uniqueness, and data format
+compatibility with Matter bridge requirements.
 """
 
 # pylint: disable=redefined-outer-name
@@ -18,10 +19,7 @@ def _normalize_room_ids(rooms):
 
 
 def test_room_data_empty_list():
-    """Test that empty room list is handled correctly.
-
-    **Validates: Requirements 1.2, 1.3, 6.5**
-    """
+    """Test that empty room list is handled correctly."""
     state = VacuumState(rooms=[])
 
     # Empty list should be valid
@@ -30,10 +28,7 @@ def test_room_data_empty_list():
 
 
 def test_room_data_single_room_with_integer_id():
-    """Test single room with integer id.
-
-    **Validates: Requirements 1.2, 1.3, 6.5**
-    """
+    """Test single room with integer id."""
     rooms = [{"id": 1, "name": "Kitchen"}]
     state = VacuumState(rooms=rooms)
 
@@ -50,10 +45,7 @@ def test_room_data_single_room_with_integer_id():
 
 
 def test_room_data_single_room_with_string_id():
-    """Test single room with string id.
-
-    **Validates: Requirements 1.2, 1.3, 6.5**
-    """
+    """Test single room with string id."""
     rooms = [{"id": "room_1", "name": "Living Room"}]
     state = VacuumState(rooms=rooms)
 
@@ -70,10 +62,7 @@ def test_room_data_single_room_with_string_id():
 
 
 def test_room_data_multiple_rooms_with_integer_ids():
-    """Test multiple rooms with integer ids.
-
-    **Validates: Requirements 1.2, 1.3, 6.5**
-    """
+    """Test multiple rooms with integer ids."""
     rooms = [
         {"id": 1, "name": "Kitchen"},
         {"id": 2, "name": "Living Room"},
@@ -92,10 +81,7 @@ def test_room_data_multiple_rooms_with_integer_ids():
 
 
 def test_room_data_multiple_rooms_with_string_ids():
-    """Test multiple rooms with string ids.
-
-    **Validates: Requirements 1.2, 1.3, 6.5**
-    """
+    """Test multiple rooms with string ids."""
     rooms = [
         {"id": "kitchen", "name": "Kitchen"},
         {"id": "living_room", "name": "Living Room"},
