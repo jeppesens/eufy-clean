@@ -108,7 +108,7 @@ The DPS system is how the Eufy device communicates state and receives commands. 
 |--------|-----|-----------|---------------|-------------|
 | **152** | `PLAY_PAUSE` | Write | `ModeCtrlRequest` | Play/Pause/Stop/GoHome — the main control channel |
 | **153** | `WORK_STATUS` | Read | `WorkStatus` | Current device state (activity, charging, mode, scene, station sub-status) |
-| **154** | `CLEANING_PARAMETERS` | R/W | `CleanParamRequest` / `CleanParamResponse` | Global cleaning defaults (fan speed, clean type, water level). **Only applies to auto clean; overridden by per-room config via DPS 170** |
+| **154** | `CLEANING_PARAMETERS` | — | `CleanParamRequest` / `CleanParamResponse` | Defined but **not currently parsed or used**. Intended for global cleaning defaults (fan speed, clean type, water level). Only applies to auto clean; overridden by per-room config via DPS 170. |
 | **155** | `DIRECTION` | Write | — | Joystick/directional control |
 | **156** | `MULTI_MAP_SW` | Write | — | Multi-map switch |
 | **158** | `CLEAN_SPEED` | Read | Integer index | Fan speed level (0=Quiet, 1=Standard, 2=Turbo, 3=Max) |
@@ -240,18 +240,23 @@ sequenceDiagram
 
 | Command | Builder Function | DPS | Protobuf |
 |---------|-----------------|-----|----------|
-| `auto_clean` | `_build_mode_ctrl(0)` | 152 | `ModeCtrlRequest` |
+| `start_auto` | `_build_mode_ctrl(0)` | 152 | `ModeCtrlRequest` |
+| `play` / `resume` | `_build_mode_ctrl(14)` | 152 | `ModeCtrlRequest` |
+| `pause` | `_build_mode_ctrl(13)` | 152 | `ModeCtrlRequest` |
+| `stop` | `_build_mode_ctrl(12)` | 152 | `ModeCtrlRequest` |
+| `return_to_base` / `go_home` | `_build_mode_ctrl(6)` | 152 | `ModeCtrlRequest` |
+| `clean_spot` | `_build_mode_ctrl(3)` | 152 | `ModeCtrlRequest` |
 | `room_clean` | `build_room_clean_command()` | 152 | `ModeCtrlRequest` |
 | `scene_clean` | `build_scene_clean_command()` | 152 | `ModeCtrlRequest` |
-| `stop` | `_build_mode_ctrl(12)` | 152 | `ModeCtrlRequest` |
-| `pause` | `_build_mode_ctrl(13)` | 152 | `ModeCtrlRequest` |
-| `resume` | `_build_mode_ctrl(14)` | 152 | `ModeCtrlRequest` |
-| `go_home` | `_build_mode_ctrl(6)` | 152 | `ModeCtrlRequest` |
-| `set_fan_speed` | `build_set_clean_speed_command()` | 158 | Integer |
+| `locate` / `find_robot` | `build_find_robot_command()` | 160 | Boolean |
+| `set_fan_speed` | `build_set_clean_speed_command()` | 158 | String (index as string) |
 | `set_room_custom` | `build_set_room_custom_command()` | 170 | `MapEditRequest` |
+| `go_dry` | `_build_manual_cmd("go_dry", True)` | 173 | `StationRequest` |
+| `stop_dry` | `_build_manual_cmd("go_dry", False)` | 173 | `StationRequest` |
+| `go_selfcleaning` | `_build_manual_cmd("go_selfcleaning", True)` | 173 | `StationRequest` |
+| `collect_dust` | `_build_manual_cmd("go_collect_dust", True)` | 173 | `StationRequest` |
+| `set_auto_cfg` | `build_set_auto_action_cfg_command()` | 173 | `StationRequest` |
 | `reset_accessory` | `build_reset_accessory_command()` | 168 | `ConsumableRequest` |
-| `set_auto_action_cfg` | `build_set_auto_action_cfg_command()` | 173 | `StationRequest` |
-| `find_robot` | `build_find_robot_command()` | 160 | Boolean |
 
 ### Protobuf Encoding (`utils.py`)
 
@@ -272,22 +277,25 @@ VacuumState
 ├── activity: str              # "idle", "cleaning", "docked", "error", "returning"
 ├── battery_level: int         # 0-100
 ├── fan_speed: str             # "Quiet", "Standard", "Turbo", "Max"
-├── error_code / error_message
+├── error_code: int / error_message: str
 ├── charging: bool
-├── cleaning_time / cleaning_area
+├── cleaning_time: int         # seconds
+├── cleaning_area: int         # m²
 ├── task_status: str           # Detailed: "Cleaning", "Washing Mop", "Returning", etc.
 ├── find_robot: bool
 ├── map_id: int
+├── map_url: str | None
 ├── rooms: list[dict]          # [{id: 1, name: "Kitchen"}, ...]
 ├── scenes: list[dict]         # [{id: 1, name: "Daily Clean", type: 1}, ...]
-├── dock_status: str           # "Idle", "Washing", "Drying", "Emptying dust", etc.
+├── status_code: int           # Raw WorkStatus.state value
+├── dock_status: str | None    # None by default; "Idle", "Washing", "Drying", "Emptying dust", etc.
 ├── station_clean_water: int
 ├── station_waste_water: int
 ├── dock_auto_cfg: dict        # Auto-empty, auto-wash settings
-├── trigger_source: str        # "app", "button", "schedule", "robot"
-├── current_scene_id / name
-├── accessories: AccessoryState  # Filter/brush/mop usage hours
-├── preferences: CleaningPreferences  # fan_speed, water_level defaults
+├── trigger_source: str        # "unknown", "app", "button", "schedule", "robot"
+├── current_scene_id: int / current_scene_name: str | None
+├── accessories: AccessoryState  # Filter/brush/mop/dustbag usage hours
+├── preferences: CleaningPreferences  # fan_speed, water_level, auto_empty_mode, auto_mop_wash_mode
 ├── raw_dps: dict              # All raw DPS data for diagnostics
 └── received_fields: set[str]  # Tracks which fields the device has reported (for entity availability)
 ```
@@ -303,7 +311,7 @@ The `received_fields` set is important — sensors and select entities use it to
 The main entity. Exposes:
 - **Features**: Start, Pause, Stop, Return Home, Fan Speed, Send Command, Locate, Clean Spot
 - **Fan speed list**: Quiet, Standard, Turbo, Max (novel series)
-- **`async_send_command()`** — Supports string commands: `auto_clean`, `room_clean`, `scene_clean`, `go_home`, `stop`, `pause`
+- **`async_send_command()`** — Supports string commands: `room_clean`, `scene_clean`, and anything routable by `build_command()` (e.g. `go_home`, `stop`, `pause`)
 - **`extra_state_attributes`** — Exposes rooms, task_status, error_message, trigger_source, dock_status, cleaning stats
 
 ### select.py — Select Entities
