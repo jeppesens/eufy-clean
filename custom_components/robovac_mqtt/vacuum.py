@@ -445,6 +445,12 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             await self._async_handle_room_clean(params)
             return
 
+        if command == "app_segment_clean" and isinstance(params, list):
+            room_ids = [int(r) for r in params]
+            map_id = self.coordinator.data.map_id or 1
+            await self._async_send_room_clean(room_ids, map_id)
+            return
+
         command_kwargs: dict[str, Any] = {}
         if isinstance(params, dict):
             command_kwargs.update(params)
