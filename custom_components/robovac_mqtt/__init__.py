@@ -47,7 +47,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Get Devices and create coordinators
     # eufy_login.mqtt_devices populated by init/getDevices
     # mqtt_devices is a list of dicts with device info
-    for device_info in eufy_login.mqtt_devices:
+    devices = eufy_login.mqtt_devices
+    is_multi_device = len(devices) > 1
+
+    for device_info in devices:
         device_id = device_info.get("deviceId")
         if not device_id:
             continue
@@ -63,9 +66,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             await coordinator.initialize()
 
             # Migrate segments from config entry data to per-device Store.
-            # Only migrate if the store is empty to avoid overwriting newer data.
+            # Only migrate if the store is empty and we have a single device
+            # to avoid overwriting newer data or assigning to wrong device.
             if last_seen := entry.data.get("last_seen_segments"):
-                if not coordinator.last_seen_segments:
+                if is_multi_device:
+                    _LOGGER.info("Skipping migration of last seen segments for %s due to multi-device setup", device_id)
+                elif not coordinator.last_seen_segments:
                     await coordinator.async_save_segments(last_seen)
                     _LOGGER.info("Migrated last seen segments for %s to persistent storage", device_id)
 

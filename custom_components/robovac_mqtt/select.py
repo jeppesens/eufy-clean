@@ -35,11 +35,6 @@ _WATER_LEVEL_TO_MOP_INTENSITY = {
 }
 
 
-def _format_option_label(item: dict[str, Any], default_name: str) -> str:
-    """Format a select option label as '<name> (ID: <id>)'."""
-    return f"{item.get('name') or default_name} (ID: {item['id']})"
-
-
 def _optimistically_update_state(coordinator: EufyCleanCoordinator, **changes: Any) -> None:
     """Optimistically update the coordinator state and notify listeners.
     
@@ -253,7 +248,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available scenes."""
-        return [_format_option_label(s, "Scene") for s in self.coordinator.data.scenes]
+        return [s["name"] for s in self.coordinator.data.scenes if "name" in s]
 
     @property
     def current_option(self) -> str | None:
@@ -265,21 +260,21 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             scene = next(
                 (s for s in self.coordinator.data.scenes if s["id"] == current_id), None
             )
-            if scene:
-                return _format_option_label(scene, "Scene")
+            if scene and "name" in scene:
+                return scene["name"]
 
             # Fallback to reported name if available (even if not in options list)
             if self.coordinator.data.current_scene_name:
-                return f"{self.coordinator.data.current_scene_name} (ID: {current_id})"
+                return self.coordinator.data.current_scene_name
 
         return None
 
     async def async_select_option(self, option: str) -> None:
         """Trigger the selected scene."""
         scenes = self.coordinator.data.scenes
-        # Find scene ID by matching the formatted option string
+        # Find scene ID by matching the string
         scene = next(
-            (s for s in scenes if _format_option_label(s, "Scene") == option),
+            (s for s in scenes if s.get("name") == option),
             None,
         )
         if not scene:
@@ -311,7 +306,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available rooms."""
-        return [_format_option_label(r, "Room") for r in self.coordinator.data.rooms]
+        return [r["name"] for r in self.coordinator.data.rooms if "name" in r]
 
     @property
     def current_option(self) -> str | None:
@@ -321,9 +316,9 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
         rooms = self.coordinator.data.rooms
-        # Find room ID by matching the formatted option string
+        # Find room ID by matching the string
         room = next(
-            (r for r in rooms if _format_option_label(r, "Room") == option),
+            (r for r in rooms if r.get("name") == option),
             None,
         )
         if not room:
@@ -442,6 +437,7 @@ class WaterLevelSelectEntity(_StateBackedSelectEntity):
     _attr_has_entity_name = True
     _attr_name = "Water Level"
     _attr_icon = "mdi:water"
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_options = EUFY_CLEAN_WATER_LEVELS
     _command_name = "set_water_level"
     _command_arg_name = "water_level"

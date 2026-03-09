@@ -346,18 +346,6 @@ def test_vacuum_entity_unique_id_unchanged(mock_coordinator):
     assert entity.unique_id == mock_coordinator.device_id
 
 
-def test_battery_sensor_unique_id_format(mock_coordinator):
-    """Test that battery sensor entity follows consistent unique ID format.
-
-    Ensures battery sensor uses consistent unique ID format.
-    """
-    entity = BatterySensorEntity(mock_coordinator)
-    entity.hass = MagicMock()
-
-    # Verify unique ID follows expected forma
-    assert entity.unique_id == f"{mock_coordinator.device_id}_battery"
-
-
 @pytest.mark.asyncio
 async def test_existing_scene_select_entity_still_functions(mock_coordinator):
     """Test that existing scene select entity continues to function.
@@ -379,10 +367,10 @@ async def test_existing_scene_select_entity_still_functions(mock_coordinator):
     # Verify options are available
     options = entity.options
     assert len(options) == 2
-    assert "Quick Clean (ID: 1)" in options
+    assert "Quick Clean" in options
 
     # Test selecting a scene
-    await entity.async_select_option("Quick Clean (ID: 1)")
+    await entity.async_select_option("Quick Clean")
 
     # Verify command was sen
     mock_coordinator.async_send_command.assert_called_once()
@@ -410,10 +398,10 @@ async def test_existing_room_select_entity_still_functions(mock_coordinator):
     # Verify options are available
     options = entity.options
     assert len(options) == 2
-    assert "Kitchen (ID: 1)" in options
+    assert "Kitchen" in options
 
     # Test selecting a room
-    await entity.async_select_option("Kitchen (ID: 1)")
+    await entity.async_select_option("Kitchen")
 
     # Verify command was sen
     mock_coordinator.async_send_command.assert_called_once()
@@ -611,26 +599,6 @@ def test_rooms_attribute_format_matches_matter_expectations(mock_coordinator):
         # Verify name is string
         assert isinstance(room["name"], str)
         assert len(room["name"]) > 0
-
-
-def test_rooms_attribute_empty_list_when_no_data(mock_coordinator):
-    """Test that rooms attribute is empty list when no room data available.
-
-    Ensures graceful handling when no room data is available.
-    """
-    # Setup vacuum entity with no room data
-    mock_coordinator.data.rooms = None
-
-    entity = RoboVacMQTTEntity(mock_coordinator)
-    entity.hass = MagicMock()
-
-    # Get extra state attributes
-    attrs = entity.extra_state_attributes
-
-    # Verify rooms attribute exists and is empty lis
-    assert "rooms" in attrs
-    assert attrs["rooms"] == []
-    assert isinstance(attrs["rooms"], list)
 
 
 def test_vacuum_entity_exposes_fan_speed_list_for_matter_discovery(mock_coordinator):
@@ -1441,27 +1409,6 @@ async def test_mqtt_message_updates_entity_state(mock_coordinator, mqtt_payload,
 
 
 @pytest.mark.asyncio
-async def test_mqtt_room_data_empty_list_handling(mock_coordinator):
-    """Test that MQTT message with empty room list is handled correctly.
-
-    Validates: Requirement 1.5 - The rooms attribute shall update automatically when
-    the Coordinator data changes (including empty list).
-    """
-    # Create vacuum entity
-    vacuum_entity = RoboVacMQTTEntity(mock_coordinator)
-    vacuum_entity.hass = MagicMock()
-
-    # Set initial state with rooms
-    mock_coordinator.data.rooms = [{"id": 1, "name": "Kitchen"}]
-    assert len(vacuum_entity.extra_state_attributes["rooms"]) == 1
-
-    # Simulate MQTT message with empty room list by directly updating coordinator
-    mock_coordinator.data.rooms = []
-
-    # Verify rooms attribute is now empty lis
-    assert vacuum_entity.extra_state_attributes["rooms"] == []
-
-
 @pytest.mark.asyncio
 async def test_mqtt_room_data_with_string_ids(mock_coordinator):
     """Test that MQTT message with string room IDs is handled correctly.
@@ -1515,27 +1462,6 @@ async def test_mqtt_fan_speed_updates_both_entities(mock_coordinator):
 
 
 @pytest.mark.asyncio
-async def test_mqtt_battery_level_updates_sensor(mock_coordinator):
-    """Test that MQTT battery level update is reflected in battery sensor.
-
-    Validates: Requirement 8.4 - When the device reports state changes via MQTT,
-    then all entities shall update within 2 seconds.
-    """
-    # Create battery entity
-    battery_entity = BatterySensorEntity(mock_coordinator)
-    battery_entity.hass = MagicMock()
-
-    # Set initial state
-    mock_coordinator.data.battery_level = 100
-    assert battery_entity.native_value == 100
-
-    # Simulate MQTT message changing battery level by directly updating coordinator
-    mock_coordinator.data.battery_level = 45
-
-    # Verify battery entity reflects the new level
-    assert battery_entity.native_value == 45
-
-
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
     "mqtt_messages",

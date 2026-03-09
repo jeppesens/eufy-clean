@@ -221,6 +221,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             "edge_mopping",
         )
         has_explicit_custom = any(merged.get(key) is not None for key in explicit_custom_keys)
+
         if has_explicit_custom:
             return merged
 
@@ -239,9 +240,9 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         command_kwargs: dict[str, Any] = {"room_ids": room_ids, "map_id": map_id}
         if mode != "GENERAL":
             command_kwargs["mode"] = mode
-        await self.coordinator.async_send_command(
-            build_command("room_clean", **command_kwargs)
-        )
+        
+        command = build_command("room_clean", **command_kwargs)
+        await self.coordinator.async_send_command(command)
 
     async def _async_send_room_custom(
         self,
@@ -250,14 +251,81 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         **kwargs: Any,
     ) -> None:
         """Send room customization parameters."""
-        await self.coordinator.async_send_command(
-            build_command(
-                "set_room_custom",
-                room_config=room_config,
-                map_id=map_id,
-                **kwargs,
-            )
+        command = build_command(
+            "set_room_custom",
+            room_config=room_config,
+            map_id=map_id,
+            **kwargs,
         )
+        await self.coordinator.async_send_command(command)
+
+    async def _async_handle_room_clean(self, params: dict[str, Any]) -> None:
+        """Handle room_clean command with optional custom parameters."""
+        map_id = params.get("map_id") or self.coordinator.data.map_id or 1
+
+        # New-style: 'rooms' is a list of dicts with per-room config
+        rooms_config = params.get("rooms")
+        
+        if rooms_config and isinstance(rooms_config, list):
+            # Extract IDs for the clean command
+            room_ids = [int(r["id"]) for r in rooms_config if "id" in r]
+
+            # 1. Configure Room Params (Pass the list of dicts)
+            await self._async_send_room_custom(rooms_config, map_id)
+
+            # 2. Start Clean with Custom Mode
+            await self._async_send_room_clean(room_ids, map_id, mode="CUSTOMIZE")
+            return
+
+        # Legacy-style: 'room_ids' list of ints + optional global params
+        if "room_ids" not in params:
+            return
+
+        room_ids = params["room_ids"]
+        merged_params = self._merge_room_clean_defaults(params)
+        
+        fan_speed = merged_params.get("fan_speed")
+        water_level = merged_params.get("water_level")
+        clean_times = merged_params.get("clean_times")
+        clean_mode = merged_params.get("clean_mode")
+        clean_intensity = merged_params.get("clean_intensity")
+        edge_mopping = merged_params.get("edge_mopping")
+        
+        has_explicit_custom = (
+            any([fan_speed, water_level, clean_times, clean_mode, clean_intensity])
+            or edge_mopping is not None
+        )
+        
+        if has_explicit_custom:
+            # 1. Configure Room Params
+            await self._async_send_room_custom(
+                room_ids,
+                map_id,
+                fan_speed=fan_speed,
+                water_level=water_level,
+                clean_times=clean_times,
+                clean_mode=clean_mode,
+                clean_intensity=clean_intensity,
+                edge_mopping=edge_mopping,
+            )
+
+            # 2. Start Clean with Custom Mode
+            await self._async_send_room_clean(room_ids, map_id, mode="CUSTOMIZE")
+            return
+
+        # 1. Start Clean with GENERAL Mode
+        await self._async_send_room_clean(room_ids, map_id)
+
+    async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
+        """Clean specific segments with current custom parameters."""
+        room_ids = [int(segment_id) for segment_id in segment_ids if segment_id.isdigit()]
+        
+        if not room_ids:
+            return
+
+        # Use the same room_clean handling logic that supports custom parameters
+        params = {"room_ids": room_ids}
+        await self._async_handle_room_clean(params)
 
     @property
     def supported_features(self) -> VacuumEntityFeature:
@@ -366,67 +434,6 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             translation_placeholders={"device_name": self.coordinator.device_name},
         )
 
-    async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
-        """Clean specific segments."""
-        room_ids = [int(segment_id) for segment_id in segment_ids if segment_id.isdigit()]
-        if not room_ids:
-            return
-
-        await self.async_send_command("room_clean", {"room_ids": room_ids})
-
-    async def _async_handle_room_clean(self, params: dict[str, Any]) -> None:
-        """Handle room_clean command with optional custom parameters."""
-        map_id = params.get("map_id") or self.coordinator.data.map_id or 1
-
-        # New-style: 'rooms' is a list of dicts with per-room config
-        rooms_config = params.get("rooms")
-        if rooms_config and isinstance(rooms_config, list):
-            # Extract IDs for the clean command
-            room_ids = [int(r["id"]) for r in rooms_config if "id" in r]
-
-            # 1. Configure Room Params (Pass the list of dicts)
-            await self._async_send_room_custom(rooms_config, map_id)
-
-            # 2. Start Clean with Custom Mode
-            await self._async_send_room_clean(room_ids, map_id, mode="CUSTOMIZE")
-            return
-
-        # Legacy-style: 'room_ids' list of ints + optional global params
-        if "room_ids" not in params:
-            return
-
-        room_ids = params["room_ids"]
-        merged_params = self._merge_room_clean_defaults(params)
-        fan_speed = merged_params.get("fan_speed")
-        water_level = merged_params.get("water_level")
-        clean_times = merged_params.get("clean_times")
-        clean_mode = merged_params.get("clean_mode")
-        clean_intensity = merged_params.get("clean_intensity")
-        edge_mopping = merged_params.get("edge_mopping")
-
-        has_explicit_custom = (
-            any([fan_speed, water_level, clean_times, clean_mode, clean_intensity])
-            or edge_mopping is not None
-        )
-
-        if has_explicit_custom:
-            # 1. Configure Room Params
-            await self._async_send_room_custom(
-                room_ids,
-                map_id,
-                fan_speed=fan_speed,
-                water_level=water_level,
-                clean_times=clean_times,
-                clean_mode=clean_mode,
-                clean_intensity=clean_intensity,
-                edge_mopping=edge_mopping,
-            )
-            # 2. Start Clean with Custom Mode
-            await self._async_send_room_clean(room_ids, map_id, mode="CUSTOMIZE")
-        else:
-            # Standard room clean (no custom settings)
-            await self._async_send_room_clean(room_ids, map_id)
-
     async def async_send_command(
         self,
         command: str,
@@ -445,6 +452,20 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             await self._async_handle_room_clean(params)
             return
 
+        # Handle Apple Home app_segment_clean command
+        if command == "app_segment_clean" and isinstance(params, list):
+            # Convert to room_clean format
+            room_ids = [int(room_id) for room_id in params if isinstance(room_id, (int, str, float)) and str(room_id).isdigit()]
+            if room_ids:
+                await self._async_handle_room_clean({"room_ids": room_ids})
+                return
+            return
+
+        # Check if this is a basic start command that might need room info
+        if command == "start" or command == "start_cleaning":
+            # TODO: Add logic here to check for selected rooms and convert to room_clean
+            pass
+
         command_kwargs: dict[str, Any] = {}
         if isinstance(params, dict):
             command_kwargs.update(params)
@@ -460,6 +481,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             command,
             params,
         )
+        _LOGGER.error("=== END VACUUM ASYNC_SEND_COMMAND DEBUG ===")
 
     def _check_for_segment_changes(self) -> None:
         """Check for segment changes and create issue if needed."""

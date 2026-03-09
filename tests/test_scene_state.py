@@ -33,14 +33,14 @@ def test_scene_select_entity_mocked():
     mock_coordinator.data.current_scene_id = 8
     mock_coordinator.data.current_scene_name = "Hallway test"
 
-    assert entity.current_option == "Hallway test (ID: 8)"
+    assert entity.current_option == "Hallway test"
 
     # 4. Simulate Scene Active (No Name in List, use reported name)
     mock_coordinator.data.current_scene_id = 99
     mock_coordinator.data.current_scene_name = "New Scene"
 
-    # Should use the reported name as fallback with ID
-    assert entity.current_option == "New Scene (ID: 99)"
+    # Should use the reported name as fallback without ID now
+    assert entity.current_option == "New Scene"
 
     # 5. Simulate Scene Inactive (ID=0)
     mock_coordinator.data.current_scene_id = 0
