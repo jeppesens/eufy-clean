@@ -40,11 +40,17 @@ def _format_option_label(item: dict[str, Any], default_name: str) -> str:
     return f"{item.get('name') or default_name} (ID: {item['id']})"
 
 
-def _optimistically_update_state(
-    coordinator: EufyCleanCoordinator,
-    **changes: Any,
-) -> None:
-    """Optimistically publish updated coordinator state after a successful command."""
+def _optimistically_update_state(coordinator: EufyCleanCoordinator, **changes: Any) -> None:
+    """Optimistically update the coordinator state and notify listeners.
+    
+    If the device command fails silently, the UI will show the wrong state
+    until the next DPS update from the device.
+    """
+    _LOGGER.debug(
+        "Optimistically updating state for %s: %s",
+        coordinator.device_name,
+        changes,
+    )
     new_data = replace(coordinator.data, **changes)
     coordinator.data = new_data
     coordinator.async_set_updated_data(new_data)
@@ -449,7 +455,13 @@ class WaterLevelSelectEntity(_StateBackedSelectEntity):
 
 
 class MopIntensitySelectEntity(_StateBackedSelectEntity):
-    """Select entity alias for Matter Hub mop intensity discovery."""
+    """Select entity for mop water level, modeled as Matter MopIntensity.
+    
+    In Matter, MopIntensity defines values like 'Quiet', 'Standard', 'Max'.
+    Eufy water levels ('Low', 'Medium', 'High') are mapped to these names
+    to align with standard Matter enums, even though 'Quiet' is not a
+    typical word for water level. 'Automatic' maps to 'Medium' as a safe fallback.
+    """
 
     _attr_has_entity_name = True
     _attr_name = "Mop Intensity"

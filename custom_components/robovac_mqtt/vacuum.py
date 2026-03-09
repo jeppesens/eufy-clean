@@ -11,6 +11,7 @@ from homeassistant.components.vacuum import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.issue_registry import (
     IssueSeverity,
@@ -57,12 +58,12 @@ def _segments_to_attributes(segments: list[Segment]) -> list[dict[str, str]]:
 
 
 def _rooms_to_attributes(rooms: list[dict[str, Any]] | None) -> list[dict[str, Any]]:
-    """Convert coordinator room data into state attributes while preserving ID types."""
+    """Convert coordinator room data into state attributes."""
     if not rooms:
         return []
 
     return [
-        {"id": str(room["id"]), "name": room.get("name") or f"Room {room['id']}"}
+        {"id": int(room["id"]) if str(room["id"]).isdigit() else room["id"], "name": room.get("name") or f"Room {room['id']}"}
         for room in rooms
         if "id" in room
     ]
@@ -131,9 +132,6 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         self._attr_unique_id = coordinator.device_id
         self._config_entry = config_entry
 
-        # Set reference in coordinator for segment change detection
-        coordinator.set_vacuum_entity(self)
-
         self._attr_device_info = coordinator.device_info
 
         self._attr_fan_speed_list: list[str] = [
@@ -142,6 +140,17 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         # Initialize last seen segments if this is the first time and segments are available
         if config_entry:
             self._initialize_last_seen_segments()
+
+    async def async_added_to_hass(self) -> None:
+        """Run when entity about to be added to hass."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self.coordinator.device_id}_rooms_updated",
+                self._check_for_segment_changes,
+            )
+        )
 
     def _initialize_last_seen_segments(self) -> None:
         """Initialize last seen segments if not already stored and segments are available."""
@@ -267,8 +276,6 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         if self.coordinator.data.error_code:
             return VacuumActivity.ERROR
         return None
-
-    
     @property
     def fan_speed(self) -> str | None:
         """Return the fan speed of the vacuum."""
@@ -449,7 +456,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             return
 
         _LOGGER.warning(
-            "Command %s with params %s not fully implemented or invalid.",
+            "Command %s with params %s generated an empty payload (invalid parameters).",
             command,
             params,
         )
@@ -459,7 +466,6 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         if not self._has_config_entry():
             # Cannot create issues without config entry
             return
-            
         current_segments = self._get_room_segments()
         last_seen = self.last_seen_segments
 
@@ -493,14 +499,12 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         self.coordinator.hass.async_create_task(
             self.coordinator.async_save_segments(serialized_segments)
         )
-        
         # Clear any existing segment change issue
         async_delete_issue(
             hass=self.coordinator.hass,
             domain=DOMAIN,
             issue_id=self._get_segments_issue_id(),
         )
-        
         _LOGGER.info(
             "Updated last seen segments for %s: %d segments stored",
             self.coordinator.device_name,

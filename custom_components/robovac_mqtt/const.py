@@ -528,15 +528,18 @@ CLEAN_TYPE_MAP = {
     "vacuum": CleanType.SWEEP_ONLY,
     "mop": CleanType.MOP_ONLY,
     "vacuum_mop": CleanType.SWEEP_AND_MOP,
-    "vacuum_and_mop": CleanType.SWEEP_AND_MOP,
+    "vacuum and mop": CleanType.SWEEP_AND_MOP,
     "sweep_and_mop": CleanType.SWEEP_AND_MOP,
     "mopping_after_sweeping": CleanType.SWEEP_THEN_MOP,
+    "mopping after sweeping": CleanType.SWEEP_THEN_MOP,
 }
 
 CLEAN_EXTENT_MAP = {
+    # Legacy keys
     "fast": CleanExtent.QUICK,
     "standard": CleanExtent.NORMAL,
     "deep": CleanExtent.NARROW,
+    # New standardized keys matching UI and Matter vocabulary
     "quick": CleanExtent.QUICK,
     "normal": CleanExtent.NORMAL,
     "narrow": CleanExtent.NARROW,

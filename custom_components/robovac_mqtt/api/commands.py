@@ -24,7 +24,7 @@ _LOGGER = logging.getLogger(__name__)
 
 def _normalize_clean_mode(clean_mode: str) -> str:
     """Normalize a cleaning mode label into a map lookup key."""
-    return clean_mode.strip().lower().replace(" ", "_")
+    return clean_mode.strip().lower()
 
 
 def build_set_cleaning_mode_command(clean_mode: str) -> dict[str, str]:

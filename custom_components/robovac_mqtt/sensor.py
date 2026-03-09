@@ -262,7 +262,12 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
 
 
 class BatterySensorEntity(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
-    """Dedicated battery sensor entity for Matter Bridge compatibility."""
+    """Dedicated battery sensor entity for Matter Bridge compatibility.
+    
+    Matter Bridges require devices that operate on battery power to explicitly
+    expose a dedicated battery sensor entity (device_class=battery) rather than
+    just exposing the battery level as a state attribute on the Vacuum entity.
+    """
 
     _attr_has_entity_name = True
     _attr_name = "Battery"

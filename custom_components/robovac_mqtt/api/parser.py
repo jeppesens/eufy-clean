@@ -372,6 +372,7 @@ def _map_work_status(status: WorkStatus) -> str:
     if s == 4:
         return "cleaning"
     if s == 5:
+        # go_wash.mode: 0=NAVIGATION, 1=WASHING, 2=DRYING
         if status.HasField("go_wash") and status.go_wash.mode in (1, 2):
             return "docked"
         if status.HasField("station") and status.station.HasField("washing_drying_system"):
