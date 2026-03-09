@@ -1,6 +1,7 @@
 # Eufy Clean - Home Assistant Integration
 
 Home Assistant custom component (`robovac_mqtt`) for controlling Eufy robot vacuums via MQTT.
+Fork: `jeppesens/eufy-clean` (origin), upstream: `martijnpoppen/eufy-clean`.
 Installed via HACS. Domain: `robovac_mqtt`. Codeowners: @jeppesens, @m11tch.
 
 ## Architecture
