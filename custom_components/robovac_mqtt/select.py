@@ -242,6 +242,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         self._attr_has_entity_name = True
         self._attr_name = "Scene"
         self._attr_icon = "mdi:play-circle-outline"
+        self._attr_entity_category = EntityCategory.CONFIG
 
         self._attr_device_info = coordinator.device_info
 
@@ -300,6 +301,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         self._attr_has_entity_name = True
         self._attr_name = "Clean Room"
         self._attr_icon = "mdi:door-open"
+        self._attr_entity_category = EntityCategory.CONFIG
 
         self._attr_device_info = coordinator.device_info
 
@@ -403,6 +405,7 @@ class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     _attr_has_entity_name = True
     _attr_name = "Suction Level"
     _attr_icon = "mdi:fan"
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_options = _SUCTION_LEVELS
     _command_name = "set_fan_speed"
     _command_arg_name = "fan_speed"
@@ -420,6 +423,7 @@ class CleaningModeSelectEntity(_StateBackedSelectEntity):
     _attr_has_entity_name = True
     _attr_name = "Cleaning Mode"
     _attr_icon = "mdi:spray-bottle"
+    _attr_entity_category = EntityCategory.CONFIG
     _attr_options = EUFY_CLEAN_CLEANING_MODES
     _command_name = "set_cleaning_mode"
     _command_arg_name = "clean_mode"

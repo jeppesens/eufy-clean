@@ -125,6 +125,17 @@ def test_build_set_clean_speed(mock_encode):
     assert cmd == {DPS_MAP["CLEAN_SPEED"]: "3"}
 
 
+@patch("custom_components.robovac_mqtt.api.commands.encode")
+def test_build_spot_clean_command(mock_encode):
+    """Test building spot clean command."""
+    build_command("clean_spot")
+    mock_encode.assert_called()
+    # The first argument is ModeCtrlRequest, second is the data dict
+    args, _ = mock_encode.call_args
+    assert args[1]["method"] == EUFY_CLEAN_CONTROL.START_SPOT_CLEAN
+    assert args[1]["spot_clean"] == {"clean_times": 1}
+
+
 @patch("custom_components.robovac_mqtt.api.commands.encode_message")
 def test_build_set_cleaning_mode_command(mock_encode_message):
     """Test building global cleaning mode command."""

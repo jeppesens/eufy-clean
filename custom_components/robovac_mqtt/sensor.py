@@ -68,6 +68,21 @@ async def async_setup_entry(
             )
         )
 
+        # Work Mode Sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "work_mode",
+                "Work Mode",
+                lambda s: s.work_mode,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:cog-outline",
+                category=EntityCategory.DIAGNOSTIC,
+            )
+        )
+
         # Cleaning Time Sensor
         entities.append(
             RoboVacSensor(

@@ -45,9 +45,13 @@ def _build_mode_ctrl(method: int) -> dict[str, str]:
     """Helper for ModeCtrlRequest commands."""
     data: dict[str, Any] = {"method": int(method)}
 
-    # Special handling for START_AUTO_CLEAN to ensure non-empty payload
+    # Special handling for methods that require a parameter in the "oneof Param"
     if method == EUFY_CLEAN_CONTROL.START_AUTO_CLEAN:
-        data["auto_clean"] = AutoClean(clean_times=1, force_mapping=False)
+        # AutoClean message: clean_times=1, force_mapping=False
+        data["auto_clean"] = {"clean_times": 1, "force_mapping": False}
+    elif method == EUFY_CLEAN_CONTROL.START_SPOT_CLEAN:
+        # SpotClean message: clean_times=1
+        data["spot_clean"] = {"clean_times": 1}
 
     value = encode(ModeCtrlRequest, data)
     return {DPS_MAP["PLAY_PAUSE"]: value}

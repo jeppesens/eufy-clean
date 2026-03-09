@@ -482,8 +482,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             command,
             params,
         )
-        _LOGGER.error("=== END VACUUM ASYNC_SEND_COMMAND DEBUG ===")
 
+    @callback
     def _check_for_segment_changes(self) -> None:
         """Check for segment changes and create issue if needed."""
         if not self._has_config_entry():
@@ -516,6 +516,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             )
             self.async_create_segments_issue()
 
+    @callback
     def _store_last_seen_segments(self, segments: list[Segment]) -> None:
         """Store the current segments as last seen and clear any existing issue."""
         serialized_segments = _serialize_segments(segments)

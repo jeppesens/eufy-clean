@@ -160,11 +160,15 @@ def _process_work_status(
         if work_status.HasField("mode"):
             mode_val = work_status.mode.value
             changes["work_mode"] = WORK_MODE_NAMES.get(mode_val, "unknown")
-        elif changes["activity"] == "cleaning":
-            # If cleaning but mode is missing, default to Auto
+            _track_field(state, changes, "work_mode")
+        elif state.work_mode == "unknown" and changes["activity"] == "cleaning":
+            # If we don't know the mode yet but we are cleaning, default to Auto
             changes["work_mode"] = "Auto"
-        else:
-            changes["work_mode"] = "unknown"
+        elif changes["activity"] not in ("cleaning", "returning"):
+            # If we are not cleaning or returning, reset to unknown
+            # This handles the case where a previous run's mode might stick around
+            if state.work_mode != "unknown":
+                changes["work_mode"] = "unknown"
 
         # Fallback/Override if cleaning.scheduled_task is explicit
         if work_status.HasField("cleaning") and work_status.cleaning.scheduled_task:
