@@ -202,6 +202,20 @@ FAN_SUCTION_NAMES = {
 }
 
 
+WORK_MODE_NAMES = {
+    0: "Auto",
+    1: "Room",
+    2: "Zone",
+    3: "Spot",
+    4: "Fast Mapping",
+    5: "Global Cruise",
+    6: "Zones Cruise",
+    7: "Point Cruise",
+    8: "Scene",
+    9: "Smart Follow",
+}
+
+
 class EUFY_CLEAN_GET_STATE(str, Enum):
     sleeping = "stopped"
     standby = "docked"

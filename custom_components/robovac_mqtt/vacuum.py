@@ -364,6 +364,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             "error_code": data.error_code,
             "error_message": data.error_message,
             "status_code": data.status_code,
+            "work_mode": data.work_mode,
             "rooms": rooms,
             "segments": segments,
         }

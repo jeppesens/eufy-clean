@@ -47,6 +47,32 @@ def test_update_state_work_status(mock_decode):
 
 
 @patch("custom_components.robovac_mqtt.api.parser.decode")
+def test_update_state_work_mode(mock_decode):
+    """Test updating work mode through parser."""
+    state = VacuumState()
+
+    # Case 1: Mode field present (1 = SELECT_ROOM)
+    mock_status = MagicMock()
+    mock_status.state = 5  # Cleaning
+    mock_status.mode.value = 1
+    mock_decode.return_value = mock_status
+
+    dps = {DPS_MAP["WORK_STATUS"]: "encoded"}
+    new_state, _ = update_state(state, dps)
+    assert new_state.work_mode == "Room"
+
+    # Case 2: Mode field missing but cleaning
+    mock_status.HasField.return_value = False
+    new_state, _ = update_state(state, dps)
+    assert new_state.work_mode == "Auto"
+
+    # Case 3: Mode field missing and not cleaning
+    mock_status.state = 0  # Standby
+    new_state, _ = update_state(state, dps)
+    assert new_state.work_mode == "unknown"
+
+
+@patch("custom_components.robovac_mqtt.api.parser.decode")
 def test_update_state_error_code(mock_decode):
     """Test updating error code."""
     state = VacuumState()

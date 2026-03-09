@@ -64,6 +64,7 @@ class VacuumState:
     station_waste_water: int = 0
     dock_auto_cfg: dict[str, Any] = field(default_factory=dict)
     trigger_source: str = "unknown"
+    work_mode: str = "unknown"
     current_scene_id: int = 0
     current_scene_name: str | None = None
 

@@ -19,6 +19,7 @@ from ..const import (
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     TRIGGER_SOURCE_NAMES,
+    WORK_MODE_NAMES,
 )
 from ..models import AccessoryState, VacuumState
 from ..proto.cloud.clean_param_pb2 import (
@@ -154,6 +155,16 @@ def _process_work_status(
                 trigger_source = "app"
 
         changes["trigger_source"] = trigger_source
+
+        # Extract Work Mode
+        if work_status.HasField("mode"):
+            mode_val = work_status.mode.value
+            changes["work_mode"] = WORK_MODE_NAMES.get(mode_val, "unknown")
+        elif changes["activity"] == "cleaning":
+            # If cleaning but mode is missing, default to Auto
+            changes["work_mode"] = "Auto"
+        else:
+            changes["work_mode"] = "unknown"
 
         # Fallback/Override if cleaning.scheduled_task is explicit
         if work_status.HasField("cleaning") and work_status.cleaning.scheduled_task:
