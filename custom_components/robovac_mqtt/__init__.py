@@ -61,6 +61,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator = EufyCleanCoordinator(hass, eufy_login, device_info)
         try:
             await coordinator.initialize()
+
+            # Migrate segments from config entry data to per-device Store.
+            # Only migrate if the store is empty to avoid overwriting newer data.
+            if last_seen := entry.data.get("last_seen_segments"):
+                if not coordinator.last_seen_segments:
+                    await coordinator.async_save_segments(last_seen)
+                    _LOGGER.info("Migrated last seen segments for %s to persistent storage", device_id)
+
             coordinators.append(coordinator)
         except Exception as e:
             _LOGGER.warning("Failed to initialize coordinator for %s: %s", device_id, e)
@@ -73,6 +81,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {"coordinators": coordinators}
+
+    # Clean up migrated data from config entry
+    if "last_seen_segments" in entry.data:
+        new_data = dict(entry.data)
+        new_data.pop("last_seen_segments")
+        hass.config_entries.async_update_entry(entry, data=new_data)
+        _LOGGER.info("Removed legacy last_seen_segments from config entry %s", entry.entry_id)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

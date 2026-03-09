@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 from collections.abc import Callable
 from typing import Any
@@ -12,10 +13,47 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.commands import build_command
-from .const import DOMAIN, DRY_DURATION_MAP
+from .const import (
+    DOMAIN,
+    DRY_DURATION_MAP,
+    EUFY_CLEAN_CLEANING_INTENSITIES,
+    EUFY_CLEAN_NOVEL_CLEAN_SPEED,
+    EUFY_CLEAN_CLEANING_MODES,
+    EUFY_CLEAN_WATER_LEVELS,
+)
 from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
+
+_MOP_INTENSITY_TO_WATER_LEVEL = {
+    "Quiet": "Low",
+    "Automatic": "Medium",
+    "Max": "High",
+}
+_WATER_LEVEL_TO_MOP_INTENSITY = {
+    value: key for key, value in _MOP_INTENSITY_TO_WATER_LEVEL.items()
+}
+
+
+def _format_option_label(item: dict[str, Any], default_name: str) -> str:
+    """Format a select option label as '<name> (ID: <id>)'."""
+    return f"{item.get('name') or default_name} (ID: {item['id']})"
+
+
+def _optimistically_update_state(coordinator: EufyCleanCoordinator, **changes: Any) -> None:
+    """Optimistically update the coordinator state and notify listeners.
+    
+    If the device command fails silently, the UI will show the wrong state
+    until the next DPS update from the device.
+    """
+    _LOGGER.debug(
+        "Optimistically updating state for %s: %s",
+        coordinator.device_name,
+        changes,
+    )
+    new_data = replace(coordinator.data, **changes)
+    coordinator.data = new_data
+    coordinator.async_set_updated_data(new_data)
 
 
 async def async_setup_entry(
@@ -32,6 +70,11 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding select entities for %s", coordinator.device_name)
 
+        entities.append(SuctionLevelSelectEntity(coordinator))
+        entities.append(CleaningModeSelectEntity(coordinator))
+        entities.append(WaterLevelSelectEntity(coordinator))
+        entities.append(MopIntensitySelectEntity(coordinator))
+        entities.append(CleaningIntensitySelectEntity(coordinator))
         entities.append(SceneSelectEntity(coordinator))
         entities.append(RoomSelectEntity(coordinator))
 
@@ -139,7 +182,7 @@ def _set_collect_dust_mode(cfg: dict[str, Any], val: str) -> None:
             minutes = int(val.split(" ")[0])
             cfg["collectdust_v2"]["mode"]["value"] = 1
             cfg["collectdust_v2"]["mode"]["time"] = minutes
-        except ValueError:
+        except (ValueError, IndexError):
             pass
 
 
@@ -210,13 +253,11 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available scenes."""
-        scenes = self.coordinator.data.scenes
-        return [f"{s.get('name') or 'Scene'} (ID: {s['id']})" for s in scenes]
+        return [_format_option_label(s, "Scene") for s in self.coordinator.data.scenes]
 
     @property
     def current_option(self) -> str | None:
         """Return the currently active scene."""
-        # Check by ID first if we have a scene running
         current_id = self.coordinator.data.current_scene_id
         if current_id > 0:
             # Try to match by ID in the list to return the name from the list
@@ -225,7 +266,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
                 (s for s in self.coordinator.data.scenes if s["id"] == current_id), None
             )
             if scene:
-                return f"{scene.get('name') or 'Scene'} (ID: {scene['id']})"
+                return _format_option_label(scene, "Scene")
 
             # Fallback to reported name if available (even if not in options list)
             if self.coordinator.data.current_scene_name:
@@ -236,12 +277,9 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Trigger the selected scene."""
         scenes = self.coordinator.data.scenes
+        # Find scene ID by matching the formatted option string
         scene = next(
-            (
-                s
-                for s in scenes
-                if f"{s.get('name') or 'Scene'} (ID: {s['id']})" == option
-            ),
+            (s for s in scenes if _format_option_label(s, "Scene") == option),
             None,
         )
         if not scene:
@@ -249,6 +287,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             return
 
         scene_id = scene["id"]
+        _LOGGER.info("Triggering scene '%s' (ID: %s)", option, scene_id)
 
         command = build_command("scene_clean", scene_id=scene_id)
         await self.coordinator.async_send_command(command)
@@ -272,8 +311,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available rooms."""
-        rooms = self.coordinator.data.rooms
-        return [f"{r.get('name') or 'Room'} (ID: {r['id']})" for r in rooms]
+        return [_format_option_label(r, "Room") for r in self.coordinator.data.rooms]
 
     @property
     def current_option(self) -> str | None:
@@ -283,12 +321,9 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
         rooms = self.coordinator.data.rooms
+        # Find room ID by matching the formatted option string
         room = next(
-            (
-                r
-                for r in rooms
-                if f"{r.get('name') or 'Room'} (ID: {r['id']})" == option
-            ),
+            (r for r in rooms if _format_option_label(r, "Room") == option),
             None,
         )
         if not room:
@@ -296,9 +331,175 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             return
 
         room_id = room["id"]
+        # Use discovered map_id if available, otherwise fallback to 1
         map_id = self.coordinator.data.map_id or 1
+        _LOGGER.info(
+            "Triggering cleaning for room '%s' (ID: %s, Map ID: %s)",
+            option,
+            room_id,
+            map_id,
+        )
 
         command = build_command("room_clean", room_ids=[room_id], map_id=map_id)
         await self.coordinator.async_send_command(command)
 
         self.async_write_ha_state()
+
+
+_SUCTION_LEVELS = [speed.value for speed in EUFY_CLEAN_NOVEL_CLEAN_SPEED]
+
+
+class _StateBackedSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
+    """Base class for selects backed by coordinator state and a device command."""
+
+    _command_name: str
+    _command_arg_name: str
+    _state_field: str
+    _available_field: str | None = None
+    _log_label: str
+
+    def __init__(self, coordinator: EufyCleanCoordinator, unique_id_suffix: str) -> None:
+        """Initialize the state-backed select entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_{unique_id_suffix}"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the current selected option."""
+        return self._state_to_option(getattr(self.coordinator.data, self._state_field))
+
+    @property
+    def available(self) -> bool:
+        """Return whether the entity is available."""
+        return super().available and (
+            self._available_field is None
+            or self._available_field in self.coordinator.data.received_fields
+        )
+
+    def _state_to_option(self, value: str | None) -> str | None:
+        """Map the coordinator state value to a select option."""
+        return value
+
+    def _option_to_state(self, option: str) -> str:
+        """Map a select option to the coordinator state value."""
+        return option
+
+    async def async_select_option(self, option: str) -> None:
+        """Change the selected option."""
+        if option not in self.options:
+            _LOGGER.warning("%s '%s' not supported", self._log_label, option)
+            return
+
+        state_value = self._option_to_state(option)
+        await self.coordinator.async_send_command(
+            build_command(self._command_name, **{self._command_arg_name: state_value})
+        )
+        _optimistically_update_state(
+            self.coordinator,
+            **{self._state_field: state_value},
+        )
+        self.async_write_ha_state()
+
+
+class SuctionLevelSelectEntity(_StateBackedSelectEntity):
+    """Select entity for adjusting suction level."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Suction Level"
+    _attr_icon = "mdi:fan"
+    _attr_options = _SUCTION_LEVELS
+    _command_name = "set_fan_speed"
+    _command_arg_name = "fan_speed"
+    _state_field = "fan_speed"
+    _log_label = "Suction level"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize suction level select."""
+        super().__init__(coordinator, "suction_level")
+
+
+class CleaningModeSelectEntity(_StateBackedSelectEntity):
+    """Select entity for adjusting cleaning mode."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Cleaning Mode"
+    _attr_icon = "mdi:spray-bottle"
+    _attr_options = EUFY_CLEAN_CLEANING_MODES
+    _command_name = "set_cleaning_mode"
+    _command_arg_name = "clean_mode"
+    _state_field = "cleaning_mode"
+    _log_label = "Cleaning mode"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize cleaning mode select."""
+        super().__init__(coordinator, "cleaning_mode")
+
+
+class WaterLevelSelectEntity(_StateBackedSelectEntity):
+    """Select entity for adjusting global mop water level."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Water Level"
+    _attr_icon = "mdi:water"
+    _attr_options = EUFY_CLEAN_WATER_LEVELS
+    _command_name = "set_water_level"
+    _command_arg_name = "water_level"
+    _state_field = "mop_water_level"
+    _available_field = "mop_water_level"
+    _log_label = "Water level"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize water level select."""
+        super().__init__(coordinator, "water_level")
+
+
+class MopIntensitySelectEntity(_StateBackedSelectEntity):
+    """Select entity for mop water level, modeled as Matter MopIntensity.
+    
+    In Matter, MopIntensity defines values like 'Quiet', 'Standard', 'Max'.
+    Eufy water levels ('Low', 'Medium', 'High') are mapped to these names
+    to align with standard Matter enums, even though 'Quiet' is not a
+    typical word for water level. 'Automatic' maps to 'Medium' as a safe fallback.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Mop Intensity"
+    _attr_icon = "mdi:water"
+    _attr_options = ["Quiet", "Automatic", "Max"]
+    _attr_entity_category = EntityCategory.CONFIG
+    _command_name = "set_water_level"
+    _command_arg_name = "water_level"
+    _state_field = "mop_water_level"
+    _available_field = "mop_water_level"
+    _log_label = "Mop intensity"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize mop intensity select."""
+        super().__init__(coordinator, "mop_intensity")
+
+    def _state_to_option(self, value: str | None) -> str | None:
+        """Map the device water level to the Matter-facing intensity option."""
+        return _WATER_LEVEL_TO_MOP_INTENSITY.get(value, value)
+
+    def _option_to_state(self, option: str) -> str:
+        """Map the Matter-facing intensity option to the device water level."""
+        return _MOP_INTENSITY_TO_WATER_LEVEL.get(option, option)
+
+
+class CleaningIntensitySelectEntity(_StateBackedSelectEntity):
+    """Select entity for adjusting global cleaning intensity."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Cleaning Intensity"
+    _attr_icon = "mdi:tune-vertical"
+    _attr_options = EUFY_CLEAN_CLEANING_INTENSITIES
+    _command_name = "set_cleaning_intensity"
+    _command_arg_name = "cleaning_intensity"
+    _state_field = "cleaning_intensity"
+    _available_field = "cleaning_intensity"
+    _log_label = "Cleaning intensity"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize cleaning intensity select."""
+        super().__init__(coordinator, "cleaning_intensity")

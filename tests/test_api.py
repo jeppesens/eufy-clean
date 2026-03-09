@@ -8,7 +8,10 @@ from custom_components.robovac_mqtt.api.commands import (
     build_room_clean_command,
     build_scene_clean_command,
     build_set_auto_action_cfg_command,
+    build_set_cleaning_mode_command,
+    build_set_cleaning_intensity_command,
     build_set_clean_speed_command,
+    build_set_water_level_command,
 )
 from custom_components.robovac_mqtt.api.parser import update_state
 from custom_components.robovac_mqtt.const import DPS_MAP, EUFY_CLEAN_CONTROL
@@ -94,6 +97,45 @@ def test_build_set_clean_speed(mock_encode):
 
     cmd = build_command("set_fan_speed", fan_speed="Max")
     assert cmd == {DPS_MAP["CLEAN_SPEED"]: "3"}
+
+
+@patch("custom_components.robovac_mqtt.api.commands.encode_message")
+def test_build_set_cleaning_mode_command(mock_encode_message):
+    """Test building global cleaning mode command."""
+    mock_encode_message.return_value = "encoded_clean_mode"
+
+    cmd = build_set_cleaning_mode_command("Vacuum and mop")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_clean_mode"}
+
+    cmd = build_command("set_cleaning_mode", clean_mode="Mop")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_clean_mode"}
+    assert mock_encode_message.call_count == 2
+
+
+@patch("custom_components.robovac_mqtt.api.commands.encode_message")
+def test_build_set_water_level_command(mock_encode_message):
+    """Test building global water level command."""
+    mock_encode_message.return_value = "encoded_water_level"
+
+    cmd = build_set_water_level_command("High")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_water_level"}
+
+    cmd = build_command("set_water_level", water_level="Medium")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_water_level"}
+    assert mock_encode_message.call_count == 2
+
+
+@patch("custom_components.robovac_mqtt.api.commands.encode_message")
+def test_build_set_cleaning_intensity_command(mock_encode_message):
+    """Test building global cleaning intensity command."""
+    mock_encode_message.return_value = "encoded_clean_intensity"
+
+    cmd = build_set_cleaning_intensity_command("Quick")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_clean_intensity"}
+
+    cmd = build_command("set_cleaning_intensity", cleaning_intensity="Normal")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_clean_intensity"}
+    assert mock_encode_message.call_count == 2
 
 
 @patch("custom_components.robovac_mqtt.api.commands.encode")

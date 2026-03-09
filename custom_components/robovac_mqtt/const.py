@@ -108,6 +108,99 @@ EUFY_CLEAN_C_SERIES = [
 
 EUFY_CLEAN_S_SERIES = ["T2119", "T2080"]
 
+EUFY_CLEAN_CLEANING_MODES = [
+    "Vacuum",
+    "Mop", 
+    "Vacuum and mop",
+    "Mopping after sweeping",
+]
+
+EUFY_CLEAN_WATER_LEVELS = [
+    "Low",
+    "Medium", 
+    "High",
+]
+
+EUFY_CLEAN_CLEANING_INTENSITIES = [
+    "Normal",
+    "Narrow",
+    "Quick",
+]
+
+
+class TriggerSource(int, Enum):
+    UNKNOWN = 0
+    APP = 1
+    KEY = 2
+    TIMING = 3
+    ROBOT = 4
+    REMOTE_CTRL = 5
+
+
+TRIGGER_SOURCE_NAMES = {
+    TriggerSource.UNKNOWN: "unknown",
+    TriggerSource.APP: "app",
+    TriggerSource.KEY: "button",
+    TriggerSource.TIMING: "schedule",
+    TriggerSource.ROBOT: "robot",
+    TriggerSource.REMOTE_CTRL: "remote_control",
+}
+
+
+class CleaningMode(int, Enum):
+    SWEEP_ONLY = 0
+    MOP_ONLY = 1
+    SWEEP_AND_MOP = 2
+    SWEEP_THEN_MOP = 3
+
+
+class MopWaterLevel(int, Enum):
+    LOW = 0
+    MIDDLE = 1
+    HIGH = 2
+
+
+# Reverse mappings for parser - convert proto values to human-readable names
+CLEANING_MODE_NAMES = {
+    CleaningMode.SWEEP_ONLY: "Vacuum",
+    CleaningMode.MOP_ONLY: "Mop",
+    CleaningMode.SWEEP_AND_MOP: "Vacuum and mop",
+    CleaningMode.SWEEP_THEN_MOP: "Mopping after sweeping",
+}
+
+MOP_WATER_LEVEL_NAMES = {
+    MopWaterLevel.LOW: "Low",
+    MopWaterLevel.MIDDLE: "Medium",
+    MopWaterLevel.HIGH: "High",
+}
+
+
+# Additional DPS 154 mappings for enhanced functionality
+CLEANING_INTENSITY_NAMES = {
+    0: "Normal",
+    1: "Narrow", 
+    2: "Quick",
+}
+
+CARPET_STRATEGY_NAMES = {
+    0: "Auto Raise",
+    1: "Avoid",
+    2: "Ignore",
+}
+
+CORNER_CLEANING_NAMES = {
+    0: "Normal",
+    1: "Deep",
+}
+
+FAN_SUCTION_NAMES = {
+    0: "Quiet",
+    1: "Standard", 
+    2: "Turbo",
+    3: "Max",
+    4: "Max Plus",
+}
+
 
 class EUFY_CLEAN_GET_STATE(str, Enum):
     sleeping = "stopped"
@@ -435,14 +528,21 @@ CLEAN_TYPE_MAP = {
     "vacuum": CleanType.SWEEP_ONLY,
     "mop": CleanType.MOP_ONLY,
     "vacuum_mop": CleanType.SWEEP_AND_MOP,
-    "vacuum_and_mop": CleanType.SWEEP_AND_MOP,
+    "vacuum and mop": CleanType.SWEEP_AND_MOP,
     "sweep_and_mop": CleanType.SWEEP_AND_MOP,
+    "mopping_after_sweeping": CleanType.SWEEP_THEN_MOP,
+    "mopping after sweeping": CleanType.SWEEP_THEN_MOP,
 }
 
 CLEAN_EXTENT_MAP = {
+    # Legacy keys
     "fast": CleanExtent.QUICK,
     "standard": CleanExtent.NORMAL,
     "deep": CleanExtent.NARROW,
+    # New standardized keys matching UI and Matter vocabulary
+    "quick": CleanExtent.QUICK,
+    "normal": CleanExtent.NORMAL,
+    "narrow": CleanExtent.NARROW,
 }
 
 MOP_CORNER_MAP = {
