@@ -373,6 +373,10 @@ def _map_work_status(status: WorkStatus) -> str:
         return "cleaning"
     if s == 5:
         # go_wash.mode: 0=NAVIGATION, 1=WASHING, 2=DRYING
+        # When washing or drying (modes 1, 2), the vacuum is physically docked at the station
+        # Users expect "docked" status during station-based activities, not "cleaning"
+        # "cleaning" implies the device is moving around cleaning floors
+        # This aligns with HA's vacuum state model where "docked" includes station activities
         if status.HasField("go_wash") and status.go_wash.mode in (1, 2):
             return "docked"
         if status.HasField("station") and status.station.HasField("washing_drying_system"):
@@ -647,4 +651,15 @@ def _process_cleaning_parameters(
         _track_field(state, changes, "smart_mode")
         _LOGGER.debug("DPS 154: Extracted smart mode %s", changes["smart_mode"])
 
-    _LOGGER.debug("DPS 154: Successfully processed cleaning parameters - extracted %d fields", len([k for k in changes.keys() if k in ["cleaning_mode", "fan_speed", "mop_water_level", "corner_cleaning", "cleaning_intensity", "carpet_strategy", "smart_mode"]]))
+    if _LOGGER.isEnabledFor(logging.DEBUG):
+        tracked_fields = {
+            "cleaning_mode",
+            "fan_speed", 
+            "mop_water_level",
+            "corner_cleaning",
+            "cleaning_intensity",
+            "carpet_strategy",
+            "smart_mode",
+        }
+        field_count = sum(1 for k in changes if k in tracked_fields)
+        _LOGGER.debug("DPS 154: Successfully processed cleaning parameters - extracted %d fields", field_count)

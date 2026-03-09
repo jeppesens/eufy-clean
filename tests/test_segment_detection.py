@@ -70,15 +70,7 @@ def mock_coordinator():
 def mock_config_entry():
     """Mock the config entry."""
     config_entry = MagicMock()
-    config_entry.data = {}
     config_entry.entry_id = "test_entry_id"
-
-    # Make the data dict actually store values
-    def set_data(key, value):
-        config_entry.data[key] = value
-
-    config_entry.__setitem__ = lambda self, key, value: set_data(key, value)
-
     return config_entry
 
 
@@ -120,7 +112,7 @@ def test_last_seen_segments_property(mock_coordinator, mock_config_entry):
 
 def test_last_seen_segments_none_when_not_stored(mock_coordinator, mock_config_entry):
     """Test last_seen_segments returns None when not stored."""
-    mock_config_entry.data = {}
+    mock_coordinator.last_seen_segments = None
 
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
@@ -177,7 +169,7 @@ async def test_store_last_seen_segments(mock_delete_issue, mock_coordinator, moc
 @pytest.mark.asyncio
 async def test_check_for_segment_changes_no_previous(mock_coordinator, mock_config_entry):
     """Test segment change detection when no previous segments stored."""
-    mock_config_entry.data = {}  # No last_seen_segments
+    mock_coordinator.last_seen_segments = None  # No last_seen_segments
 
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
@@ -223,7 +215,7 @@ async def test_check_for_segment_changes_no_changes(mock_coordinator, mock_confi
         {"id": "1", "name": "Living Room", "group": None},
         {"id": "2", "name": "Kitchen", "group": None},
     ]
-    mock_config_entry.data = {"last_seen_segments": previous_segments}
+    mock_coordinator.last_seen_segments = previous_segments
 
     # Mock current segments (same as previous)
     mock_coordinator.data.rooms = [
@@ -236,3 +228,48 @@ async def test_check_for_segment_changes_no_changes(mock_coordinator, mock_confi
     with patch.object(entity, 'async_create_segments_issue') as mock_create:
         entity._check_for_segment_changes()
         mock_create.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_storage_load_on_coordinator_init(mock_coordinator, mock_config_entry):
+    """Test that coordinator loads from storage during initialization."""
+    # Mock storage to return test data
+    stored_segments = [
+        {"id": "1", "name": "Living Room", "group": None},
+        {"id": "2", "name": "Kitchen", "group": None},
+    ]
+    
+    with patch.object(mock_coordinator, 'async_load_storage') as mock_load:
+        mock_load.return_value = None  # async_load_storage sets coordinator.last_seen_segments
+        mock_coordinator.last_seen_segments = stored_segments
+        
+        entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+        
+        # Verify entity can access the loaded segments
+        last_seen = entity.last_seen_segments
+        assert len(last_seen) == 2
+        assert last_seen[0].id == "1"
+        assert last_seen[0].name == "Living Room"
+
+
+@pytest.mark.asyncio
+async def test_storage_save_on_segment_store(mock_coordinator, mock_config_entry):
+    """Test that storing segments calls coordinator storage method."""
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    
+    segments = [
+        Segment(id="1", name="Living Room", group=None),
+        Segment(id="2", name="Kitchen", group=None),
+    ]
+    
+    # Mock the coordinator's storage method
+    mock_coordinator.async_save_segments = AsyncMock()
+    
+    # Call the storage method
+    entity._store_last_seen_segments(segments)
+    
+    # Verify coordinator storage was called with correct data
+    mock_coordinator.async_save_segments.assert_called_once_with([
+        {"id": "1", "name": "Living Room", "group": None},
+        {"id": "2", "name": "Kitchen", "group": None},
+    ])

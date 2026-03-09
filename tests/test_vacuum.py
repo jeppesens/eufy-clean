@@ -31,7 +31,6 @@ def mock_coordinator():
 def mock_config_entry():
     """Mock the config entry."""
     config_entry = MagicMock()
-    config_entry.data = {}
     config_entry.entry_id = "test_entry_id"
     return config_entry
 
