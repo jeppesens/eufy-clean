@@ -36,17 +36,7 @@ async def async_setup_entry(
         _LOGGER.debug("Adding sensors for %s", coordinator.device_name)
 
         # Battery sensor
-        entities.append(
-            RoboVacSensor(
-                coordinator,
-                "battery",
-                "Battery",
-                lambda s: s.battery_level,
-                device_class=SensorDeviceClass.BATTERY,
-                unit=PERCENTAGE,
-                state_class=SensorStateClass.MEASUREMENT,
-            )
-        )
+        entities.append(BatterySensorEntity(coordinator))
 
         # Error Message Sensor
         entities.append(
@@ -74,6 +64,21 @@ async def async_setup_entry(
                 unit=None,
                 state_class=None,
                 icon="mdi:robot-vacuum",
+                category=EntityCategory.DIAGNOSTIC,
+            )
+        )
+
+        # Work Mode Sensor
+        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "work_mode",
+                "Work Mode",
+                lambda s: s.work_mode,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:cog-outline",
                 category=EntityCategory.DIAGNOSTIC,
             )
         )
@@ -269,3 +274,33 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
         if self._extra_attrs_fn:
             return self._extra_attrs_fn(self.coordinator.data)
         return None
+
+
+class BatterySensorEntity(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
+    """Dedicated battery sensor entity for Matter Bridge compatibility.
+    
+    Matter Bridges require devices that operate on battery power to explicitly
+    expose a dedicated battery sensor entity (device_class=battery) rather than
+    just exposing the battery level as a state attribute on the Vacuum entity.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Battery"
+    _attr_icon = "mdi:battery"
+    _attr_device_class = SensorDeviceClass.BATTERY
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _attr_state_class = SensorStateClass.MEASUREMENT
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize the battery sensor."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_battery"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def native_value(self) -> int | None:
+        """Return the battery level, or None if invalid."""
+        battery = self.coordinator.data.battery_level
+        if battery is None or battery < 0:
+            return None
+        return battery

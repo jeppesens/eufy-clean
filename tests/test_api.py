@@ -8,7 +8,10 @@ from custom_components.robovac_mqtt.api.commands import (
     build_room_clean_command,
     build_scene_clean_command,
     build_set_auto_action_cfg_command,
+    build_set_cleaning_mode_command,
+    build_set_cleaning_intensity_command,
     build_set_clean_speed_command,
+    build_set_water_level_command,
 )
 from custom_components.robovac_mqtt.api.parser import update_state
 from custom_components.robovac_mqtt.const import DPS_MAP, EUFY_CLEAN_CONTROL
@@ -41,6 +44,32 @@ def test_update_state_work_status(mock_decode):
 
     assert new_state.activity == "cleaning"
     assert new_state.status_code == 4
+
+
+@patch("custom_components.robovac_mqtt.api.parser.decode")
+def test_update_state_work_mode(mock_decode):
+    """Test updating work mode through parser."""
+    state = VacuumState()
+
+    # Case 1: Mode field present (1 = SELECT_ROOM)
+    mock_status = MagicMock()
+    mock_status.state = 5  # Cleaning
+    mock_status.mode.value = 1
+    mock_decode.return_value = mock_status
+
+    dps = {DPS_MAP["WORK_STATUS"]: "encoded"}
+    new_state, _ = update_state(state, dps)
+    assert new_state.work_mode == "Room"
+
+    # Case 2: Mode field missing but cleaning
+    mock_status.HasField.return_value = False
+    new_state, _ = update_state(state, dps)
+    assert new_state.work_mode == "Auto"
+
+    # Case 3: Mode field missing and not cleaning
+    mock_status.state = 0  # Standby
+    new_state, _ = update_state(state, dps)
+    assert new_state.work_mode == "unknown"
 
 
 @patch("custom_components.robovac_mqtt.api.parser.decode")
@@ -94,6 +123,56 @@ def test_build_set_clean_speed(mock_encode):
 
     cmd = build_command("set_fan_speed", fan_speed="Max")
     assert cmd == {DPS_MAP["CLEAN_SPEED"]: "3"}
+
+
+@patch("custom_components.robovac_mqtt.api.commands.encode")
+def test_build_spot_clean_command(mock_encode):
+    """Test building spot clean command."""
+    build_command("clean_spot")
+    mock_encode.assert_called()
+    # The first argument is ModeCtrlRequest, second is the data dict
+    args, _ = mock_encode.call_args
+    assert args[1]["method"] == EUFY_CLEAN_CONTROL.START_SPOT_CLEAN
+    assert args[1]["spot_clean"] == {"clean_times": 1}
+
+
+@patch("custom_components.robovac_mqtt.api.commands.encode_message")
+def test_build_set_cleaning_mode_command(mock_encode_message):
+    """Test building global cleaning mode command."""
+    mock_encode_message.return_value = "encoded_clean_mode"
+
+    cmd = build_set_cleaning_mode_command("Vacuum and mop")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_clean_mode"}
+
+    cmd = build_command("set_cleaning_mode", clean_mode="Mop")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_clean_mode"}
+    assert mock_encode_message.call_count == 2
+
+
+@patch("custom_components.robovac_mqtt.api.commands.encode_message")
+def test_build_set_water_level_command(mock_encode_message):
+    """Test building global water level command."""
+    mock_encode_message.return_value = "encoded_water_level"
+
+    cmd = build_set_water_level_command("High")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_water_level"}
+
+    cmd = build_command("set_water_level", water_level="Medium")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_water_level"}
+    assert mock_encode_message.call_count == 2
+
+
+@patch("custom_components.robovac_mqtt.api.commands.encode_message")
+def test_build_set_cleaning_intensity_command(mock_encode_message):
+    """Test building global cleaning intensity command."""
+    mock_encode_message.return_value = "encoded_clean_intensity"
+
+    cmd = build_set_cleaning_intensity_command("Quick")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_clean_intensity"}
+
+    cmd = build_command("set_cleaning_intensity", cleaning_intensity="Normal")
+    assert cmd == {DPS_MAP["CLEANING_PARAMETERS"]: "encoded_clean_intensity"}
+    assert mock_encode_message.call_count == 2
 
 
 @patch("custom_components.robovac_mqtt.api.commands.encode")

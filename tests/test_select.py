@@ -10,9 +10,13 @@ from homeassistant.const import EntityCategory
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.select import (
+    CleaningModeSelectEntity,
+    CleaningIntensitySelectEntity,
     DockSelectEntity,
+    MopIntensitySelectEntity,
     RoomSelectEntity,
     SceneSelectEntity,
+    WaterLevelSelectEntity,
 )
 
 
@@ -142,13 +146,13 @@ async def test_scene_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Scene"
-    assert entity.options == ["Scene 1 (ID: 1)", "Scene 2 (ID: 2)"]
+    assert entity.options == ["Scene 1", "Scene 2"]
     assert entity.current_option is None
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
         mock_build.return_value = {"cmd": "scene_cmd"}
 
-        await entity.async_select_option("Scene 2 (ID: 2)")
+        await entity.async_select_option("Scene 2")
 
         mock_build.assert_called_with("scene_clean", scene_id=2)
         mock_coordinator.async_send_command.assert_called_with({"cmd": "scene_cmd"})
@@ -168,15 +172,128 @@ async def test_room_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Clean Room"
-    # Matches format "Name (ID: id)"
-    assert "Kitchen (ID: 10)" in entity.options
-    assert "Living Room (ID: 12)" in entity.options
+    # Matches format "Name"
+    assert "Kitchen" in entity.options
+    assert "Living Room" in entity.options
     assert entity.current_option is None
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
         mock_build.return_value = {"cmd": "room_cmd"}
 
-        await entity.async_select_option("Kitchen (ID: 10)")
+        await entity.async_select_option("Kitchen")
 
-        mock_build.assert_called_with("room_clean", room_ids=[10], map_id=5)
+        mock_build.assert_called_with(
+            "room_clean", room_ids=[10], map_id=5, mode="CUSTOMIZE"
+        )
         mock_coordinator.async_send_command.assert_called_with({"cmd": "room_cmd"})
+
+
+@pytest.mark.asyncio
+async def test_cleaning_mode_select_entity(mock_coordinator):
+    """Test CleaningModeSelectEntity sends a command."""
+    mock_coordinator.data.cleaning_mode = "Vacuum"
+
+    entity = CleaningModeSelectEntity(mock_coordinator)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+
+    with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
+        mock_build.return_value = {"cmd": "clean_mode_cmd"}
+
+        await entity.async_select_option("Mop")
+
+        mock_build.assert_called_with("set_cleaning_mode", clean_mode="Mop")
+        mock_coordinator.async_send_command.assert_called_with(
+            {"cmd": "clean_mode_cmd"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_water_level_select_entity(mock_coordinator):
+    """Test WaterLevelSelectEntity sends a command."""
+    mock_coordinator.data.mop_water_level = "Medium"
+    mock_coordinator.data.received_fields = {"mop_water_level"}
+
+    entity = WaterLevelSelectEntity(mock_coordinator)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+
+    with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
+        mock_build.return_value = {"cmd": "water_level_cmd"}
+
+        await entity.async_select_option("High")
+
+        mock_build.assert_called_with("set_water_level", water_level="High")
+        mock_coordinator.async_send_command.assert_called_with(
+            {"cmd": "water_level_cmd"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_cleaning_intensity_select_entity(mock_coordinator):
+    """Test CleaningIntensitySelectEntity sends a command."""
+    mock_coordinator.data.cleaning_intensity = "Normal"
+    mock_coordinator.data.received_fields = {"cleaning_intensity"}
+
+    entity = CleaningIntensitySelectEntity(mock_coordinator)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+
+    with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
+        mock_build.return_value = {"cmd": "clean_intensity_cmd"}
+
+        await entity.async_select_option("Quick")
+
+        mock_build.assert_called_with(
+            "set_cleaning_intensity", cleaning_intensity="Quick"
+        )
+        mock_coordinator.async_send_command.assert_called_with(
+            {"cmd": "clean_intensity_cmd"}
+        )
+
+
+def test_mop_intensity_select_entity_entity_category(mock_coordinator):
+    """Test MopIntensitySelectEntity has CONFIG entity category."""
+    entity = MopIntensitySelectEntity(mock_coordinator)
+    
+    assert entity.entity_category == EntityCategory.CONFIG
+    assert entity.name == "Mop Intensity"
+    assert entity.options == ["Quiet", "Automatic", "Max"]
+
+
+def test_mop_intensity_select_entity_mapping(mock_coordinator):
+    """Test MopIntensitySelectEntity option to state mapping."""
+    entity = MopIntensitySelectEntity(mock_coordinator)
+    
+    # Test option to state mapping
+    assert entity._option_to_state("Quiet") == "Low"
+    assert entity._option_to_state("Automatic") == "Medium"
+    assert entity._option_to_state("Max") == "High"
+    
+    # Test state to option mapping
+    assert entity._state_to_option("Low") == "Quiet"
+    assert entity._state_to_option("Medium") == "Automatic"
+    assert entity._state_to_option("High") == "Max"
+    assert entity._state_to_option("Unknown") == "Unknown"  # fallback
+
+
+@pytest.mark.asyncio
+async def test_mop_intensity_select_entity_async(mock_coordinator):
+    """Test MopIntensitySelectEntity sends correct command."""
+    mock_coordinator.data.mop_water_level = "Medium"
+    mock_coordinator.data.received_fields = {"mop_water_level"}
+
+    entity = MopIntensitySelectEntity(mock_coordinator)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+
+    with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
+        mock_build.return_value = {"cmd": "water_level_cmd"}
+
+        await entity.async_select_option("Max")
+
+        # Should map "Max" to "High" for the device command
+        mock_build.assert_called_with("set_water_level", water_level="High")
+        mock_coordinator.async_send_command.assert_called_with(
+            {"cmd": "water_level_cmd"}
+        )

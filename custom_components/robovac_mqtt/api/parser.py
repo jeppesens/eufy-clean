@@ -7,13 +7,28 @@ from typing import Any
 from google.protobuf.json_format import MessageToDict
 
 from ..const import (
+    CLEANING_MODE_NAMES,
+    CLEANING_INTENSITY_NAMES,
+    CARPET_STRATEGY_NAMES,
+    CORNER_CLEANING_NAMES,
+    FAN_SUCTION_NAMES,
+    MOP_WATER_LEVEL_NAMES,
     DOCK_ACTIVITY_STATES,
     DPS_MAP,
     EUFY_CLEAN_APP_TRIGGER_MODES,
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
+    TRIGGER_SOURCE_NAMES,
+    WORK_MODE_NAMES,
 )
 from ..models import AccessoryState, VacuumState
+from ..proto.cloud.clean_param_pb2 import (
+    CleanExtent,
+    CleanParamRequest,
+    CleanParamResponse,
+    CleanType,
+    MopMode,
+)
 from ..proto.cloud.clean_statistics_pb2 import CleanStatistics
 from ..proto.cloud.consumable_pb2 import ConsumableResponse
 from ..proto.cloud.error_code_pb2 import ErrorCode
@@ -141,6 +156,20 @@ def _process_work_status(
 
         changes["trigger_source"] = trigger_source
 
+        # Extract Work Mode
+        if work_status.HasField("mode"):
+            mode_val = work_status.mode.value
+            changes["work_mode"] = WORK_MODE_NAMES.get(mode_val, "unknown")
+            _track_field(state, changes, "work_mode")
+        elif state.work_mode == "unknown" and changes["activity"] == "cleaning":
+            # If we don't know the mode yet but we are cleaning, default to Auto
+            changes["work_mode"] = "Auto"
+        elif changes["activity"] not in ("cleaning", "returning"):
+            # If we are not cleaning or returning, reset to unknown
+            # This handles the case where a previous run's mode might stick around
+            if state.work_mode != "unknown":
+                changes["work_mode"] = "unknown"
+
         # Fallback/Override if cleaning.scheduled_task is explicit
         if work_status.HasField("cleaning") and work_status.cleaning.scheduled_task:
             changes["trigger_source"] = "schedule"
@@ -266,6 +295,10 @@ def _process_other_dps(
                     changes["rooms"] = map_info.get("rooms", [])
                     _track_field(state, changes, "map_id")
 
+            elif key == DPS_MAP["CLEANING_PARAMETERS"]:
+                _LOGGER.debug("Received CLEANING_PARAMETERS: %s", value)
+                _process_cleaning_parameters(state, value, changes)
+
             elif key == DPS_MAP["FIND_ROBOT"]:
                 changes["find_robot"] = str(value).lower() == "true"
 
@@ -354,7 +387,14 @@ def _map_work_status(status: WorkStatus) -> str:
     if s == 4:
         return "cleaning"
     if s == 5:
-        if "DRYING" in str(status.go_wash):
+        # go_wash.mode: 0=NAVIGATION, 1=WASHING, 2=DRYING
+        # When washing or drying (modes 1, 2), the vacuum is physically docked at the station
+        # Users expect "docked" status during station-based activities, not "cleaning"
+        # "cleaning" implies the device is moving around cleaning floors
+        # This aligns with HA's vacuum state model where "docked" includes station activities
+        if status.HasField("go_wash") and status.go_wash.mode in (1, 2):
+            return "docked"
+        if status.HasField("station") and status.station.HasField("washing_drying_system"):
             return "docked"
         return "cleaning"
     if s == 6:
@@ -368,24 +408,16 @@ def _map_work_status(status: WorkStatus) -> str:
 
 
 def _map_trigger_source(value: int) -> str:
-    """Map Trigger.Source to string."""
-    # 0: UNKNOWN
-    # 1: APP
-    # 2: KEY
-    # 3: TIMING
-    # 4: ROBOT
-    # 5: REMOTE_CTRL
-    if value == 1:
-        return "app"
-    if value == 2:
-        return "button"
-    if value == 3:
-        return "schedule"
-    if value == 4:
-        return "robot"
-    if value == 5:
-        return "remote_control"
-    return "unknown"
+    """Map Trigger.Source to string.
+
+    0: UNKNOWN
+    1: APP
+    2: KEY
+    3: TIMING
+    4: ROBOT
+    5: REMOTE_CTRL
+    """
+    return TRIGGER_SOURCE_NAMES.get(value, "unknown")
 
 
 def _map_clean_speed(value: Any) -> str:
@@ -472,9 +504,10 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
         if universal_data:
             _LOGGER.debug("Decoded UniversalDataResponse: %s", universal_data)
         if universal_data and universal_data.cur_map_room.map_id:
-            rooms = [
-                {"id": r.id, "name": r.name} for r in universal_data.cur_map_room.data
-            ]
+            rooms = []
+            for r in universal_data.cur_map_room.data:
+                name = (r.name or "").strip() or f"Room {r.id}"
+                rooms.append({"id": r.id, "name": name})
             return {"map_id": universal_data.cur_map_room.map_id, "rooms": rooms}
     except Exception as e:
         _LOGGER.debug("UniversalDataResponse parse failed: %s", e)
@@ -485,7 +518,10 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
         if room_params:
             _LOGGER.debug("Decoded RoomParams: %s", room_params)
         if room_params and room_params.map_id:
-            rooms = [{"id": r.id, "name": r.name} for r in room_params.rooms]
+            rooms = []
+            for r in room_params.rooms:
+                name = (r.name or "").strip() or f"Room {r.id}"
+                rooms.append({"id": r.id, "name": name})
             return {"map_id": room_params.map_id, "rooms": rooms}
     except Exception as e:
         _LOGGER.debug("RoomParams parse failed: %s", e)
@@ -529,3 +565,97 @@ def _parse_accessories(current_state: AccessoryState, value: Any) -> AccessorySt
     except Exception as e:
         _LOGGER.debug("Error parsing accessory info: %s", e)
         return current_state
+
+
+def _process_cleaning_parameters(
+    state: VacuumState, value: Any, changes: dict[str, Any]
+) -> None:
+    """Process Cleaning Parameters DPS (154)."""
+    # Try decoding as Response first, then Request
+    clean_param = None
+    try:
+        response = decode(CleanParamResponse, value, has_length=True)
+        if response and response.HasField("clean_param"):
+            clean_param = response.clean_param
+        elif response and response.HasField("running_clean_param"):
+            clean_param = response.running_clean_param
+    except Exception as e:
+        _LOGGER.debug("Failed to decode CleanParamResponse from DPS 154: %s", e)
+
+    if not clean_param:
+        try:
+            request = decode(CleanParamRequest, value, has_length=True)
+            if request and request.HasField("clean_param"):
+                clean_param = request.clean_param
+        except Exception as e:
+            _LOGGER.debug("Failed to decode CleanParamRequest from DPS 154: %s", e)
+
+    if not clean_param:
+        _LOGGER.debug("Could not decode Cleaning Parameters from DPS 154")
+        return
+
+    # Extract Cleaning Mode
+    if clean_param.HasField("clean_type"):
+        mode_val = clean_param.clean_type.value
+        changes["cleaning_mode"] = CLEANING_MODE_NAMES.get(mode_val, "Vacuum")
+        _track_field(state, changes, "cleaning_mode")
+
+    # Extract Fan Speed (available on newer devices in DPS 154)
+    if clean_param.HasField("fan"):
+        fan_val = clean_param.fan.suction
+        changes["fan_speed"] = FAN_SUCTION_NAMES.get(fan_val, "Standard")
+        _track_field(state, changes, "fan_speed")
+        _LOGGER.debug("DPS 154: Extracted fan speed %s (value: %s)", changes["fan_speed"], fan_val)
+
+    # Extract Mop Water Level
+    if clean_param.HasField("mop_mode"):
+        level_val = clean_param.mop_mode.level
+        changes["mop_water_level"] = MOP_WATER_LEVEL_NAMES.get(level_val, "Medium")
+        _track_field(state, changes, "mop_water_level")
+        _LOGGER.debug(
+            "DPS 154: Extracted mop water level %s (value: %s)",
+            changes["mop_water_level"],
+            level_val,
+        )
+    else:
+        _LOGGER.debug("DPS 154: mop_mode not present in cleaning parameters")
+
+    # Extract Corner Cleaning Mode
+    if clean_param.HasField("mop_mode"):
+        corner_val = clean_param.mop_mode.corner_clean
+        changes["corner_cleaning"] = CORNER_CLEANING_NAMES.get(corner_val, "Normal")
+        _track_field(state, changes, "corner_cleaning")
+        _LOGGER.debug("DPS 154: Extracted corner cleaning %s (value: %s)", changes["corner_cleaning"], corner_val)
+
+    # Extract Cleaning Intensity
+    if clean_param.HasField("clean_extent"):
+        extent_val = clean_param.clean_extent.value
+        changes["cleaning_intensity"] = CLEANING_INTENSITY_NAMES.get(extent_val, "Normal")
+        _track_field(state, changes, "cleaning_intensity")
+        _LOGGER.debug("DPS 154: Extracted cleaning intensity %s (value: %s)", changes["cleaning_intensity"], extent_val)
+
+    # Extract Carpet Strategy
+    if clean_param.HasField("clean_carpet"):
+        carpet_val = clean_param.clean_carpet.strategy
+        changes["carpet_strategy"] = CARPET_STRATEGY_NAMES.get(carpet_val, "Auto Raise")
+        _track_field(state, changes, "carpet_strategy")
+        _LOGGER.debug("DPS 154: Extracted carpet strategy %s (value: %s)", changes["carpet_strategy"], carpet_val)
+
+    # Extract Smart Mode Switch
+    if clean_param.HasField("smart_mode_sw"):
+        changes["smart_mode"] = bool(clean_param.smart_mode_sw)
+        _track_field(state, changes, "smart_mode")
+        _LOGGER.debug("DPS 154: Extracted smart mode %s", changes["smart_mode"])
+
+    if _LOGGER.isEnabledFor(logging.DEBUG):
+        tracked_fields = {
+            "cleaning_mode",
+            "fan_speed", 
+            "mop_water_level",
+            "corner_cleaning",
+            "cleaning_intensity",
+            "carpet_strategy",
+            "smart_mode",
+        }
+        field_count = sum(1 for k in changes if k in tracked_fields)
+        _LOGGER.debug("DPS 154: Successfully processed cleaning parameters - extracted %d fields", field_count)

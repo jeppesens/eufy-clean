@@ -47,7 +47,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Get Devices and create coordinators
     # eufy_login.mqtt_devices populated by init/getDevices
     # mqtt_devices is a list of dicts with device info
-    for device_info in eufy_login.mqtt_devices:
+    devices = eufy_login.mqtt_devices
+    is_multi_device = len(devices) > 1
+
+    for device_info in devices:
         device_id = device_info.get("deviceId")
         if not device_id:
             continue
@@ -61,6 +64,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         coordinator = EufyCleanCoordinator(hass, eufy_login, device_info)
         try:
             await coordinator.initialize()
+
+            # Migrate segments from config entry data to per-device Store.
+            # Only migrate if the store is empty and we have a single device
+            # to avoid overwriting newer data or assigning to wrong device.
+            if last_seen := entry.data.get("last_seen_segments"):
+                if is_multi_device:
+                    _LOGGER.info("Skipping migration of last seen segments for %s due to multi-device setup", device_id)
+                elif not coordinator.last_seen_segments:
+                    await coordinator.async_save_segments(last_seen)
+                    _LOGGER.info("Migrated last seen segments for %s to persistent storage", device_id)
+
             coordinators.append(coordinator)
         except Exception as e:
             _LOGGER.warning("Failed to initialize coordinator for %s: %s", device_id, e)
@@ -73,6 +87,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {"coordinators": coordinators}
+
+    # Clean up migrated data from config entry
+    if "last_seen_segments" in entry.data:
+        new_data = dict(entry.data)
+        new_data.pop("last_seen_segments")
+        hass.config_entries.async_update_entry(entry, data=new_data)
+        _LOGGER.info("Removed legacy last_seen_segments from config entry %s", entry.entry_id)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

@@ -1,0 +1,8 @@
+{
+  "issues": {
+    "segments_changed": {
+      "title": "Vacuum segments have changed",
+      "description": "The segments (rooms) for **{device_name}** have changed since the last known configuration. If you use this vacuum with the Matter Hub, re-sync the area mapping so automations continue to work correctly."
+    }
+  }
+}

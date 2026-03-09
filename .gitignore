@@ -1,5 +1,8 @@
 build
 out
+venv
+.python-version
+.kiro
 .git
 node_modules
 # build

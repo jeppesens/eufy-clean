@@ -22,6 +22,18 @@ This custom component provides comprehensive control over your Eufy robot vacuum
 - **Battery monitoring** - Track battery level and charging status
 - **Find Robot** - Locate your device by playing a sound (toggle via switch)
 
+### Cleaning Parameter Controls
+Fine-grained cleaning settings are exposed as select entities (shown only when supported by your device firmware):
+
+- **Suction Level** - `Quiet`, `Standard`, `Turbo`, `Max`, `Boost IQ`
+- **Cleaning Mode** - `Vacuum`, `Mop`, `Vacuum and mop`, `Mopping after sweeping`
+- **Water Level** - `Low`, `Medium`, `High`
+- **Mop Intensity** - `Quiet`, `Automatic`, `Max` (Matter-compatible alias for Water Level)
+- **Cleaning Intensity** - `Normal`, `Narrow`, `Quick`
+
+> [!NOTE]
+> These entities are hidden until the device reports the relevant DPS field at least once. Entities that your device does not support will remain unavailable.
+
 ### Dock tasks
 - **wash mop** - trigger washing of the mop
 - **dry mop** - trigger drying of the mop
@@ -69,6 +81,17 @@ The integration tracks the usage of consumable accessories and allows you to res
 - Work status and mode
 - **Extended Device Info**: Serial number, MAC address, and Firmware version are now available in the device info panel.
 - **Error Tracking**: Real-time error monitoring with detailed descriptions (e.g., "Wheel Stuck", "Sensor Dirty") available as attributes and sensors.
+
+### Segment Change Detection
+When the vacuum's room map changes (rooms added, removed, or renamed), the integration raises a **Repair issue** in Home Assistant under **Settings → System → Repairs**. This is especially important if you use the [home-assistant-matter-hub](https://github.com/t0bst4r/home-assistant-matter-hub) bridge, where stale room names can cause automations to break. Once you have re-synced your area mapping, the issue will be cleared automatically on the next map update.
+
+### Home Assistant Matter Hub
+This integration is designed to work alongside [home-assistant-matter-hub](https://github.com/t0bst4r/home-assistant-matter-hub). The following properties are exposed for Matter discovery:
+- Room segments with guaranteed unique names (duplicates are automatically suffixed, e.g. `Kitchen (2)`) to prevent bridge crashes
+- **Mop Intensity** select entity uses Matter-compatible option names (`Quiet`, `Automatic`, `Max`)
+
+> [!NOTE]
+> Both **Water Level** (`Low`/`Medium`/`High`) and **Mop Intensity** (`Quiet`/`Automatic`/`Max`) control the same device setting. Water Level uses human-readable device names; Mop Intensity uses the names expected by the Matter specification. The Matter bridge discovers the Mop Intensity entity.
 
 ## Usage
 
@@ -149,7 +172,7 @@ data:
 ### Map and Room Identification
 - **Active Map Sensor**: Use the `sensor.[vacuum_name]_active_map` entity to see which map the vacuum is currently on (e.g., `4`, `6`). This is useful for providing the correct `map_id` in service calls.
 - **Map Switching**: **Currently not supported.** If you need to switch the active map, you must do so within the official Eufy Clean app. Once switched, the integration will automatically update the `Active Map` sensor and `Room Selection` list.
-- **Room IDs**: If you are using service calls, you can find your room IDs directly in the **Room Selection** dropdown, where they are displayed alongside the room names (e.g., `Kitchen (ID: 3)`). This eliminates the need to dig through logs or the mobile app.
+- **Room IDs**: Room IDs are available in the vacuum entity's `rooms` and `segments` state attributes (e.g., `{"id": 3, "name": "Kitchen"}`). You can inspect these via **Developer Tools → States** in Home Assistant.
 
 > [!TIP]
 > If you get an error like "Unable to identify position", it's likely that the `map_id` provided in your service call doesn't match the vacuum's current hardware map. Check the **Active Map** sensor to verify.

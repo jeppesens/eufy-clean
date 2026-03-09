@@ -27,9 +27,17 @@ def mock_coordinator():
     return coordinator
 
 
-def test_vacuum_properties(mock_coordinator):
+@pytest.fixture
+def mock_config_entry():
+    """Mock the config entry."""
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry_id"
+    return config_entry
+
+
+def test_vacuum_properties(mock_coordinator, mock_config_entry):
     """Test vacuum properties."""
-    entity = RoboVacMQTTEntity(mock_coordinator)
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
     entity.hass = MagicMock()
 
     assert entity.unique_id == "test_id"
@@ -49,25 +57,27 @@ def test_vacuum_properties(mock_coordinator):
     assert entity.activity == VacuumActivity.IDLE
 
 
-def test_vacuum_attributes(mock_coordinator):
+def test_vacuum_attributes(mock_coordinator, mock_config_entry):
     """Test vacuum attributes."""
-    entity = RoboVacMQTTEntity(mock_coordinator)
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
     mock_coordinator.data.battery_level = 80
     mock_coordinator.data.fan_speed = EUFY_CLEAN_CLEAN_SPEED.STANDARD
     mock_coordinator.data.error_code = 0
     mock_coordinator.data.task_status = "Cleaning"
-
+    mock_coordinator.data.work_mode = "Room"
+ 
     attrs = entity.extra_state_attributes
-
+ 
     assert attrs["fan_speed"] == EUFY_CLEAN_CLEAN_SPEED.STANDARD
     assert attrs["task_status"] == "Cleaning"
+    assert attrs["work_mode"] == "Room"
 
 
 @pytest.mark.asyncio
-async def test_vacuum_commands(mock_coordinator):
+async def test_vacuum_commands(mock_coordinator, mock_config_entry):
     """Test vacuum commands."""
-    entity = RoboVacMQTTEntity(mock_coordinator)
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
     with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
         mock_build.return_value = {"cmd": "val"}
@@ -104,9 +114,9 @@ async def test_vacuum_commands(mock_coordinator):
 
 
 @pytest.mark.asyncio
-async def test_set_fan_speed(mock_coordinator):
+async def test_set_fan_speed(mock_coordinator, mock_config_entry):
     """Test setting fan speed."""
-    entity = RoboVacMQTTEntity(mock_coordinator)
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
     # Supported speeds (Mocking list if needed, but defaults are used)
     # entity._attr_fan_speed_list is set in init
@@ -125,9 +135,9 @@ async def test_set_fan_speed(mock_coordinator):
 
 
 @pytest.mark.asyncio
-async def test_async_send_command_raw(mock_coordinator):
+async def test_async_send_command_raw(mock_coordinator, mock_config_entry):
     """Test sending raw commands."""
-    entity = RoboVacMQTTEntity(mock_coordinator)
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
     with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
         mock_build.return_value = {"cmd": "raw"}
