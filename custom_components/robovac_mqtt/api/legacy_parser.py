@@ -32,6 +32,7 @@ def update_state_legacy(
     """
     changes: dict[str, Any] = {}
     received = set(state.received_fields)
+    _LOGGER.debug("Legacy parser: processing %d DPS keys: %s", len(dps), list(dps.keys()))
 
     # Store raw DPS
     raw = dict(state.raw_dps)
@@ -64,6 +65,11 @@ def update_state_legacy(
         changes["received_fields"] = received
 
     new_state = replace(state, **changes)
+    _LOGGER.debug(
+        "Legacy parser: %d changes applied: %s",
+        len(changes),
+        [k for k in changes if k != "raw_dps"],
+    )
     return new_state, changes
 
 
@@ -85,11 +91,16 @@ def _process_work_status(
         received.add("task_status")
 
         # Derive charging from activity
-        changes["charging"] = activity == "docked" and status_str.lower() in (
+        charging = activity == "docked" and status_str.lower() in (
             "charging",
             "completed",
         )
+        changes["charging"] = charging
         received.add("charging")
+        _LOGGER.debug(
+            "Legacy work_status: '%s' -> activity=%s, charging=%s",
+            status_str, activity, charging,
+        )
     else:
         _LOGGER.debug("Unknown legacy work status: %s", value)
 

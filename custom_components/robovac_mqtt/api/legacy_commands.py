@@ -23,7 +23,9 @@ def build_legacy_command(command: str, **kwargs: Any) -> dict[str, Any]:
     if builder is None:
         _LOGGER.debug("Unsupported legacy command: %s", command)
         return {}
-    return builder(**kwargs)
+    result = builder(**kwargs)
+    _LOGGER.debug("Legacy command %s built: %s", command, result)
+    return result
 
 
 def _build_start_auto(**kwargs: Any) -> dict[str, Any]:

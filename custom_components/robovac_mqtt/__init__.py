@@ -50,6 +50,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # eufy_login.cloud_devices populated by init/getCloudDevices (Tuya Cloud)
     all_devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
     is_multi_device = len(all_devices) > 1
+    _LOGGER.debug(
+        "Device discovery complete: %d MQTT + %d cloud = %d total",
+        len(eufy_login.mqtt_devices),
+        len(eufy_login.cloud_devices),
+        len(all_devices),
+    )
 
     for device_info in all_devices:
         device_id = device_info.get("deviceId")

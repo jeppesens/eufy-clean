@@ -28,6 +28,7 @@ class EufyLogin:
         self._eufy_user_id: str | None = None
 
     async def init(self):
+        _LOGGER.debug("EufyLogin.init() starting: HTTP login + device discovery")
         await self.login({"mqtt": True})
         await self.getDevices()
 
@@ -52,10 +53,12 @@ class EufyLogin:
             raise EufyLoginError("Login failed")
 
         self.mqtt_credentials = eufyLogin["mqtt"]
+        _LOGGER.debug("HTTP login successful, MQTT credentials obtained")
 
         # Store user_id for Tuya Cloud login
         session = eufyLogin.get("session", {})
         self._eufy_user_id = session.get("user_id")
+        _LOGGER.debug("Eufy user_id: %s", "present" if self._eufy_user_id else "missing")
 
     async def checkLogin(self):
         if not self.mqtt_credentials:
@@ -92,6 +95,7 @@ class EufyLogin:
 
     async def getDevices(self) -> None:
         self.eufy_api_devices = await self.eufyApi.get_cloud_device_list()
+        _LOGGER.debug("Eufy API returned %d devices from cloud list", len(self.eufy_api_devices))
         devices = await self.eufyApi.get_device_list()
         devices = [
             {
@@ -106,6 +110,12 @@ class EufyLogin:
             for device in devices
         ]
         self.mqtt_devices = [d for d in devices if not d["invalid"]]
+        _LOGGER.debug(
+            "MQTT devices: %d valid out of %d total (%s)",
+            len(self.mqtt_devices),
+            len(devices),
+            [(d["deviceName"], d["apiType"]) for d in self.mqtt_devices],
+        )
 
     async def getCloudDevices(self) -> None:
         """Fetch devices from Tuya Cloud and add those not already in MQTT list."""
@@ -124,10 +134,12 @@ class EufyLogin:
         for device in tuya_devices:
             dev_id = device.get("devId")
             if not dev_id or dev_id in mqtt_device_ids:
+                _LOGGER.debug("Cloud device %s: skipping (duplicate or no ID)", dev_id)
                 continue
 
             model_info = self.findModel(dev_id)
             if model_info["invalid"]:
+                _LOGGER.debug("Cloud device %s: skipping (unknown model)", dev_id)
                 continue
 
             dps = device.get("dps", {})
@@ -158,7 +170,13 @@ class EufyLogin:
             return None
 
         try:
-            return await self.tuya_client.get_device(device_id)
+            result = await self.tuya_client.get_device(device_id)
+            _LOGGER.debug(
+                "Cloud device %s poll: %s",
+                device_id,
+                f"{len(result)} DPS keys" if result else "not found",
+            )
+            return result
         except TuyaCloudError as e:
             _LOGGER.debug("Cloud device %s poll failed: %s; attempting re-login", device_id, e)
             self.tuya_client.sid = None
@@ -186,6 +204,7 @@ class EufyLogin:
 
         try:
             await self.tuya_client.send_command(device_id, dps)
+            _LOGGER.debug("Cloud command to %s succeeded: %s", device_id, dps)
         except TuyaCloudError as e:
             _LOGGER.debug("Cloud command to %s failed: %s; attempting re-login", device_id, e)
             self.tuya_client.sid = None

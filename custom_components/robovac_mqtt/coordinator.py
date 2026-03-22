@@ -53,6 +53,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         update_interval = _CLOUD_POLL_INTERVAL if self.connection_type == "cloud" else None
 
+        _LOGGER.debug(
+            "Coordinator created: device=%s, model=%s, api_type=%s, connection=%s, poll=%s",
+            self.device_id, self.device_model, self.api_type, self.connection_type, update_interval,
+        )
+
         super().__init__(
             hass,
             _LOGGER,
@@ -103,6 +108,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     async def initialize(self) -> None:
         """Initialize connection to the device."""
+        _LOGGER.debug("Initializing %s via %s", self.device_name, self.connection_type)
         if self.connection_type == "cloud":
             await self._initialize_cloud()
         else:
@@ -255,6 +261,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     async def async_send_command(self, command_dict: dict[str, Any]) -> None:
         """Send command to device."""
+        _LOGGER.debug(
+            "Sending command to %s via %s: %s",
+            self.device_name, self.connection_type, command_dict,
+        )
         if self.connection_type == "cloud":
             await self.eufy_login.sendCloudCommand(self.device_id, command_dict)
         elif self.client:
@@ -269,6 +279,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         For cloud devices, poll via Tuya Cloud API with exponential backoff.
         """
         if self.connection_type == "cloud":
+            _LOGGER.debug("Cloud poll starting for %s", self.device_name)
             try:
                 dps = await self.eufy_login.getCloudDevice(self.device_id)
                 if dps:

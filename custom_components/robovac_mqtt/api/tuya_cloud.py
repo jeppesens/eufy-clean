@@ -90,6 +90,7 @@ class TuyaCloudClient:
         3. Authenticate and get session ID
         """
         uid = f"eh-{eufy_user_id}"
+        _LOGGER.debug("Tuya login starting for region %s", self.region)
 
         # Step 1: Get token and RSA public key
         token_result = await self.request(
@@ -129,6 +130,7 @@ class TuyaCloudClient:
             _LOGGER.debug("Tuya redirected to region %s: %s", self.region, self.endpoint)
 
         self.sid = login_result["sid"]
+        _LOGGER.debug("Tuya login successful, sid obtained for region %s", self.region)
         return self.sid
 
     async def request(
@@ -141,6 +143,7 @@ class TuyaCloudClient:
         gid: str | None = None,
     ) -> Any:
         """Make a signed request to the Tuya Cloud API."""
+        _LOGGER.debug("Tuya request: action=%s, requires_sid=%s", action, requires_sid)
         if requires_sid and not self.sid:
             raise TuyaCloudError("NO_SID", "Must call login() first")
 
@@ -180,11 +183,12 @@ class TuyaCloudClient:
                 body = await resp.json(content_type=None)
 
         if body.get("success") is False:
-            raise TuyaCloudError(
-                body.get("errorCode", "UNKNOWN"),
-                body.get("errorMsg", "Unknown error"),
-            )
+            error_code = body.get("errorCode", "UNKNOWN")
+            error_msg = body.get("errorMsg", "Unknown error")
+            _LOGGER.debug("Tuya API error: action=%s, code=%s, msg=%s", action, error_code, error_msg)
+            raise TuyaCloudError(error_code, error_msg)
 
+        _LOGGER.debug("Tuya request succeeded: action=%s", action)
         return body.get("result")
 
     async def get_device_list(self) -> list[dict[str, Any]]:
@@ -204,8 +208,13 @@ class TuyaCloudClient:
 
             all_devices.extend(devices or [])
             all_devices.extend(shared or [])
+            _LOGGER.debug(
+                "Tuya device list: group=%s, devices=%d, shared=%d",
+                gid, len(devices or []), len(shared or []),
+            )
             break  # Upstream only processes first group
 
+        _LOGGER.debug("Tuya get_device_list: total %d devices", len(all_devices))
         return all_devices
 
     async def get_device(self, device_id: str) -> dict[str, Any] | None:
@@ -213,7 +222,10 @@ class TuyaCloudClient:
         devices = await self.get_device_list()
         for device in devices:
             if device.get("devId") == device_id:
-                return device.get("dps", {})
+                dps = device.get("dps", {})
+                _LOGGER.debug("Tuya get_device %s: found, %d DPS keys", device_id, len(dps))
+                return dps
+        _LOGGER.debug("Tuya get_device %s: not found in %d devices", device_id, len(devices))
         return None
 
     async def send_command(
