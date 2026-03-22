@@ -560,3 +560,74 @@ EUFY_CLEAN_APP_TRIGGER_MODES = {
 }
 
 DRY_DURATION_MAP = {"SHORT": "2h", "MEDIUM": "3h", "LONG": "4h"}
+
+# ---------------------------------------------------------------------------
+# Legacy (Tuya Cloud) device support
+# ---------------------------------------------------------------------------
+
+# Legacy DPS keys used by older Tuya-based devices (G-series, C-series, S-series)
+LEGACY_DPS_MAP = {
+    "PLAY_PAUSE": "2",
+    "DIRECTION": "3",
+    "WORK_MODE": "5",
+    "WORK_STATUS": "15",
+    "GO_HOME": "101",
+    "CLEAN_SPEED": "102",
+    "FIND_ROBOT": "103",
+    "BATTERY_LEVEL": "104",
+    "ERROR_CODE": "106",
+}
+
+# Reverse lookup: DPS number string -> key name
+LEGACY_DPS_MAP_BY_VALUE = {v: k for k, v in LEGACY_DPS_MAP.items()}
+
+# Legacy work status string -> activity mapping
+LEGACY_WORK_STATUS_MAP = {
+    "Running": "cleaning",
+    "Cleaning": "cleaning",
+    "cleaning": "cleaning",
+    "Spot": "cleaning",
+    "spot": "cleaning",
+    "Charging": "docked",
+    "charging": "docked",
+    "standby": "idle",
+    "Standby": "idle",
+    "Sleeping": "idle",
+    "sleeping": "idle",
+    "Sleep": "idle",
+    "sleep": "idle",
+    "Recharge": "returning",
+    "recharge": "returning",
+    "Completed": "docked",
+    "completed": "docked",
+    "Fault": "error",
+    "fault": "error",
+    "Go Home": "returning",
+    "Go_Home": "returning",
+    "go_home": "returning",
+}
+
+# Legacy fan speed strings (sent/received as plain strings)
+LEGACY_CLEAN_SPEEDS = ["No_suction", "Standard", "Quiet", "Turbo", "Boost_IQ", "Max"]
+
+# Legacy work mode string -> display name
+LEGACY_WORK_MODES = {
+    "auto": "Auto",
+    "Nosweep": "No Sweep",
+    "SmallRoom": "Small Room",
+    "room": "Room",
+    "zone": "Zone",
+    "Edge": "Edge",
+    "Spot": "Spot",
+}
+
+# Tuya Cloud API credentials (from upstream martijnpoppen/eufy-clean)
+TUYA_CLIENT_ID = "yx5v9uc3ef9wg3v9atje"
+TUYA_SECRET = "s8x78u7xwymasd9kqa7a73pjhxqsedaj"
+TUYA_SECRET2 = "cepev5pfnhua4dkqkdpmnrdxx378mpjr"
+TUYA_CERT_SIGN = "A"
+TUYA_API_ET_VERSION = "0.0.1"
+TUYA_REGIONS = {
+    "EU": "https://a1.tuyaeu.com/api.json",
+    "US": "https://a1.tuyaus.com/api.json",
+}

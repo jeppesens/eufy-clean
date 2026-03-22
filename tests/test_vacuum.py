@@ -23,8 +23,10 @@ def mock_coordinator():
     coordinator.device_id = "test_id"
     coordinator.device_name = "Test Vac"
     coordinator.device_model = "T2118"
+    coordinator.api_type = "novel"
     coordinator.data = VacuumState()
     coordinator.async_send_command = AsyncMock()
+    coordinator.build_device_command = MagicMock(return_value={"cmd": "val"})
     return coordinator
 
 
@@ -78,78 +80,69 @@ def test_vacuum_attributes(mock_coordinator, mock_config_entry):
 async def test_vacuum_commands(mock_coordinator, mock_config_entry):
     """Test vacuum commands."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_build = mock_coordinator.build_device_command
 
-    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "val"}
+    # Start (Default/Docked)
+    await entity.async_start()
+    mock_build.assert_called_with("start_auto")
+    mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
 
-        # Start (Default/Docked)
-        await entity.async_start()
-        mock_build.assert_called_with("start_auto")
-        mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
+    # Start (Paused -> Resume)
+    mock_coordinator.data.activity = "paused"
+    await entity.async_start()
+    mock_build.assert_called_with("play")
 
-        # Start (Paused -> Resume)
-        mock_coordinator.data.activity = "paused"
-        await entity.async_start()
-        mock_build.assert_called_with("play")
+    # Stop
+    await entity.async_stop()
+    mock_build.assert_called_with("stop")
 
-        # Stop
-        await entity.async_stop()
-        mock_build.assert_called_with("stop")
+    # Pause
+    await entity.async_pause()
+    mock_build.assert_called_with("pause")
 
-        # Pause
-        await entity.async_pause()
-        mock_build.assert_called_with("pause")
+    # Return to base
+    await entity.async_return_to_base()
+    mock_build.assert_called_with("return_to_base")
 
-        # Return to base
-        await entity.async_return_to_base()
-        mock_build.assert_called_with("return_to_base")
+    # Spot Clean
+    await entity.async_clean_spot()
+    mock_build.assert_called_with("clean_spot")
 
-        # Spot Clean
-        await entity.async_clean_spot()
-        mock_build.assert_called_with("clean_spot")
-
-        # Locate
-        await entity.async_locate()
-        mock_build.assert_called_with("find_robot", active=True)
+    # Locate
+    await entity.async_locate()
+    mock_build.assert_called_with("find_robot", active=True)
 
 
 @pytest.mark.asyncio
 async def test_set_fan_speed(mock_coordinator, mock_config_entry):
     """Test setting fan speed."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_build = mock_coordinator.build_device_command
 
-    # Supported speeds (Mocking list if needed, but defaults are used)
-    # entity._attr_fan_speed_list is set in init
+    speed_max = EUFY_CLEAN_CLEAN_SPEED.MAX.value
+    await entity.async_set_fan_speed(speed_max)
+    mock_build.assert_called_with("set_fan_speed", fan_speed=speed_max)
+    mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
 
-    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "speed"}
-
-        speed_max = EUFY_CLEAN_CLEAN_SPEED.MAX.value
-        await entity.async_set_fan_speed(speed_max)
-        mock_build.assert_called_with("set_fan_speed", fan_speed=speed_max)
-        mock_coordinator.async_send_command.assert_called_with({"cmd": "speed"})
-
-        # Invalid speed
-        with pytest.raises(ValueError):
-            await entity.async_set_fan_speed("InvalidSpeed")
+    # Invalid speed
+    with pytest.raises(ValueError):
+        await entity.async_set_fan_speed("InvalidSpeed")
 
 
 @pytest.mark.asyncio
 async def test_async_send_command_raw(mock_coordinator, mock_config_entry):
     """Test sending raw commands."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_build = mock_coordinator.build_device_command
 
-    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "raw"}
+    # Test scene_clean
+    await entity.async_send_command("scene_clean", params={"scene_id": 5})
+    mock_build.assert_called_with("scene_clean", scene_id=5)
 
-        # Test scene_clean
-        await entity.async_send_command("scene_clean", params={"scene_id": 5})
-        mock_build.assert_called_with("scene_clean", scene_id=5)
-
-        # Test room_clean
-        mock_coordinator.data.map_id = 9
-        await entity.async_send_command("room_clean", params={"room_ids": [1]})
-        mock_build.assert_called_with("room_clean", room_ids=[1], map_id=9)
+    # Test room_clean
+    mock_coordinator.data.map_id = 9
+    await entity.async_send_command("room_clean", params={"room_ids": [1]})
+    mock_build.assert_called_with("room_clean", room_ids=[1], map_id=9)
 
 
 @pytest.fixture
@@ -237,14 +230,10 @@ async def test_app_segment_clean_command(mock_coordinator, mock_config_entry):
     entity.hass = mock_coordinator.hass
     mock_coordinator.data.map_id = 5
 
-    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
-        mock_build.return_value = {"152": "encoded"}
-        await entity.async_send_command("app_segment_clean", params=[1, "2", 3.0])
+    await entity.async_send_command("app_segment_clean", params=[1, "2", 3.0])
 
-        # Verify room_clean was called with int IDs via _async_handle_room_clean
-        # The entity calls _async_handle_room_clean which calls build_command
-        # with room_clean and the converted int IDs
-        assert mock_coordinator.async_send_command.called
+    # Verify room_clean was called with int IDs via _async_handle_room_clean
+    assert mock_coordinator.async_send_command.called
 
 
 @pytest.mark.asyncio

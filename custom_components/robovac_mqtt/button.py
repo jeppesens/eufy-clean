@@ -10,7 +10,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 from .proto.cloud.consumable_pb2 import ConsumableRequest
@@ -31,6 +30,10 @@ async def async_setup_entry(
 
     for coordinator in coordinators:
         _LOGGER.debug("Adding buttons for %s", coordinator.device_name)
+
+        # Dock and accessory buttons are novel-only (require protobuf DPS 173/168)
+        if coordinator.api_type == "legacy":
+            continue
 
         entities.extend(
             [
@@ -124,5 +127,5 @@ class RoboVacButton(CoordinatorEntity[EufyCleanCoordinator], ButtonEntity):
 
     async def async_press(self) -> None:
         """Press the button."""
-        cmd = build_command(self._command, **self._command_kwargs)
+        cmd = self.coordinator.build_device_command(self._command, **self._command_kwargs)
         await self.coordinator.async_send_command(cmd)

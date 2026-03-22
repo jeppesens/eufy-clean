@@ -47,11 +47,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Get Devices and create coordinators
     # eufy_login.mqtt_devices populated by init/getDevices
-    # mqtt_devices is a list of dicts with device info
-    devices = eufy_login.mqtt_devices
-    is_multi_device = len(devices) > 1
+    # eufy_login.cloud_devices populated by init/getCloudDevices (Tuya Cloud)
+    all_devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
+    is_multi_device = len(all_devices) > 1
 
-    for device_info in devices:
+    for device_info in all_devices:
         device_id = device_info.get("deviceId")
         if not device_id:
             continue

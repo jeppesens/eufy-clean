@@ -12,7 +12,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 
@@ -32,6 +31,10 @@ async def async_setup_entry(
 
     for coordinator in coordinators:
         _LOGGER.debug("Adding number entities for %s", coordinator.device_name)
+
+        # Dock number entities are novel-only (require protobuf DPS 173)
+        if coordinator.api_type == "legacy":
+            continue
 
         # Wash Frequency Value
         entities.append(
@@ -121,5 +124,5 @@ class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
         cfg = copy.deepcopy(self.coordinator.data.dock_auto_cfg)
         self._setter(cfg, value)
 
-        command = build_command("set_auto_cfg", cfg=cfg)
+        command = self.coordinator.build_device_command("set_auto_cfg", cfg=cfg)
         await self.coordinator.async_send_command(command)

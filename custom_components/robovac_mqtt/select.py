@@ -13,7 +13,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
 from .const import (
     DOMAIN,
     DRY_DURATION_MAP,
@@ -21,6 +20,7 @@ from .const import (
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     EUFY_CLEAN_CLEANING_MODES,
     EUFY_CLEAN_WATER_LEVELS,
+    LEGACY_CLEAN_SPEEDS,
 )
 from .coordinator import EufyCleanCoordinator
 from .utils import deduplicate_names
@@ -68,55 +68,58 @@ async def async_setup_entry(
         _LOGGER.debug("Adding select entities for %s", coordinator.device_name)
 
         entities.append(SuctionLevelSelectEntity(coordinator))
-        entities.append(CleaningModeSelectEntity(coordinator))
-        entities.append(WaterLevelSelectEntity(coordinator))
-        entities.append(MopIntensitySelectEntity(coordinator))
-        entities.append(CleaningIntensitySelectEntity(coordinator))
-        entities.append(SceneSelectEntity(coordinator))
-        entities.append(RoomSelectEntity(coordinator))
 
-        entities.append(
-            DockSelectEntity(
-                coordinator,
-                "wash_frequency_mode",
-                "Wash Frequency Mode",
-                ["ByRoom", "ByTime"],
-                lambda cfg: (
-                    "ByRoom"
-                    if cfg.get("wash", {})
-                    .get("wash_freq", {})
-                    .get("mode", "ByPartition")
-                    == "ByPartition"
-                    else "ByTime"
-                ),
-                _set_wash_freq_mode,
-                icon="mdi:calendar-sync",
-            )
-        )
+        # Novel-only entities (require protobuf DPS 154/173/180/165)
+        if coordinator.api_type != "legacy":
+            entities.append(CleaningModeSelectEntity(coordinator))
+            entities.append(WaterLevelSelectEntity(coordinator))
+            entities.append(MopIntensitySelectEntity(coordinator))
+            entities.append(CleaningIntensitySelectEntity(coordinator))
+            entities.append(SceneSelectEntity(coordinator))
+            entities.append(RoomSelectEntity(coordinator))
 
-        entities.append(
-            DockSelectEntity(
-                coordinator,
-                "dry_duration",
-                "Dry Duration",
-                list(DRY_DURATION_MAP.values()),
-                _get_dry_duration,
-                _set_dry_duration,
-                icon="mdi:timer-sand",
+            entities.append(
+                DockSelectEntity(
+                    coordinator,
+                    "wash_frequency_mode",
+                    "Wash Frequency Mode",
+                    ["ByRoom", "ByTime"],
+                    lambda cfg: (
+                        "ByRoom"
+                        if cfg.get("wash", {})
+                        .get("wash_freq", {})
+                        .get("mode", "ByPartition")
+                        == "ByPartition"
+                        else "ByTime"
+                    ),
+                    _set_wash_freq_mode,
+                    icon="mdi:calendar-sync",
+                )
             )
-        )
 
-        entities.append(
-            DockSelectEntity(
-                coordinator,
-                "auto_empty_mode",
-                "Auto Empty Mode",
-                ["Smart", "15 min", "30 min", "45 min", "60 min"],
-                _get_collect_dust_mode,
-                _set_collect_dust_mode,
-                icon="mdi:delete-restore",
+            entities.append(
+                DockSelectEntity(
+                    coordinator,
+                    "dry_duration",
+                    "Dry Duration",
+                    list(DRY_DURATION_MAP.values()),
+                    _get_dry_duration,
+                    _set_dry_duration,
+                    icon="mdi:timer-sand",
+                )
             )
-        )
+
+            entities.append(
+                DockSelectEntity(
+                    coordinator,
+                    "auto_empty_mode",
+                    "Auto Empty Mode",
+                    ["Smart", "15 min", "30 min", "45 min", "60 min"],
+                    _get_collect_dust_mode,
+                    _set_collect_dust_mode,
+                    icon="mdi:delete-restore",
+                )
+            )
 
     async_add_entities(entities)
 
@@ -233,7 +236,7 @@ class DockSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         cfg = copy.deepcopy(self.coordinator.data.dock_auto_cfg)
         self._setter(cfg, option)
 
-        command = build_command("set_auto_cfg", cfg=cfg)
+        command = self.coordinator.build_device_command("set_auto_cfg", cfg=cfg)
         await self.coordinator.async_send_command(command)
 
 
@@ -293,7 +296,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         scene_id = named_scenes[idx]["id"]
         _LOGGER.info("Triggering scene '%s' (ID: %s)", option, scene_id)
 
-        command = build_command("scene_clean", scene_id=scene_id)
+        command = self.coordinator.build_device_command("scene_clean", scene_id=scene_id)
         await self.coordinator.async_send_command(command)
 
         self.async_write_ha_state()
@@ -348,7 +351,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             map_id,
         )
 
-        command = build_command("room_clean", room_ids=[room_id], map_id=map_id)
+        command = self.coordinator.build_device_command("room_clean", room_ids=[room_id], map_id=map_id)
         await self.coordinator.async_send_command(command)
 
         self.async_write_ha_state()
@@ -401,7 +404,9 @@ class _StateBackedSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEn
 
         state_value = self._option_to_state(option)
         await self.coordinator.async_send_command(
-            build_command(self._command_name, **{self._command_arg_name: state_value})
+            self.coordinator.build_device_command(
+                self._command_name, **{self._command_arg_name: state_value}
+            )
         )
         _optimistically_update_state(
             self.coordinator,
@@ -413,14 +418,13 @@ class _StateBackedSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEn
 class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     """Select entity for adjusting suction level.
 
-    Hidden until a fan speed value is reported from DPS 154.
+    Hidden until a fan speed value is reported from DPS 154 (novel) or DPS 102 (legacy).
     """
 
     _attr_has_entity_name = True
     _attr_name = "Suction Level"
     _attr_icon = "mdi:fan"
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_options = _SUCTION_LEVELS
     _command_name = "set_fan_speed"
     _command_arg_name = "fan_speed"
     _state_field = "fan_speed"
@@ -430,6 +434,10 @@ class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize suction level select."""
         super().__init__(coordinator, "suction_level")
+        if coordinator.api_type == "legacy":
+            self._attr_options = list(LEGACY_CLEAN_SPEEDS)
+        else:
+            self._attr_options = _SUCTION_LEVELS
 
 
 class CleaningModeSelectEntity(_StateBackedSelectEntity):

@@ -33,8 +33,10 @@ def mock_coordinator() -> MagicMock:
     coordinator = MagicMock(spec=EufyCleanCoordinator)
     coordinator.device_id = "TEST123"
     coordinator.device_name = "Test Vacuum"
+    coordinator.api_type = "novel"
     coordinator.data = VacuumState()
     coordinator.async_send_command = AsyncMock()
+    coordinator.build_device_command = MagicMock(return_value={DPS_MAP["GO_HOME"]: "cmd"})
     coordinator.device_info = {}
     coordinator.last_update_success = True
     return coordinator
@@ -165,6 +167,7 @@ async def test_dock_number_set_value_sends_command(
 
     await entity.async_set_native_value(18)
 
+    mock_coordinator.build_device_command.assert_called_once()
     mock_coordinator.async_send_command.assert_called_once()
     call_args = mock_coordinator.async_send_command.call_args[0][0]
     assert DPS_MAP["GO_HOME"] in call_args

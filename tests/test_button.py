@@ -2,7 +2,7 @@
 
 # pylint: disable=redefined-outer-name
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -20,8 +20,10 @@ def mock_coordinator():
     coordinator.device_id = "test_id"
     coordinator.device_name = "Test Vac"
     coordinator.device_model = "T2118"
+    coordinator.api_type = "novel"
     coordinator.data = VacuumState()
     coordinator.async_send_command = AsyncMock()
+    coordinator.build_device_command = MagicMock(return_value={"cmd": "val"})
     return coordinator
 
 
@@ -41,13 +43,10 @@ async def test_button_press(mock_coordinator):
     assert entity.unique_id == "test_id_empty_dust_bin"
     assert entity.icon == "mdi:delete"
 
-    with patch("custom_components.robovac_mqtt.button.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "collect"}
+    await entity.async_press()
 
-        await entity.async_press()
-
-        mock_build.assert_called_with("collect_dust")
-        mock_coordinator.async_send_command.assert_called_with({"cmd": "collect"})
+    mock_coordinator.build_device_command.assert_called_with("collect_dust")
+    mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
 
 
 @pytest.mark.asyncio
@@ -62,12 +61,9 @@ async def test_button_reset_accessory(mock_coordinator):
         reset_type=ConsumableRequest.FILTER_MESH,
     )
 
-    with patch("custom_components.robovac_mqtt.button.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "reset"}
+    await entity.async_press()
 
-        await entity.async_press()
-
-        mock_build.assert_called_with(
-            "reset_accessory", reset_type=ConsumableRequest.FILTER_MESH
-        )
-        mock_coordinator.async_send_command.assert_called_with({"cmd": "reset"})
+    mock_coordinator.build_device_command.assert_called_with(
+        "reset_accessory", reset_type=ConsumableRequest.FILTER_MESH
+    )
+    mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})

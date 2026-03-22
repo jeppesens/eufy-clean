@@ -12,7 +12,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 
@@ -33,29 +32,31 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding switch entities for %s", coordinator.device_name)
 
-        entities.append(
-            DockSwitchEntity(
-                coordinator,
-                "auto_empty",
-                "Auto Empty",
-                lambda cfg: cfg.get("collectdust_v2", {})
-                .get("sw", {})
-                .get("value", False),
-                set_collect_dust,
-                icon="mdi:delete-restore",
+        # Dock switches are novel-only (require protobuf DPS 173)
+        if coordinator.api_type != "legacy":
+            entities.append(
+                DockSwitchEntity(
+                    coordinator,
+                    "auto_empty",
+                    "Auto Empty",
+                    lambda cfg: cfg.get("collectdust_v2", {})
+                    .get("sw", {})
+                    .get("value", False),
+                    set_collect_dust,
+                    icon="mdi:delete-restore",
+                )
             )
-        )
 
-        entities.append(
-            DockSwitchEntity(
-                coordinator,
-                "auto_wash",
-                "Auto Wash",
-                lambda cfg: cfg.get("wash", {}).get("cfg", "CLOSE") == "STANDARD",
-                set_wash_cfg,
-                icon="mdi:water-sync",
+            entities.append(
+                DockSwitchEntity(
+                    coordinator,
+                    "auto_wash",
+                    "Auto Wash",
+                    lambda cfg: cfg.get("wash", {}).get("cfg", "CLOSE") == "STANDARD",
+                    set_wash_cfg,
+                    icon="mdi:water-sync",
+                )
             )
-        )
 
         entities.append(FindRobotSwitchEntity(coordinator))
 
@@ -137,7 +138,7 @@ class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
         cfg = copy.deepcopy(self.coordinator.data.dock_auto_cfg)
         self._setter(cfg, state)
 
-        command = build_command("set_auto_cfg", cfg=cfg)
+        command = self.coordinator.build_device_command("set_auto_cfg", cfg=cfg)
         await self.coordinator.async_send_command(command)
 
 
@@ -160,10 +161,10 @@ class FindRobotSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntit
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
-        command = build_command("find_robot", active=True)
+        command = self.coordinator.build_device_command("find_robot", active=True)
         await self.coordinator.async_send_command(command)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
-        command = build_command("find_robot", active=False)
+        command = self.coordinator.build_device_command("find_robot", active=False)
         await self.coordinator.async_send_command(command)
