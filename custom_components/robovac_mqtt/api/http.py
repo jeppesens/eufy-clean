@@ -27,7 +27,7 @@ class EufyHTTPClient:
         username: str,
         password: str,
         openudid: str,
-        websession: aiohttp.ClientSession | None = None,
+        websession: aiohttp.ClientSession,
     ) -> None:
         self.username = username
         self.password = password
@@ -149,7 +149,7 @@ class EufyHTTPClient:
                 devices = data.get("data", {}).get("devices")
                 if not devices:
                     return []
-                return [device["device"] for device in devices]
+                return [d["device"] for d in devices if "device" in d]
             return []
 
     async def get_cloud_device_list(self) -> list[dict[str, Any]]:

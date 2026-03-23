@@ -31,8 +31,6 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
-    entry.async_on_unload(entry.add_update_listener(update_listener))
-
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
 
@@ -95,10 +93,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("Failed to initialize coordinator for %s: %s", device_id, e)
 
     if not coordinators:
-        _LOGGER.warning("No Eufy Clean devices found or initialized.")
-        # We generally return True anyway to avoid blocking HA startup,
-        # unless critical failure?
-        # But if no devices, nothing to do.
+        raise ConfigEntryNotReady("No Eufy Clean devices could be initialized")
 
     # Check for orphaned devices and log warnings
     current_device_ids = {c.device_id for c in coordinators}
@@ -129,6 +124,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         new_data.pop("last_seen_segments")
         hass.config_entries.async_update_entry(entry, data=new_data)
         _LOGGER.info("Removed legacy last_seen_segments from config entry %s", entry.entry_id)
+
+    # Register update listener AFTER segment cleanup to avoid triggering
+    # a reload from async_update_entry during setup
+    entry.async_on_unload(entry.add_update_listener(update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

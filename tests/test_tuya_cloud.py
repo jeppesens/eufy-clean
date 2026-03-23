@@ -44,7 +44,7 @@ def test_mobile_hash_length():
 
 def test_sign_deterministic():
     """Signing the same params produces the same result."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     params = {
         "a": "test.action",
         "clientId": "testkey",
@@ -59,7 +59,7 @@ def test_sign_deterministic():
 
 def test_sign_changes_with_params():
     """Different params produce different signatures."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     params1 = {"a": "action1", "clientId": "key", "time": 100, "v": "1.0"}
     params2 = {"a": "action2", "clientId": "key", "time": 100, "v": "1.0"}
     assert client._sign(params1) != client._sign(params2)
@@ -67,7 +67,7 @@ def test_sign_changes_with_params():
 
 def test_sign_ignores_non_sign_fields():
     """Fields not in _SIGN_FIELDS are excluded from signature."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     params_base = {"a": "test", "clientId": "key", "time": 100, "v": "1.0"}
     params_extra = {**params_base, "customField": "ignored"}
     assert client._sign(params_base) == client._sign(params_extra)
@@ -75,7 +75,7 @@ def test_sign_ignores_non_sign_fields():
 
 def test_sign_includes_post_data_hashed():
     """postData is included in signature via mobile_hash."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     params = {
         "a": "test",
         "clientId": "key",
@@ -94,21 +94,24 @@ def test_sign_includes_post_data_hashed():
 
 
 def test_client_eu_region():
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     assert "tuyaeu.com" in client.endpoint
     assert client.region == "EU"
     assert client.sid is None
 
 
 def test_client_us_region():
-    client = TuyaCloudClient("US")
+    client = TuyaCloudClient("US", websession=MagicMock())
     assert "tuyaus.com" in client.endpoint
     assert client.region == "US"
 
 
-def test_client_default_region():
-    client = TuyaCloudClient()
-    assert client.region == "EU"
+def test_client_requires_region_and_websession():
+    """TuyaCloudClient requires both region and websession."""
+    import pytest as _pytest
+
+    with _pytest.raises(TypeError):
+        TuyaCloudClient()
 
 
 # ── Password encryption ────────────────────────────────────────────
@@ -142,7 +145,7 @@ def test_encrypt_password_deterministic():
 @pytest.mark.asyncio
 async def test_request_requires_sid():
     """Request with requires_sid=True should raise when no sid."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     with pytest.raises(TuyaCloudError, match="Must call login"):
         await client.request("tuya.m.some.action")
 
@@ -195,7 +198,7 @@ async def test_request_api_error():
 @pytest.mark.asyncio
 async def test_send_command_calls_request():
     """send_command should call request with correct action and data."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     client.sid = "test_sid"
 
     with patch.object(client, "request", new_callable=AsyncMock) as mock_req:
@@ -213,7 +216,7 @@ async def test_send_command_calls_request():
 @pytest.mark.asyncio
 async def test_get_device_found():
     """get_device should return DPS for matching device."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     client.sid = "test_sid"
 
     devices = [
@@ -230,7 +233,7 @@ async def test_get_device_found():
 @pytest.mark.asyncio
 async def test_get_device_not_found():
     """get_device should return None for unknown device."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
     client.sid = "test_sid"
 
     with patch.object(client, "get_device_list", new_callable=AsyncMock, return_value=[]):
@@ -245,7 +248,7 @@ async def test_get_device_not_found():
 @pytest.mark.asyncio
 async def test_login_sets_sid():
     """Successful login should set the sid."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
 
     token_response = {
         "publicKey": "00b3510a2e6c4fa1e339a0703e64444c0c4a0663385dbd0d2c2c0a8e2b4f1c63",
@@ -279,7 +282,7 @@ async def test_login_sets_sid():
 @pytest.mark.asyncio
 async def test_login_handles_region_redirect():
     """Login should update endpoint when API returns a redirect."""
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=MagicMock())
 
     token_response = {
         "publicKey": "00b3510a2e6c4fa1e339a0703e64444c0c4a0663385dbd0d2c2c0a8e2b4f1c63",

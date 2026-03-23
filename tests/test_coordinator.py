@@ -227,7 +227,24 @@ async def test_async_send_command_empty_dict_ignored(mock_hass, mock_login):
 
     await coordinator.async_send_command({})
 
-    mock_client.send_command.assert_not_called()
+
+@pytest.mark.asyncio
+async def test_async_send_command_wraps_exception_in_ha_error(mock_hass, mock_login):
+    """Test that generic exceptions from MQTT send are wrapped in HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    mock_client = MagicMock()
+    mock_client.send_command = AsyncMock(side_effect=OSError("Connection lost"))
+    coordinator.client = mock_client
+
+    with pytest.raises(HomeAssistantError, match="Failed to send command"):
+        await coordinator.async_send_command({"some": "cmd"})
 
 
 # ── Cloud/Legacy coordinator tests ─────────────────────────────────

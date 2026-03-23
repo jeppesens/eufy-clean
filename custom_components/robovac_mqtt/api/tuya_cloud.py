@@ -77,8 +77,8 @@ class TuyaCloudClient:
 
     def __init__(
         self,
-        region: str = "EU",
-        websession: aiohttp.ClientSession | None = None,
+        region: str,
+        websession: aiohttp.ClientSession,
     ) -> None:
         self.region = region
         self.endpoint = TUYA_REGIONS.get(region, TUYA_REGIONS["EU"])

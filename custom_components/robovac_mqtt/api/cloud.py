@@ -106,7 +106,7 @@ class EufyLogin:
         devices = await self.eufyApi.get_device_list()
         devices = [
             {
-                **self.findModel(device["device_sn"]),
+                **self.findModel(device.get("device_sn", "")),
                 "apiType": self.checkApiType(device.get("dps", {})),
                 "mqtt": True,
                 "dps": device.get("dps", {}),
@@ -115,6 +115,7 @@ class EufyLogin:
                 or "",
             }
             for device in devices
+            if device.get("device_sn")
         ]
         self.mqtt_devices = [d for d in devices if not d["invalid"]]
         _LOGGER.debug(
@@ -233,7 +234,7 @@ class EufyLogin:
         return "legacy"
 
     def findModel(self, deviceId: str):
-        device = next((d for d in self.eufy_api_devices if d["id"] == deviceId), None)
+        device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
 
         if device:
             return {
