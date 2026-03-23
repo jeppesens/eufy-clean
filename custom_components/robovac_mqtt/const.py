@@ -622,6 +622,9 @@ LEGACY_WORK_MODES = {
 }
 
 # Tuya Cloud API credentials (from upstream martijnpoppen/eufy-clean)
+# Public Tuya app credentials embedded in the upstream Eufy Clean JS SDK
+# (martijnpoppen/eufy-clean). These are NOT user secrets — they are static
+# app-level keys shared by all Eufy/Tuya integrations.
 TUYA_CLIENT_ID = "yx5v9uc3ef9wg3v9atje"
 TUYA_SECRET = "s8x78u7xwymasd9kqa7a73pjhxqsedaj"
 TUYA_SECRET2 = "cepev5pfnhua4dkqkdpmnrdxx378mpjr"

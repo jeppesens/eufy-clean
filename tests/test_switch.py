@@ -1,5 +1,6 @@
 """Unit tests for the FindRobot switch entity."""
 
+import unittest.mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -101,8 +102,10 @@ async def test_dock_switches(hass: HomeAssistant, mock_coordinator):
 
     # Test Turn On
     await auto_empty.async_turn_on()
-    mock_coordinator.build_device_command.assert_called_with("set_auto_cfg", cfg=mock_coordinator.build_device_command.call_args[1]["cfg"])
-    mock_coordinator.async_send_command.assert_called()
+    mock_coordinator.build_device_command.assert_called_with("set_auto_cfg", cfg=unittest.mock.ANY)
+    # Verify the mutated cfg was passed through to send_command
+    built_cmd = mock_coordinator.build_device_command.return_value
+    mock_coordinator.async_send_command.assert_called_with(built_cmd)
 
     # Test Turn Off
     await auto_empty.async_turn_off()
