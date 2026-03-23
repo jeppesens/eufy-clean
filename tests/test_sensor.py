@@ -125,7 +125,8 @@ def test_error_message_sensor(mock_coordinator):
 # ── Legacy device sensor filtering ────────────────────────────────
 
 
-def test_legacy_coordinator_excludes_novel_sensors():
+@pytest.mark.asyncio
+async def test_legacy_coordinator_excludes_novel_sensors():
     """Legacy devices should only get universal sensors (battery, error, task, work mode)."""
     from custom_components.robovac_mqtt.sensor import async_setup_entry
 
@@ -144,11 +145,7 @@ def test_legacy_coordinator_excludes_novel_sensors():
 
     added_entities = []
 
-    import asyncio
-
-    asyncio.get_event_loop().run_until_complete(
-        async_setup_entry(hass, config_entry, added_entities.extend)
-    )
+    await async_setup_entry(hass, config_entry, added_entities.extend)
 
     # Should have exactly 4 universal sensors: Battery, Error Message, Task Status, Work Mode
     entity_ids = [e.unique_id for e in added_entities]
@@ -171,7 +168,8 @@ def test_legacy_coordinator_excludes_novel_sensors():
         assert f"legacy_dev_{suffix}" not in entity_ids
 
 
-def test_novel_coordinator_creates_all_sensors():
+@pytest.mark.asyncio
+async def test_novel_coordinator_creates_all_sensors():
     """Novel devices should get all sensors including accessories."""
     from custom_components.robovac_mqtt.sensor import async_setup_entry
 
@@ -190,11 +188,7 @@ def test_novel_coordinator_creates_all_sensors():
 
     added_entities = []
 
-    import asyncio
-
-    asyncio.get_event_loop().run_until_complete(
-        async_setup_entry(hass, config_entry, added_entities.extend)
-    )
+    await async_setup_entry(hass, config_entry, added_entities.extend)
 
     entity_ids = [e.unique_id for e in added_entities]
 

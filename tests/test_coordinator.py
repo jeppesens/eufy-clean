@@ -196,8 +196,10 @@ def test_async_shutdown_timers_noop_when_no_timers(mock_hass, mock_login):
 
 
 @pytest.mark.asyncio
-async def test_async_send_command_no_client_logs_warning(mock_hass, mock_login):
-    """Test that sending command with no client logs warning."""
+async def test_async_send_command_no_client_raises(mock_hass, mock_login):
+    """Test that sending command with no client raises HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
     device_info = {
         "deviceId": "test_id",
         "deviceModel": "T2118",
@@ -206,8 +208,26 @@ async def test_async_send_command_no_client_logs_warning(mock_hass, mock_login):
     coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
     coordinator.client = None
 
-    # Should not raise any exception
-    await coordinator.async_send_command({"some": "cmd"})
+    with pytest.raises(HomeAssistantError, match="no connection available"):
+        await coordinator.async_send_command({"some": "cmd"})
+
+
+@pytest.mark.asyncio
+async def test_async_send_command_empty_dict_ignored(mock_hass, mock_login):
+    """Test that sending empty command dict is silently ignored."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    mock_client = MagicMock()
+    mock_client.send_command = AsyncMock()
+    coordinator.client = mock_client
+
+    await coordinator.async_send_command({})
+
+    mock_client.send_command.assert_not_called()
 
 
 # ── Cloud/Legacy coordinator tests ─────────────────────────────────

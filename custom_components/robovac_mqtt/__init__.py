@@ -4,12 +4,16 @@ import logging
 import random
 import string
 
+import aiohttp
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api.cloud import EufyLogin
+from .api.cloud import EufyLogin, EufyLoginError
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 
@@ -36,12 +40,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     openudid = "".join(random.choices(string.hexdigits, k=32))
 
     # Initialize Login Controller
-    eufy_login = EufyLogin(username, password, openudid)
+    session = async_get_clientsession(hass)
+    eufy_login = EufyLogin(username, password, openudid, websession=session)
     try:
         await eufy_login.init()
+    except EufyLoginError as e:
+        raise ConfigEntryAuthFailed(f"Invalid Eufy credentials: {e}") from e
+    except (aiohttp.ClientError, TimeoutError, OSError) as e:
+        raise ConfigEntryNotReady(f"Cannot reach Eufy servers: {e}") from e
     except Exception as e:
-        _LOGGER.error("Failed to login to Eufy Clean: %s", e)
-        return False
+        raise ConfigEntryNotReady(f"Unexpected setup error: {e}") from e
 
     coordinators = []
 

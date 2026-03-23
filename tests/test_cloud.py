@@ -1,5 +1,6 @@
 """Unit tests for the cloud login module."""
 
+import unittest.mock
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -15,7 +16,7 @@ def _make_login(
     with patch(
         "custom_components.robovac_mqtt.api.cloud.EufyHTTPClient", autospec=True
     ):
-        login = EufyLogin("user@example.com", "password123", "open-udid")
+        login = EufyLogin("user@example.com", "password123", "open-udid", websession=MagicMock())
     login.eufyApi = MagicMock()
     login.eufyApi.login = AsyncMock(
         return_value={"mqtt": {"endpoint": "mqtt.example.com"}}
@@ -127,7 +128,7 @@ async def test_tuya_login_eu_success():
         await login.tuya_login()
 
     assert login.tuya_client is mock_instance
-    MockClient.assert_called_once_with("EU")
+    MockClient.assert_called_once_with("EU", websession=unittest.mock.ANY)
 
 
 @pytest.mark.asyncio
@@ -140,7 +141,7 @@ async def test_tuya_login_eu_fails_us_succeeds():
 
     call_count = 0
 
-    def make_client(region):
+    def make_client(region, **kwargs):
         nonlocal call_count
         call_count += 1
         mock = MagicMock()
@@ -397,7 +398,8 @@ async def test_send_cloud_command_relogins_on_failure():
 
 @pytest.mark.asyncio
 async def test_send_cloud_command_relogin_also_fails():
-    """sendCloudCommand silently fails when re-login also fails."""
+    """sendCloudCommand raises EufyLoginError when re-login also fails."""
+    from custom_components.robovac_mqtt.api.cloud import EufyLoginError
     from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
 
     login = _make_login()
@@ -413,5 +415,5 @@ async def test_send_cloud_command_relogin_also_fails():
         login, "tuya_login", new_callable=AsyncMock,
         side_effect=TuyaCloudError("LOGIN_FAIL", "Bad credentials"),
     ):
-        # Should not raise
-        await login.sendCloudCommand("dev_123", {"2": True})
+        with pytest.raises(EufyLoginError, match="Failed to send cloud command"):
+            await login.sendCloudCommand("dev_123", {"2": True})

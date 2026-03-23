@@ -11,6 +11,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.dispatcher import async_dispatcher_send
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EufyCleanClient
@@ -261,16 +262,28 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     async def async_send_command(self, command_dict: dict[str, Any]) -> None:
         """Send command to device."""
+        if not command_dict:
+            _LOGGER.debug("Ignoring empty command for %s", self.device_name)
+            return
         _LOGGER.debug(
             "Sending command to %s via %s: %s",
             self.device_name, self.connection_type, command_dict,
         )
-        if self.connection_type == "cloud":
-            await self.eufy_login.sendCloudCommand(self.device_id, command_dict)
-        elif self.client:
-            await self.client.send_command(command_dict)
-        else:
-            _LOGGER.warning("Cannot send command: no MQTT client available")
+        try:
+            if self.connection_type == "cloud":
+                await self.eufy_login.sendCloudCommand(self.device_id, command_dict)
+            elif self.client:
+                await self.client.send_command(command_dict)
+            else:
+                raise HomeAssistantError(
+                    f"Cannot send command to {self.device_name}: no connection available"
+                )
+        except HomeAssistantError:
+            raise
+        except Exception as e:
+            raise HomeAssistantError(
+                f"Failed to send command to {self.device_name}: {e}"
+            ) from e
 
     async def _async_update_data(self) -> VacuumState:
         """Fetch data from API endpoint.

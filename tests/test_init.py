@@ -67,7 +67,7 @@ async def test_load_unload_entry(hass: HomeAssistant):
 
         # Verify calls
         mock_login_cls.assert_called_with(
-            "test_user", "test_password", unittest.mock.ANY
+            "test_user", "test_password", unittest.mock.ANY, websession=unittest.mock.ANY
         )
         mock_login.init.assert_called_once()
         mock_coord_cls.assert_called_once()
@@ -156,3 +156,47 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
         # Both should have initialize() called
         for coord, _ in coordinators:
             coord.initialize.assert_called_once()
+
+
+async def test_setup_auth_failure_raises_config_entry_auth_failed(hass: HomeAssistant):
+    """Login failure with EufyLoginError should result in SETUP_ERROR (auth failed)."""
+    from custom_components.robovac_mqtt.api.cloud import EufyLoginError
+
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "bad_user", CONF_PASSWORD: "bad_pass"},
+        entry_id="test_auth_fail",
+    )
+    config_entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock(side_effect=EufyLoginError("Invalid credentials"))
+
+        await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert config_entry.state == ConfigEntryState.SETUP_ERROR
+
+
+async def test_setup_network_failure_raises_config_entry_not_ready(hass: HomeAssistant):
+    """Network errors should result in SETUP_RETRY (not ready)."""
+    import aiohttp
+
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user", CONF_PASSWORD: "pass"},
+        entry_id="test_network_fail",
+    )
+    config_entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock(
+            side_effect=aiohttp.ClientError("Connection refused")
+        )
+
+        await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert config_entry.state == ConfigEntryState.SETUP_RETRY

@@ -15,11 +15,18 @@ class EufyLoginError(Exception):
 
 
 class EufyLogin:
-    def __init__(self, username: str, password: str, openudid: str):
-        self.eufyApi = EufyHTTPClient(username, password, openudid)
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        openudid: str,
+        websession: Any | None = None,
+    ):
+        self.eufyApi = EufyHTTPClient(username, password, openudid, websession=websession)
         self.username = username
         self.password = password
         self.openudid = openudid
+        self._websession = websession
         self.mqtt_credentials: dict[str, Any] | None = None
         self.mqtt_devices: list[dict[str, Any]] = []
         self.cloud_devices: list[dict[str, Any]] = []
@@ -75,7 +82,7 @@ class EufyLogin:
 
         # Try EU first
         try:
-            client = TuyaCloudClient("EU")
+            client = TuyaCloudClient("EU", websession=self._websession)
             await client.login(self._eufy_user_id)
             self.tuya_client = client
             _LOGGER.debug("Tuya Cloud login successful (EU)")
@@ -85,7 +92,7 @@ class EufyLogin:
 
         # Fall back to US
         try:
-            client = TuyaCloudClient("US")
+            client = TuyaCloudClient("US", websession=self._websession)
             await client.login(self._eufy_user_id)
             self.tuya_client = client
             _LOGGER.debug("Tuya Cloud login successful (US)")
@@ -199,8 +206,7 @@ class EufyLogin:
         On failure, attempts re-login and retries once.
         """
         if not self.tuya_client:
-            _LOGGER.warning("Cannot send cloud command: no Tuya client")
-            return
+            raise EufyLoginError("Cannot send cloud command: no Tuya client")
 
         try:
             await self.tuya_client.send_command(device_id, dps)
@@ -212,11 +218,9 @@ class EufyLogin:
                 await self.tuya_login()
                 await self.tuya_client.send_command(device_id, dps)
             except Exception as retry_err:
-                _LOGGER.warning(
-                    "Failed to send cloud command to %s after re-login: %s",
-                    device_id,
-                    retry_err,
-                )
+                raise EufyLoginError(
+                    f"Failed to send cloud command to {device_id}: {retry_err}"
+                ) from retry_err
 
     async def getMqttDevice(self, deviceId: str):
         devices = await self.eufyApi.get_device_list()

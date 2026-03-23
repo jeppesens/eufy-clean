@@ -75,11 +75,16 @@ def _hmac_sign(key: str, message: str) -> str:
 class TuyaCloudClient:
     """Async Tuya Cloud API client."""
 
-    def __init__(self, region: str = "EU") -> None:
+    def __init__(
+        self,
+        region: str = "EU",
+        websession: aiohttp.ClientSession | None = None,
+    ) -> None:
         self.region = region
         self.endpoint = TUYA_REGIONS.get(region, TUYA_REGIONS["EU"])
         self.sid: str | None = None
-        self._device_id = uuid.uuid4().hex[:44]
+        self._device_id = uuid.uuid4().hex
+        self._websession = websession
         self._hmac_key = f"{TUYA_CERT_SIGN}_{TUYA_SECRET2}_{TUYA_SECRET}"
 
     async def login(self, eufy_user_id: str) -> str:
@@ -178,9 +183,11 @@ class TuyaCloudClient:
         # Sign the request
         params["sign"] = self._sign(params)
 
-        async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
-            async with session.get(self.endpoint, params=params) as resp:
-                body = await resp.json(content_type=None)
+        session = self._websession
+        async with session.get(
+            self.endpoint, params=params, timeout=_REQUEST_TIMEOUT
+        ) as resp:
+            body = await resp.json(content_type=None)
 
         if body.get("success") is False:
             error_code = body.get("errorCode", "UNKNOWN")
@@ -204,15 +211,13 @@ class TuyaCloudClient:
             devices = await self.request(
                 "tuya.m.my.group.device.list", gid=gid
             )
-            shared = await self.request("tuya.m.my.shared.device.list")
-
             all_devices.extend(devices or [])
-            all_devices.extend(shared or [])
-            _LOGGER.debug(
-                "Tuya device list: group=%s, devices=%d, shared=%d",
-                gid, len(devices or []), len(shared or []),
-            )
+            _LOGGER.debug("Tuya group %s: %d devices", gid, len(devices or []))
             break  # Upstream only processes first group
+
+        # Shared devices are account-level, not group-scoped
+        shared = await self.request("tuya.m.my.shared.device.list")
+        all_devices.extend(shared or [])
 
         _LOGGER.debug("Tuya get_device_list: total %d devices", len(all_devices))
         return all_devices

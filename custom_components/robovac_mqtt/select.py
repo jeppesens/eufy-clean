@@ -53,6 +53,9 @@ def _optimistically_update_state(coordinator: EufyCleanCoordinator, **changes: A
     coordinator.async_set_updated_data(new_data)
 
 
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,

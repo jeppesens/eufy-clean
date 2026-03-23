@@ -104,6 +104,9 @@ _ACTIVITY_MAP: dict[str, VacuumActivity] = {
 }
 
 
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,

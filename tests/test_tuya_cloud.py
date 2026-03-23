@@ -160,10 +160,9 @@ async def test_request_no_sid_required():
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=mock_session)
 
-    with patch("aiohttp.ClientSession", return_value=mock_session):
-        result = await client.request("tuya.m.test", requires_sid=False)
+    result = await client.request("tuya.m.test", requires_sid=False)
 
     assert result == {"data": 1}
 
@@ -183,12 +182,11 @@ async def test_request_api_error():
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
-    client = TuyaCloudClient("EU")
+    client = TuyaCloudClient("EU", websession=mock_session)
     client.sid = "test_sid"
 
-    with patch("aiohttp.ClientSession", return_value=mock_session):
-        with pytest.raises(TuyaCloudError, match="TOKEN_EXPIRED"):
-            await client.request("tuya.m.test")
+    with pytest.raises(TuyaCloudError, match="TOKEN_EXPIRED"):
+        await client.request("tuya.m.test")
 
 
 # ── Send command ────────────────────────────────────────────────────

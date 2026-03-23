@@ -17,6 +17,9 @@ from .proto.cloud.consumable_pb2 import ConsumableRequest
 _LOGGER = logging.getLogger(__name__)
 
 
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,

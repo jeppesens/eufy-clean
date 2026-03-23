@@ -1,4 +1,38 @@
 {
+  "config": {
+    "step": {
+      "user": {
+        "title": "Eufy Login",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Update Credentials",
+        "data": {
+          "username": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "Re-enter the password for **{username}**.",
+        "data": {
+          "password": "Password"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Invalid credentials",
+      "unknown": "Unexpected error",
+      "username_mismatch": "Username cannot be changed"
+    },
+    "abort": {
+      "already_configured": "Already configured",
+      "reauth_successful": "Re-authentication successful"
+    }
+  },
   "issues": {
     "segments_changed": {
       "title": "Vacuum segments have changed",
