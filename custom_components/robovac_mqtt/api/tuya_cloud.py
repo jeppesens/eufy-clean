@@ -313,25 +313,19 @@ def _encrypt_password(uid: str, public_key_n: str, exponent: int) -> str:
     c = pow(m, e, n)
 
     # Convert to hex, zero-padded to key size.
-    # Use ceil(hex_len / 2) to: (a) preserve leading zeros that n.bit_length()
-    # would drop, and (b) handle odd-length hex strings (e.g. 309-char keys
-    # from real Tuya servers → 155 bytes, not 154).
-    key_size = (len(public_key_n) + 1) // 2 if is_hex else (n.bit_length() + 7) // 8
-    result = c.to_bytes(key_size, "big").hex()
-
-    _LOGGER.debug(
-        "Password encryption: uid_len=%d, padded_len=%d, aes_hex_len=%d, "
-        "md5_len=%d, n_bits=%d, key_size=%d, result_len=%d",
-        len(uid), padded_len, len(encrypted_hex),
-        len(password_md5), n.bit_length(), key_size, len(result),
-    )
-    return result
+    # For hex keys: use the hex string length to preserve leading zeros (upstream behavior)
+    # For decimal keys: calculate size from the modulus bit length
+    if is_hex:
+        key_size = len(public_key_n) // 2
+    else:
+        # Decimal key: use bit length of n to determine byte size
+        key_size = (n.bit_length() + 7) // 8
+    
+    return c.to_bytes(key_size, "big").hex()
 
 
 def _is_hex(s: str) -> bool:
-    """Check if a string is a hex number."""
-    try:
-        int(s, 16)
-        return True
-    except ValueError:
-        return False
+    """Check if a string is a hex number (contains a-f/A-F characters)."""
+    # A string is hex if it contains hex digits beyond 0-9
+    # Pure decimal strings should return False
+    return bool(set(s.lower()) & set('abcdef'))
