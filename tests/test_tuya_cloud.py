@@ -467,18 +467,20 @@ _JS_ENCRYPT_CASES = [
 ]
 
 
-def test_encrypt_password_odd_length_hex_key():
-    """RSA output must be correctly sized for odd-length hex public keys.
+def test_encrypt_password_decimal_public_key():
+    """RSA output must be correctly sized for pure-digit public keys.
 
-    Real Tuya servers can return 309-char hex keys (1233-bit modulus).
-    key_size must be ceil(309/2)=155 bytes, not 309//2=154.
+    Real Tuya servers (e.g. JerryVDP's S1 Pro) return 309-char pure-digit
+    public keys. These are detected as decimal (not hex) by _is_hex(),
+    so key_size uses (n.bit_length()+7)//8 which correctly handles the size.
     """
-    # Use a realistic odd-length hex key (309 chars, similar to JerryVDP's real key)
-    odd_hex_key = "1" * 309  # 309 hex chars → 155 bytes expected
-    result = _encrypt_password("eh-testuser", odd_hex_key, 3)
-    # Output should be 310 hex chars (155 bytes), not 308 (154 bytes)
-    assert len(result) == 310, (
-        f"Expected 310 hex chars (155 bytes) for 309-char key, got {len(result)}"
+    # Pure-digit key → _is_hex returns False → uses bit-length path
+    decimal_key = "1" * 309
+    result = _encrypt_password("eh-testuser", decimal_key, 3)
+    n = int(decimal_key)
+    expected_bytes = (n.bit_length() + 7) // 8
+    assert len(result) == expected_bytes * 2, (
+        f"Expected {expected_bytes * 2} hex chars for decimal key, got {len(result)}"
     )
 
 
