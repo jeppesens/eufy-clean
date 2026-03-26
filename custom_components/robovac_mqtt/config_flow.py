@@ -96,16 +96,55 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             step_id="reconfigure", data_schema=schema, errors=errors
         )
 
-    @staticmethod
-    async def _validate_login(username: str, password: str) -> dict[str, str]:
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle reauthentication when credentials expire."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reauth confirmation step."""
+        entry = self._get_reauth_entry()
+        username = entry.data[CONF_USERNAME]
+
+        if user_input is None:
+            schema = Schema({Required(CONF_PASSWORD): cv.string})
+            return self.async_show_form(
+                step_id="reauth_confirm",
+                data_schema=schema,
+                description_placeholders={"username": username},
+            )
+
+        errors = await self._validate_login(username, user_input[CONF_PASSWORD])
+
+        if not errors:
+            return self.async_update_reload_and_abort(
+                entry,
+                data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]},
+            )
+
+        schema = Schema({Required(CONF_PASSWORD): cv.string})
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"username": username},
+        )
+
+    async def _validate_login(self, username: str, password: str) -> dict[str, str]:
         """Validate login credentials."""
+        from homeassistant.helpers.aiohttp_client import async_get_clientsession
+
         errors: dict[str, str] = {}
         try:
             # Generate a new openudid for validation
             openudid = "".join(random.choices(string.hexdigits, k=32))
             _LOGGER.info("Trying to login with username: %s", username)
 
-            eufy_api = EufyHTTPClient(username, password, openudid)
+            session = async_get_clientsession(self.hass)
+            eufy_api = EufyHTTPClient(username, password, openudid, websession=session)
             login_resp = await eufy_api.login(validate_only=True)
             if not login_resp.get("session"):
                 errors["base"] = "invalid_auth"

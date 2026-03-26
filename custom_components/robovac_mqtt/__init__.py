@@ -4,12 +4,16 @@ import logging
 import random
 import string
 
+import aiohttp
+
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
-from .api.cloud import EufyLogin
+from .api.cloud import EufyLogin, EufyLoginError
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 
@@ -27,8 +31,6 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
-    entry.async_on_unload(entry.add_update_listener(update_listener))
-
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
 
@@ -36,22 +38,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     openudid = "".join(random.choices(string.hexdigits, k=32))
 
     # Initialize Login Controller
-    eufy_login = EufyLogin(username, password, openudid)
+    session = async_get_clientsession(hass)
+    eufy_login = EufyLogin(username, password, openudid, websession=session)
     try:
         await eufy_login.init()
+    except EufyLoginError as e:
+        raise ConfigEntryAuthFailed(f"Invalid Eufy credentials: {e}") from e
+    except (aiohttp.ClientError, TimeoutError, OSError) as e:
+        raise ConfigEntryNotReady(f"Cannot reach Eufy servers: {e}") from e
     except Exception as e:
-        _LOGGER.error("Failed to login to Eufy Clean: %s", e)
-        return False
+        raise ConfigEntryNotReady(f"Unexpected setup error: {e}") from e
 
     coordinators = []
 
     # Get Devices and create coordinators
     # eufy_login.mqtt_devices populated by init/getDevices
-    # mqtt_devices is a list of dicts with device info
-    devices = eufy_login.mqtt_devices
-    is_multi_device = len(devices) > 1
+    # eufy_login.cloud_devices populated by init/getCloudDevices (Tuya Cloud)
+    all_devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
+    is_multi_device = len(all_devices) > 1
+    _LOGGER.debug(
+        "Device discovery complete: %d MQTT + %d cloud = %d total",
+        len(eufy_login.mqtt_devices),
+        len(eufy_login.cloud_devices),
+        len(all_devices),
+    )
 
-    for device_info in devices:
+    for device_info in all_devices:
         device_id = device_info.get("deviceId")
         if not device_id:
             continue
@@ -81,10 +93,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("Failed to initialize coordinator for %s: %s", device_id, e)
 
     if not coordinators:
-        _LOGGER.warning("No Eufy Clean devices found or initialized.")
-        # We generally return True anyway to avoid blocking HA startup,
-        # unless critical failure?
-        # But if no devices, nothing to do.
+        raise ConfigEntryNotReady("No Eufy Clean devices could be initialized")
 
     # Check for orphaned devices and log warnings
     current_device_ids = {c.device_id for c in coordinators}
@@ -115,6 +124,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         new_data.pop("last_seen_segments")
         hass.config_entries.async_update_entry(entry, data=new_data)
         _LOGGER.info("Removed legacy last_seen_segments from config entry %s", entry.entry_id)
+
+    # Register update listener AFTER segment cleanup to avoid triggering
+    # a reload from async_update_entry during setup
+    entry.async_on_unload(entry.add_update_listener(update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

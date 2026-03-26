@@ -8,9 +8,10 @@
     "config_flow": true,
     "dependencies": [],
     "documentation": "https://github.com/jeppesens/eufy-clean",
-    "integration_type": "device",
+    "integration_type": "hub",
     "iot_class": "cloud_push",
     "issue_tracker": "https://github.com/jeppesens/eufy-clean/issues",
+    "loggers": ["custom_components.robovac_mqtt", "paho.mqtt"],
     "requirements": [],
-    "version": "1.8.0"
+    "version": "1.9.0"
 }

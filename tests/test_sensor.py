@@ -120,3 +120,102 @@ def test_error_message_sensor(mock_coordinator):
     # Clear error
     mock_coordinator.data.error_message = ""
     assert entity.native_value == ""
+
+
+# ── Legacy device sensor filtering ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_legacy_coordinator_excludes_novel_sensors():
+    """Legacy devices should only get universal sensors (battery, error, task, work mode)."""
+    from custom_components.robovac_mqtt.sensor import async_setup_entry
+
+    coordinator = MagicMock()
+    coordinator.device_id = "legacy_dev"
+    coordinator.device_name = "Legacy Vac"
+    coordinator.device_model = "T2210"
+    coordinator.api_type = "legacy"
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry"
+    hass.data = {"robovac_mqtt": {"test_entry": {"coordinators": [coordinator]}}}
+
+    added_entities = []
+
+    await async_setup_entry(hass, config_entry, added_entities.extend)
+
+    # Should have exactly 4 universal sensors: Battery, Error Message, Task Status, Work Mode
+    entity_ids = [e.unique_id for e in added_entities]
+    assert len(added_entities) == 4
+    assert "legacy_dev_battery" in entity_ids
+    assert "legacy_dev_error_message" in entity_ids
+    assert "legacy_dev_task_status" in entity_ids
+    assert "legacy_dev_work_mode" in entity_ids
+
+    # Novel-only sensors should NOT be present
+    for suffix in [
+        "cleaning_time",
+        "cleaning_area",
+        "water_level",
+        "dock_status",
+        "active_map",
+        "filter_remaining",
+        "main_brush_remaining",
+    ]:
+        assert f"legacy_dev_{suffix}" not in entity_ids
+
+
+@pytest.mark.asyncio
+async def test_novel_coordinator_creates_all_sensors():
+    """Novel devices should get all sensors including accessories."""
+    from custom_components.robovac_mqtt.sensor import async_setup_entry
+
+    coordinator = MagicMock()
+    coordinator.device_id = "novel_dev"
+    coordinator.device_name = "Novel Vac"
+    coordinator.device_model = "T2261"
+    coordinator.api_type = "novel"
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry"
+    hass.data = {"robovac_mqtt": {"test_entry": {"coordinators": [coordinator]}}}
+
+    added_entities = []
+
+    await async_setup_entry(hass, config_entry, added_entities.extend)
+
+    entity_ids = [e.unique_id for e in added_entities]
+
+    # Should have 4 universal + 5 novel-only + 6 accessories = 15 total
+    assert len(added_entities) == 15
+
+    # Universal sensors
+    for suffix in ["battery", "error_message", "task_status", "work_mode"]:
+        assert f"novel_dev_{suffix}" in entity_ids
+
+    # Novel-only sensors
+    for suffix in [
+        "cleaning_time",
+        "cleaning_area",
+        "water_level",
+        "dock_status",
+        "active_map",
+    ]:
+        assert f"novel_dev_{suffix}" in entity_ids
+
+    # Accessory sensors
+    for suffix in [
+        "filter_remaining",
+        "main_brush_remaining",
+        "side_brush_remaining",
+        "sensor_remaining",
+        "scrape_remaining",
+        "mop_remaining",
+    ]:
+        assert f"novel_dev_{suffix}" in entity_ids

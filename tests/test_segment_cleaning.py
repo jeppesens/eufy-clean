@@ -17,8 +17,9 @@ def mock_coordinator():
     coordinator = MagicMock()
     coordinator.device_id = "test_device"
     coordinator.device_name = "Test Vacuum"
+    coordinator.api_type = "novel"
     coordinator.data = VacuumState()
-    
+
     # Set up rooms data
     coordinator.data.rooms = [
         {"id": 1, "name": "Living Room"},
@@ -26,15 +27,16 @@ def mock_coordinator():
         {"id": 3, "name": "Bedroom"}
     ]
     coordinator.data.map_id = 1
-    
+
     # Set up custom cleaning parameters
     coordinator.data.fan_speed = "Turbo"
     coordinator.data.cleaning_mode = "Vacuum and mop"
     coordinator.data.mop_water_level = "High"
     coordinator.data.cleaning_intensity = "Deep"
     coordinator.data.received_fields = {"mop_water_level", "cleaning_intensity"}
-    
+
     coordinator.async_send_command = AsyncMock()
+    coordinator.build_device_command = MagicMock(return_value={"152": "encoded_cmd"})
     return coordinator
 
 
@@ -46,28 +48,29 @@ def vacuum_entity(mock_coordinator):
 
 async def test_async_clean_segments_with_custom_params(vacuum_entity, mock_coordinator):
     """Test that segment cleaning applies current custom parameters."""
+    # Need two return values for set_room_custom + room_clean
+    mock_coordinator.build_device_command.side_effect = [
+        {"164": "room_custom_cmd"},
+        {"152": "room_clean_cmd"},
+    ]
+
     # Act
     await vacuum_entity.async_clean_segments(["1", "2"])
-    
+
     # Assert
     # Should call async_send_command twice: once for room_custom, once for room_clean
     assert mock_coordinator.async_send_command.call_count == 2
-    
+
     # The calls should be dictionaries with command payloads
     calls = mock_coordinator.async_send_command.call_args_list
-    
+
     # Both calls should be dictionaries (command payloads)
     assert isinstance(calls[0][0][0], dict)  # room_custom call
     assert isinstance(calls[1][0][0], dict)  # room_clean call
-    
+
     # The room_clean call should have the room_clean payload structure
     room_clean_payload = calls[1][0][0]
     assert "152" in room_clean_payload  # room_clean DPS key
-    
-    # Verify the room_clean command was called with correct parameters
-    # by checking that _async_handle_room_clean was called with the right params
-    # We can verify this indirectly by checking that custom params were applied
-    # (which would only happen if the logic executed correctly)
 
 
 async def test_async_clean_segments_without_custom_params(vacuum_entity, mock_coordinator):
@@ -76,14 +79,14 @@ async def test_async_clean_segments_without_custom_params(vacuum_entity, mock_co
     mock_coordinator.data.fan_speed = "Standard"
     mock_coordinator.data.cleaning_mode = "Vacuum"
     mock_coordinator.data.received_fields = set()
-    
+
     # Act
     await vacuum_entity.async_clean_segments(["3"])
-    
+
     # Assert
     # Should call async_send_command once for room_clean (no custom params needed)
     assert mock_coordinator.async_send_command.call_count == 1
-    
+
     # Verify the call is a dictionary payload
     call = mock_coordinator.async_send_command.call_args
     payload = call[0][0]
@@ -95,7 +98,7 @@ async def test_async_clean_segments_invalid_ids(vacuum_entity, mock_coordinator)
     """Test that segment cleaning handles invalid segment IDs gracefully."""
     # Act
     await vacuum_entity.async_clean_segments(["invalid", "abc", ""])
-    
+
     # Assert
     # Should not call send_command for invalid IDs
     mock_coordinator.async_send_command.assert_not_called()
@@ -103,13 +106,19 @@ async def test_async_clean_segments_invalid_ids(vacuum_entity, mock_coordinator)
 
 async def test_async_clean_segments_mixed_valid_invalid(vacuum_entity, mock_coordinator):
     """Test that segment cleaning filters out invalid IDs and processes valid ones."""
+    # Need two return values for set_room_custom + room_clean
+    mock_coordinator.build_device_command.side_effect = [
+        {"164": "room_custom_cmd"},
+        {"152": "room_clean_cmd"},
+    ]
+
     # Act
     await vacuum_entity.async_clean_segments(["1", "invalid", "2", ""])
-    
+
     # Assert
     # Should call async_send_command twice for valid room IDs with custom params
     assert mock_coordinator.async_send_command.call_count == 2
-    
+
     # Verify both calls are dictionary payloads
     calls = mock_coordinator.async_send_command.call_args_list
     assert isinstance(calls[0][0][0], dict)  # room_custom call
@@ -120,14 +129,20 @@ async def test_async_clean_segments_with_map_id(vacuum_entity, mock_coordinator)
     """Test that segment cleaning uses proper map_id from coordinator."""
     # Set a specific map_id
     mock_coordinator.data.map_id = 5
-    
+
+    # Need two return values for set_room_custom + room_clean
+    mock_coordinator.build_device_command.side_effect = [
+        {"164": "room_custom_cmd"},
+        {"152": "room_clean_cmd"},
+    ]
+
     # Act
     await vacuum_entity.async_clean_segments(["1", "3"])
-    
+
     # Assert
     # Should call async_send_command twice for custom params + room_clean
     assert mock_coordinator.async_send_command.call_count == 2
-    
+
     # Verify both calls are dictionary payloads
     calls = mock_coordinator.async_send_command.call_args_list
     assert isinstance(calls[0][0][0], dict)  # room_custom call

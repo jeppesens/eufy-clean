@@ -196,8 +196,10 @@ def test_async_shutdown_timers_noop_when_no_timers(mock_hass, mock_login):
 
 
 @pytest.mark.asyncio
-async def test_async_send_command_no_client_logs_warning(mock_hass, mock_login):
-    """Test that sending command with no client logs warning."""
+async def test_async_send_command_no_client_raises(mock_hass, mock_login):
+    """Test that sending command with no client raises HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
     device_info = {
         "deviceId": "test_id",
         "deviceModel": "T2118",
@@ -206,5 +208,292 @@ async def test_async_send_command_no_client_logs_warning(mock_hass, mock_login):
     coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
     coordinator.client = None
 
-    # Should not raise any exception
-    await coordinator.async_send_command({"some": "cmd"})
+    with pytest.raises(HomeAssistantError, match="no connection available"):
+        await coordinator.async_send_command({"some": "cmd"})
+
+
+@pytest.mark.asyncio
+async def test_async_send_command_empty_dict_ignored(mock_hass, mock_login):
+    """Test that sending empty command dict is silently ignored."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    mock_client = MagicMock()
+    mock_client.send_command = AsyncMock()
+    coordinator.client = mock_client
+
+    await coordinator.async_send_command({})
+
+
+@pytest.mark.asyncio
+async def test_async_send_command_wraps_exception_in_ha_error(mock_hass, mock_login):
+    """Test that generic exceptions from MQTT send are wrapped in HomeAssistantError."""
+    from homeassistant.exceptions import HomeAssistantError
+
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    mock_client = MagicMock()
+    mock_client.send_command = AsyncMock(side_effect=OSError("Connection lost"))
+    coordinator.client = mock_client
+
+    with pytest.raises(HomeAssistantError, match="Failed to send command"):
+        await coordinator.async_send_command({"some": "cmd"})
+
+
+# ── Cloud/Legacy coordinator tests ─────────────────────────────────
+
+
+def test_coordinator_cloud_init(mock_hass, mock_login):
+    """Cloud coordinator should set connection_type and update_interval."""
+    device_info = {
+        "deviceId": "cloud_dev",
+        "deviceModel": "T2210",
+        "deviceName": "Cloud Vac",
+        "mqtt": False,
+        "apiType": "legacy",
+        "dps": {"15": "Running", "104": 80},
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    assert coordinator.connection_type == "cloud"
+    assert coordinator.api_type == "legacy"
+    assert coordinator.update_interval is not None
+    assert coordinator.data.activity == "cleaning"
+    assert coordinator.data.battery_level == 80
+
+
+def test_coordinator_mqtt_novel_init(mock_hass, mock_login):
+    """MQTT novel coordinator should have no polling interval."""
+    device_info = {
+        "deviceId": "mqtt_dev",
+        "deviceModel": "T2261",
+        "deviceName": "MQTT Vac",
+        "mqtt": True,
+        "apiType": "novel",
+    }
+
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    assert coordinator.connection_type == "mqtt"
+    assert coordinator.api_type == "novel"
+    assert coordinator.update_interval is None
+
+
+def test_parse_dps_legacy(mock_hass, mock_login):
+    """_parse_dps should use legacy parser for legacy api_type."""
+    device_info = {
+        "deviceId": "dev1",
+        "deviceModel": "T2210",
+        "deviceName": "Vac",
+        "apiType": "legacy",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    new_state, changes = coordinator._parse_dps({"104": 42})
+    assert new_state.battery_level == 42
+
+
+def test_parse_dps_novel(mock_hass, mock_login):
+    """_parse_dps should use novel parser for novel api_type."""
+    device_info = {
+        "deviceId": "dev1",
+        "deviceModel": "T2261",
+        "deviceName": "Vac",
+        "apiType": "novel",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    # DPS 163 is novel battery level (plain int)
+    new_state, changes = coordinator._parse_dps({"163": 75})
+    assert new_state.battery_level == 75
+
+
+def test_build_device_command_legacy(mock_hass, mock_login):
+    """build_device_command should use legacy builder for legacy api_type."""
+    device_info = {
+        "deviceId": "dev1",
+        "deviceModel": "T2210",
+        "deviceName": "Vac",
+        "apiType": "legacy",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    cmd = coordinator.build_device_command("start_auto")
+    assert cmd == {"2": True, "5": "auto"}
+
+
+def test_build_device_command_novel(mock_hass, mock_login):
+    """build_device_command should use novel builder for novel api_type."""
+    device_info = {
+        "deviceId": "dev1",
+        "deviceModel": "T2261",
+        "deviceName": "Vac",
+        "apiType": "novel",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    cmd = coordinator.build_device_command("find_robot", active=True)
+    # Novel find_robot uses DPS 160
+    assert "160" in cmd
+
+
+@pytest.mark.asyncio
+async def test_cloud_send_command(mock_hass, mock_login):
+    """Cloud coordinator should send commands via Tuya Cloud."""
+    device_info = {
+        "deviceId": "cloud_dev",
+        "deviceModel": "T2210",
+        "deviceName": "Cloud Vac",
+        "mqtt": False,
+        "apiType": "legacy",
+    }
+    mock_login.sendCloudCommand = AsyncMock()
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    await coordinator.async_send_command({"2": True})
+    mock_login.sendCloudCommand.assert_called_once_with("cloud_dev", {"2": True})
+
+
+@pytest.mark.asyncio
+async def test_cloud_initialize(mock_hass, mock_login):
+    """Cloud coordinator should initialize without MQTT client."""
+    device_info = {
+        "deviceId": "cloud_dev",
+        "deviceModel": "T2210",
+        "deviceName": "Cloud Vac",
+        "mqtt": False,
+        "apiType": "legacy",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    await coordinator.initialize()
+
+    assert coordinator.client is None
+
+
+@pytest.mark.asyncio
+async def test_cloud_update_data(mock_hass, mock_login):
+    """Cloud coordinator should poll via Tuya Cloud API."""
+    device_info = {
+        "deviceId": "cloud_dev",
+        "deviceModel": "T2210",
+        "deviceName": "Cloud Vac",
+        "mqtt": False,
+        "apiType": "legacy",
+    }
+    mock_login.getCloudDevice = AsyncMock(
+        return_value={"15": "Charging", "104": 100}
+    )
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    result = await coordinator._async_update_data()
+
+    assert result.battery_level == 100
+    assert result.activity == "docked"
+    mock_login.getCloudDevice.assert_called_once_with("cloud_dev")
+
+
+# ── Cloud polling backoff ─────────────────────────────────────────
+
+
+def _make_cloud_coordinator(mock_hass, mock_login):
+    """Helper to create a cloud/legacy coordinator."""
+    device_info = {
+        "deviceId": "cloud_dev",
+        "deviceModel": "T2210",
+        "deviceName": "Cloud Vac",
+        "mqtt": False,
+        "apiType": "legacy",
+    }
+    return EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+
+@pytest.mark.asyncio
+async def test_cloud_poll_failure_increments_counter(mock_hass, mock_login):
+    """Poll failure should increment consecutive failure counter."""
+    mock_login.getCloudDevice = AsyncMock(return_value=None)
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+
+    await coordinator._async_update_data()
+
+    assert coordinator._consecutive_cloud_failures == 1
+
+
+@pytest.mark.asyncio
+async def test_cloud_poll_success_resets_counter(mock_hass, mock_login):
+    """Successful poll should reset failure counter and restore interval."""
+    from datetime import timedelta
+
+    mock_login.getCloudDevice = AsyncMock(return_value=None)
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    base_interval = coordinator.update_interval
+
+    # Simulate 3 failures
+    for _ in range(3):
+        await coordinator._async_update_data()
+    assert coordinator._consecutive_cloud_failures == 3
+    assert coordinator.update_interval > base_interval
+
+    # Now succeed
+    mock_login.getCloudDevice = AsyncMock(
+        return_value={"15": "Charging", "104": 100}
+    )
+    await coordinator._async_update_data()
+
+    assert coordinator._consecutive_cloud_failures == 0
+    assert coordinator.update_interval == base_interval
+
+
+@pytest.mark.asyncio
+async def test_cloud_poll_backoff_increases_interval(mock_hass, mock_login):
+    """Each failure should increase the polling interval."""
+    mock_login.getCloudDevice = AsyncMock(return_value=None)
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+    base_interval = coordinator.update_interval
+
+    await coordinator._async_update_data()
+    interval_after_1 = coordinator.update_interval
+
+    await coordinator._async_update_data()
+    interval_after_2 = coordinator.update_interval
+
+    assert interval_after_1 > base_interval
+    assert interval_after_2 > interval_after_1
+
+
+@pytest.mark.asyncio
+async def test_cloud_poll_raises_after_threshold(mock_hass, mock_login):
+    """After threshold consecutive failures, UpdateFailed should be raised."""
+    mock_login.getCloudDevice = AsyncMock(return_value=None)
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+
+    # First 4 failures return stale data
+    for _ in range(4):
+        result = await coordinator._async_update_data()
+        assert isinstance(result, VacuumState)
+
+    # 5th failure should raise
+    with pytest.raises(UpdateFailed, match="unreachable after 5"):
+        await coordinator._async_update_data()
+
+
+@pytest.mark.asyncio
+async def test_cloud_poll_backoff_caps_at_max(mock_hass, mock_login):
+    """Backoff interval should not exceed 5 minutes."""
+    from datetime import timedelta
+
+    mock_login.getCloudDevice = AsyncMock(return_value=None)
+    coordinator = _make_cloud_coordinator(mock_hass, mock_login)
+
+    # Run up to threshold - 1 failures (before UpdateFailed)
+    for _ in range(4):
+        await coordinator._async_update_data()
+
+    assert coordinator.update_interval <= timedelta(minutes=5)

@@ -40,6 +40,7 @@ async def test_load_unload_entry(hass: HomeAssistant):
                 "dps": {},
             }
         ]
+        mock_login.cloud_devices = []
 
         # Setup Coordinator mock
         mock_coord = mock_coord_cls.return_value
@@ -66,7 +67,7 @@ async def test_load_unload_entry(hass: HomeAssistant):
 
         # Verify calls
         mock_login_cls.assert_called_with(
-            "test_user", "test_password", unittest.mock.ANY
+            "test_user", "test_password", unittest.mock.ANY, websession=unittest.mock.ANY
         )
         mock_login.init.assert_called_once()
         mock_coord_cls.assert_called_once()
@@ -82,3 +83,120 @@ async def test_load_unload_entry(hass: HomeAssistant):
         assert (
             config_entry.state == ConfigEntryState.NOT_LOADED
         ), f"Entry state {config_entry.state}, expected {ConfigEntryState.NOT_LOADED}"
+
+
+async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
+    """Test setup with both MQTT (novel) and cloud (legacy) devices."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_USERNAME: "test_user",
+            CONF_PASSWORD: "test_password",
+        },
+        entry_id="test_mixed_entry",
+    )
+    config_entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator"
+    ) as mock_coord_cls:
+
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock()
+        mock_login.mqtt_devices = [
+            {
+                "deviceId": "mqtt_dev_1",
+                "deviceModel": "T2261",
+                "deviceName": "X8 Pro",
+                "dps": {"153": "something"},
+                "apiType": "novel",
+                "mqtt": True,
+            }
+        ]
+        mock_login.cloud_devices = [
+            {
+                "deviceId": "cloud_dev_1",
+                "deviceModel": "T2210",
+                "deviceName": "G30",
+                "dps": {"15": "Running"},
+                "apiType": "legacy",
+                "mqtt": False,
+            }
+        ]
+
+        # Track coordinator creation calls
+        coordinators = []
+
+        def make_coordinator(*args, **kwargs):
+            coord = MagicMock()
+            coord.initialize = AsyncMock()
+            device_info = args[2] if len(args) > 2 else kwargs.get("device_info", {})
+            coord.device_id = device_info["deviceId"]
+            coord.device_name = device_info["deviceName"]
+            coord.device_model = device_info["deviceModel"]
+            coord.data = MagicMock()
+            coord.client = MagicMock()
+            coord.client.disconnect = AsyncMock()
+            coordinators.append((coord, device_info))
+            return coord
+
+        mock_coord_cls.side_effect = make_coordinator
+
+        result = await hass.config_entries.async_setup(config_entry.entry_id)
+        assert result is True
+        await hass.async_block_till_done()
+
+        # Should have created 2 coordinators
+        assert len(coordinators) == 2
+
+        device_ids = {info["deviceId"] for _, info in coordinators}
+        assert "mqtt_dev_1" in device_ids
+        assert "cloud_dev_1" in device_ids
+
+        # Both should have initialize() called
+        for coord, _ in coordinators:
+            coord.initialize.assert_called_once()
+
+
+async def test_setup_auth_failure_raises_config_entry_auth_failed(hass: HomeAssistant):
+    """Login failure with EufyLoginError should result in SETUP_ERROR (auth failed)."""
+    from custom_components.robovac_mqtt.api.cloud import EufyLoginError
+
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "bad_user", CONF_PASSWORD: "bad_pass"},
+        entry_id="test_auth_fail",
+    )
+    config_entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock(side_effect=EufyLoginError("Invalid credentials"))
+
+        await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert config_entry.state == ConfigEntryState.SETUP_ERROR
+
+
+async def test_setup_network_failure_raises_config_entry_not_ready(hass: HomeAssistant):
+    """Network errors should result in SETUP_RETRY (not ready)."""
+    import aiohttp
+
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user", CONF_PASSWORD: "pass"},
+        entry_id="test_network_fail",
+    )
+    config_entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock(
+            side_effect=aiohttp.ClientError("Connection refused")
+        )
+
+        await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert config_entry.state == ConfigEntryState.SETUP_RETRY
