@@ -63,7 +63,7 @@ def test_find_model_found():
         eufy_api_devices=[
             {
                 "id": "DEV001",
-                "product": {"product_code": "T2261xxx", "name": "X8 Pro"},
+                "product": {"product_code": "T2261", "name": "X8 Pro"},
                 "alias_name": "Living Room Vacuum",
                 "device_model": "T2261",
             }
@@ -98,7 +98,7 @@ def test_find_model_empty_product_code():
                 "id": "DEV002",
                 "product": {"product_code": "", "name": "Some Vacuum"},
                 "alias_name": "Kitchen Vacuum",
-                "device_model": "T2210fallback",
+                "device_model": "T2210",
             }
         ]
     )
@@ -107,6 +107,27 @@ def test_find_model_empty_product_code():
 
     assert result["deviceModel"] == "T2210"
     assert result["deviceName"] == "Kitchen Vacuum"
+    assert result["invalid"] is False
+
+
+def test_find_model_six_char_product_code():
+    """findModel preserves full product code for 6-char codes like T2080A (S1 Pro)."""
+    login = _make_login(
+        eufy_api_devices=[
+            {
+                "id": "DEV003",
+                "product": {"product_code": "T2080A", "name": "S1 Pro"},
+                "alias_name": "S1 Pro Vacuum",
+                "device_model": "T2080A",
+            }
+        ]
+    )
+
+    result = login.findModel("DEV003")
+
+    assert result["deviceModel"] == "T2080A"
+    assert result["deviceName"] == "S1 Pro Vacuum"
+    assert result["deviceModelName"] == "S1 Pro"
     assert result["invalid"] is False
 
 

@@ -291,15 +291,18 @@ def _encrypt_password(uid: str, public_key_n: str, exponent: int) -> str:
     password_md5 = _md5(encrypted_hex)
 
     # RSA encrypt with public key (no padding, raw RSA)
-    n = int(public_key_n, 16) if _is_hex(public_key_n) else int(public_key_n)
+    is_hex = _is_hex(public_key_n)
+    n = int(public_key_n, 16) if is_hex else int(public_key_n)
     e = exponent
 
     # Raw RSA: m^e mod n
     m = int.from_bytes(password_md5.encode(), "big")
     c = pow(m, e, n)
 
-    # Convert to hex, zero-padded to key size
-    key_size = (n.bit_length() + 7) // 8
+    # Convert to hex, zero-padded to key size.
+    # Use the hex string length (not n.bit_length()) to preserve leading zeros
+    # that the server's public key includes — matches upstream JS behavior.
+    key_size = len(public_key_n) // 2 if is_hex else (n.bit_length() + 7) // 8
     return c.to_bytes(key_size, "big").hex()
 
 

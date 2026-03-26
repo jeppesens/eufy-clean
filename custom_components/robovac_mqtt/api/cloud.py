@@ -239,8 +239,8 @@ class EufyLogin:
         if device:
             return {
                 "deviceId": deviceId,
-                "deviceModel": device.get("product", {}).get("product_code", "")[:5]
-                or device.get("device_model", "")[:5],
+                "deviceModel": device.get("product", {}).get("product_code", "")
+                or device.get("device_model", ""),
                 "deviceName": device.get("alias_name")
                 or device.get("device_name")
                 or device.get("name"),

@@ -9,6 +9,7 @@ from custom_components.robovac_mqtt.api.tuya_cloud import (
     TuyaCloudClient,
     TuyaCloudError,
     _encrypt_password,
+    _hmac_sign,
     _md5,
     _mobile_hash,
 )
@@ -309,3 +310,169 @@ async def test_login_handles_region_redirect():
 
     assert client.endpoint == "https://a1.tuyacn.com/api.json"
     assert client.region == "AY"
+
+
+# ── Cross-implementation signing (Python vs upstream JS) ──────────
+
+
+# Reference values computed by tests/tuya_sign_reference.js using
+# the upstream martijnpoppen/eufy-clean TuyaCloud.js signing logic.
+
+_JS_REF_HMAC_KEY = "A_cepev5pfnhua4dkqkdpmnrdxx378mpjr_s8x78u7xwymasd9kqa7a73pjhxqsedaj"
+
+_JS_REF_CASES = [
+    {
+        "name": "token_create_with_postdata",
+        "params": {
+            "a": "tuya.m.user.uid.token.create",
+            "deviceId": "abc123def456abc123def456abc123de",
+            "sdkVersion": "3.0.0cAnker",
+            "os": "Android",
+            "lang": "en",
+            "appVersion": "3.8.5",
+            "v": "1.0",
+            "clientId": "yx5v9uc3ef9wg3v9atje",
+            "time": 1700000000,
+            "et": "0.0.1",
+            "ttid": "android",
+            "appRnVersion": "5.11",
+            "platform": "Android",
+            "requestId": "12345678-1234-1234-1234-123456789abc",
+            "postData": '{"countryCode":"EU","uid":"eh-testuser123"}',
+        },
+        "postData_mobile_hash": "a8e750ced3c7ab0d931dd437bd300e69",
+        "signString": "a=tuya.m.user.uid.token.create||appVersion=3.8.5||clientId=yx5v9uc3ef9wg3v9atje||deviceId=abc123def456abc123def456abc123de||et=0.0.1||lang=en||os=Android||postData=a8e750ced3c7ab0d931dd437bd300e69||requestId=12345678-1234-1234-1234-123456789abc||time=1700000000||ttid=android||v=1.0",
+        "signature": "3c5fefa65b110fb38dc0a7c24aeb0ef6b2eebbe82327e92c529f559a03febc1d",
+    },
+    {
+        "name": "password_login_with_postdata",
+        "params": {
+            "a": "tuya.m.user.uid.password.login",
+            "deviceId": "abc123def456abc123def456abc123de",
+            "sdkVersion": "3.0.0cAnker",
+            "os": "Android",
+            "lang": "en",
+            "appVersion": "3.8.5",
+            "v": "1.0",
+            "clientId": "yx5v9uc3ef9wg3v9atje",
+            "time": 1700000000,
+            "et": "0.0.1",
+            "ttid": "android",
+            "appRnVersion": "5.11",
+            "platform": "Android",
+            "requestId": "12345678-1234-1234-1234-123456789abc",
+            "postData": '{"countryCode":"EU","uid":"eh-testuser123","createGroup":true,"passwd":"encryptedpassword","ifencrypt":1,"options":{"group":1},"token":"sometoken"}',
+        },
+        "postData_mobile_hash": "c719c76af5b00ddff02ab3cdb3805af0",
+        "signString": "a=tuya.m.user.uid.password.login||appVersion=3.8.5||clientId=yx5v9uc3ef9wg3v9atje||deviceId=abc123def456abc123def456abc123de||et=0.0.1||lang=en||os=Android||postData=c719c76af5b00ddff02ab3cdb3805af0||requestId=12345678-1234-1234-1234-123456789abc||time=1700000000||ttid=android||v=1.0",
+        "signature": "2c2556d8190e88d27910e607b1e359b716bbbdd7b5b16bc27598fad778253f8b",
+    },
+    {
+        "name": "authenticated_request_no_postdata",
+        "params": {
+            "a": "tuya.m.location.list",
+            "deviceId": "abc123def456abc123def456abc123de",
+            "sdkVersion": "3.0.0cAnker",
+            "os": "Android",
+            "lang": "en",
+            "appVersion": "3.8.5",
+            "v": "1.0",
+            "clientId": "yx5v9uc3ef9wg3v9atje",
+            "time": 1700000000,
+            "et": "0.0.1",
+            "ttid": "android",
+            "appRnVersion": "5.11",
+            "platform": "Android",
+            "requestId": "12345678-1234-1234-1234-123456789abc",
+            "sid": "test-session-id-12345",
+        },
+        "signString": "a=tuya.m.location.list||appVersion=3.8.5||clientId=yx5v9uc3ef9wg3v9atje||deviceId=abc123def456abc123def456abc123de||et=0.0.1||lang=en||os=Android||requestId=12345678-1234-1234-1234-123456789abc||sid=test-session-id-12345||time=1700000000||ttid=android||v=1.0",
+        "signature": "567690495d92610baf6b2bbe625e50230314a4c59715ef7858a26adf503f175b",
+    },
+]
+
+
+def test_hmac_key_matches_upstream():
+    """HMAC key construction matches upstream JS."""
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    assert client._hmac_key == _JS_REF_HMAC_KEY
+
+
+def test_mobile_hash_matches_upstream():
+    """Mobile hash for postData matches upstream JS reference values."""
+    for case in _JS_REF_CASES:
+        if "postData" not in case["params"]:
+            continue
+        py_hash = _mobile_hash(case["params"]["postData"])
+        assert py_hash == case["postData_mobile_hash"], (
+            f"mobile_hash mismatch for {case['name']}: "
+            f"Python={py_hash}, JS={case['postData_mobile_hash']}"
+        )
+
+
+@pytest.mark.parametrize(
+    "case",
+    _JS_REF_CASES,
+    ids=[c["name"] for c in _JS_REF_CASES],
+)
+def test_sign_matches_upstream_js(case):
+    """Python signing produces identical signatures to upstream JS implementation.
+
+    Reference values generated by tests/tuya_sign_reference.js using the
+    exact signing logic from martijnpoppen/eufy-clean TuyaCloud.js.
+    """
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    py_signature = client._sign(case["params"])
+
+    # Also verify the sign string is built identically by manually computing
+    py_sign_string_signature = _hmac_sign(client._hmac_key, case["signString"])
+
+    assert py_signature == case["signature"], (
+        f"Signature mismatch for {case['name']}: "
+        f"Python={py_signature}, JS={case['signature']}"
+    )
+    assert py_sign_string_signature == case["signature"], (
+        f"Sign string HMAC mismatch — the sign string itself may differ"
+    )
+
+
+# ── Cross-implementation password encryption (Python vs upstream JS) ──
+
+
+# Reference values computed by tests/tuya_encrypt_reference.js using
+# the exact loginEx encryption from martijnpoppen/eufy-clean TuyaCloud.js.
+
+_TEST_PUBLIC_KEY_N = "00b3510a2e6c4fa1e339a0703e64444c0c4a0663385dbd0d2c2c0a8e2b4f1c63"
+_TEST_EXPONENT = 65537
+
+_JS_ENCRYPT_CASES = [
+    {
+        "name": "short_uid",
+        "uid": "eh-testuser123",
+        "expected_hex": "001525eb0e274b4debacf121dd28d9fa44eece2ad07bbc44ec80bbe60c5ca038",
+    },
+    {
+        "name": "long_uid",
+        "uid": "eh-a1b2c3d4e5f6g7h8i9j0k1l2m3",
+        "expected_hex": "0077298706befea27ba8db39066b7cdb7aa435500afc1bc9c4a5eb67510151db",
+    },
+]
+
+
+@pytest.mark.parametrize(
+    "case",
+    _JS_ENCRYPT_CASES,
+    ids=[c["name"] for c in _JS_ENCRYPT_CASES],
+)
+def test_encrypt_password_matches_upstream_js(case):
+    """Password encryption produces identical output to upstream JS.
+
+    Reference values generated by tests/tuya_encrypt_reference.js.
+    The bug was that RSA output was not zero-padded to match the public
+    key's hex string length, causing USER_PASSWD_WRONG on Tuya login.
+    """
+    result = _encrypt_password(case["uid"], _TEST_PUBLIC_KEY_N, _TEST_EXPONENT)
+    assert result == case["expected_hex"], (
+        f"encrypt_password mismatch for {case['name']}: "
+        f"Python={result}, JS={case['expected_hex']}"
+    )
