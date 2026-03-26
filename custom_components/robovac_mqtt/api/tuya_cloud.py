@@ -13,6 +13,8 @@ import hmac
 import json
 import logging
 import math
+import random
+import string
 import time
 import uuid
 from typing import Any
@@ -83,7 +85,10 @@ class TuyaCloudClient:
         self.region = region
         self.endpoint = TUYA_REGIONS.get(region, TUYA_REGIONS["EU"])
         self.sid: str | None = None
-        self._device_id = uuid.uuid4().hex
+        # Match upstream JS: randomize('a0', 44) — 44-char lowercase alphanumeric
+        self._device_id = "".join(
+            random.choices(string.ascii_lowercase + string.digits, k=44)
+        )
         self._websession = websession
         self._hmac_key = f"{TUYA_CERT_SIGN}_{TUYA_SECRET2}_{TUYA_SECRET}"
 
@@ -95,7 +100,7 @@ class TuyaCloudClient:
         3. Authenticate and get session ID
         """
         uid = f"eh-{eufy_user_id}"
-        _LOGGER.debug("Tuya login starting for region %s", self.region)
+        _LOGGER.debug("Tuya login starting for region %s, uid=%s", self.region, uid)
 
         # Step 1: Get token and RSA public key
         token_result = await self.request(
@@ -107,6 +112,12 @@ class TuyaCloudClient:
         public_key_n = token_result["publicKey"]
         exponent = int(token_result["exponent"])
         token = token_result["token"]
+        _LOGGER.debug(
+            "Tuya token received: publicKey length=%d, first8=%s, last8=%s, "
+            "exponent=%d, is_hex=%s",
+            len(public_key_n), public_key_n[:8], public_key_n[-8:],
+            exponent, _is_hex(public_key_n),
+        )
 
         # Step 2: Encrypt password
         encrypted_pass = _encrypt_password(uid, public_key_n, exponent)
@@ -187,6 +198,7 @@ class TuyaCloudClient:
         async with session.get(
             self.endpoint, params=params, timeout=_REQUEST_TIMEOUT
         ) as resp:
+            _LOGGER.debug("Tuya request actual URL: %s", resp.url)
             body = await resp.json(content_type=None)
 
         if body.get("success") is False:
@@ -261,6 +273,7 @@ class TuyaCloudClient:
                 parts.append(f"{key}={value}")
 
         sign_str = "||".join(parts)
+        _LOGGER.debug("Tuya sign string: %s", sign_str)
         return _hmac_sign(self._hmac_key, sign_str)
 
 
