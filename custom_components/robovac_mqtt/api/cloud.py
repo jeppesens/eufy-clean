@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..const import DPS_MAP
+from ..const import DPS_MAP, EUFY_CLEAN_DEVICES
 from .http import EufyHTTPClient
 from .tuya_cloud import TuyaCloudClient, TuyaCloudError
 
@@ -233,14 +233,27 @@ class EufyLogin:
             return "novel"
         return "legacy"
 
+    @staticmethod
+    def _resolve_model(code: str) -> str:
+        """Return the best device model code, falling back to first 5 chars."""
+        if code in EUFY_CLEAN_DEVICES:
+            return code
+        truncated = code[:5]
+        if truncated in EUFY_CLEAN_DEVICES:
+            return truncated
+        return code
+
     def findModel(self, deviceId: str):
         device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
 
         if device:
+            raw_code = (
+                device.get("product", {}).get("product_code", "")
+                or device.get("device_model", "")
+            )
             return {
                 "deviceId": deviceId,
-                "deviceModel": device.get("product", {}).get("product_code", "")
-                or device.get("device_model", ""),
+                "deviceModel": self._resolve_model(raw_code),
                 "deviceName": device.get("alias_name")
                 or device.get("device_name")
                 or device.get("name"),

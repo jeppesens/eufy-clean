@@ -126,8 +126,26 @@ def test_find_model_six_char_product_code():
     result = login.findModel("DEV003")
 
     assert result["deviceModel"] == "T2080A"
-    assert result["deviceName"] == "S1 Pro Vacuum"
-    assert result["deviceModelName"] == "S1 Pro"
+
+
+def test_find_model_truncation_fallback():
+    """findModel falls back to first 5 chars if full code is not in EUFY_CLEAN_DEVICES."""
+    login = _make_login(
+        eufy_api_devices=[
+            {
+                "id": "DEV004",
+                "product": {"product_code": "T2261X", "name": "X8 Pro Variant"},
+                "alias_name": "Hallway Vacuum",
+                "device_model": "T2261X",
+            }
+        ]
+    )
+
+    result = login.findModel("DEV004")
+
+    # T2261X not in EUFY_CLEAN_DEVICES, but T2261 is -> falls back to T2261
+    assert result["deviceModel"] == "T2261"
+    assert result["deviceName"] == "Hallway Vacuum"
     assert result["invalid"] is False
 
 

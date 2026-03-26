@@ -70,6 +70,7 @@ EUFY_CLEAN_DEVICES = {
     "T2320": "Robovac X9 Pro",
     "T2351": "Robovac X10 Pro Omni",
     "T2080": "Robovac S1",
+    "T2080A": "Robovac S1 Pro",
 }
 
 EUFY_CLEAN_X_SERIES = ["T2262", "T2261", "T2266", "T2276", "T2320", "T2351"]
@@ -106,7 +107,7 @@ EUFY_CLEAN_C_SERIES = [
     "T2292",
 ]
 
-EUFY_CLEAN_S_SERIES = ["T2119", "T2080"]
+EUFY_CLEAN_S_SERIES = ["T2119", "T2080", "T2080A"]
 
 
 class TriggerSource(int, Enum):
