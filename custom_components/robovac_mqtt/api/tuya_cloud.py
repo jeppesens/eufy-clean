@@ -95,7 +95,7 @@ class TuyaCloudClient:
         3. Authenticate and get session ID
         """
         uid = f"eh-{eufy_user_id}"
-        _LOGGER.debug("Tuya login starting for region %s", self.region)
+        _LOGGER.debug("Tuya login starting for region %s, uid=%s", self.region, uid)
 
         # Step 1: Get token and RSA public key
         token_result = await self.request(
@@ -107,6 +107,12 @@ class TuyaCloudClient:
         public_key_n = token_result["publicKey"]
         exponent = int(token_result["exponent"])
         token = token_result["token"]
+        _LOGGER.debug(
+            "Tuya token received: publicKey length=%d, first8=%s, last8=%s, "
+            "exponent=%d, is_hex=%s",
+            len(public_key_n), public_key_n[:8], public_key_n[-8:],
+            exponent, _is_hex(public_key_n),
+        )
 
         # Step 2: Encrypt password
         encrypted_pass = _encrypt_password(uid, public_key_n, exponent)
@@ -303,7 +309,15 @@ def _encrypt_password(uid: str, public_key_n: str, exponent: int) -> str:
     # Use the hex string length (not n.bit_length()) to preserve leading zeros
     # that the server's public key includes — matches upstream JS behavior.
     key_size = len(public_key_n) // 2 if is_hex else (n.bit_length() + 7) // 8
-    return c.to_bytes(key_size, "big").hex()
+    result = c.to_bytes(key_size, "big").hex()
+
+    _LOGGER.debug(
+        "Password encryption: uid_len=%d, padded_len=%d, aes_hex_len=%d, "
+        "md5=%s, n_bits=%d, key_size=%d, result_len=%d",
+        len(uid), padded_len, len(encrypted_hex),
+        password_md5, n.bit_length(), key_size, len(result),
+    )
+    return result
 
 
 def _is_hex(s: str) -> bool:
