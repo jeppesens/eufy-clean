@@ -13,6 +13,8 @@ import hmac
 import json
 import logging
 import math
+import random
+import string
 import time
 import uuid
 from typing import Any
@@ -83,7 +85,10 @@ class TuyaCloudClient:
         self.region = region
         self.endpoint = TUYA_REGIONS.get(region, TUYA_REGIONS["EU"])
         self.sid: str | None = None
-        self._device_id = uuid.uuid4().hex
+        # Match upstream JS: randomize('a0', 44) — 44-char lowercase alphanumeric
+        self._device_id = "".join(
+            random.choices(string.ascii_lowercase + string.digits, k=44)
+        )
         self._websession = websession
         self._hmac_key = f"{TUYA_CERT_SIGN}_{TUYA_SECRET2}_{TUYA_SECRET}"
 
@@ -193,6 +198,7 @@ class TuyaCloudClient:
         async with session.get(
             self.endpoint, params=params, timeout=_REQUEST_TIMEOUT
         ) as resp:
+            _LOGGER.debug("Tuya request actual URL: %s", resp.url)
             body = await resp.json(content_type=None)
 
         if body.get("success") is False:
@@ -267,6 +273,7 @@ class TuyaCloudClient:
                 parts.append(f"{key}={value}")
 
         sign_str = "||".join(parts)
+        _LOGGER.debug("Tuya sign string: %s", sign_str)
         return _hmac_sign(self._hmac_key, sign_str)
 
 
@@ -306,9 +313,10 @@ def _encrypt_password(uid: str, public_key_n: str, exponent: int) -> str:
     c = pow(m, e, n)
 
     # Convert to hex, zero-padded to key size.
-    # Use the hex string length (not n.bit_length()) to preserve leading zeros
-    # that the server's public key includes — matches upstream JS behavior.
-    key_size = len(public_key_n) // 2 if is_hex else (n.bit_length() + 7) // 8
+    # Use ceil(hex_len / 2) to: (a) preserve leading zeros that n.bit_length()
+    # would drop, and (b) handle odd-length hex strings (e.g. 309-char keys
+    # from real Tuya servers → 155 bytes, not 154).
+    key_size = (len(public_key_n) + 1) // 2 if is_hex else (n.bit_length() + 7) // 8
     result = c.to_bytes(key_size, "big").hex()
 
     _LOGGER.debug(

@@ -107,6 +107,14 @@ def test_client_us_region():
     assert client.region == "US"
 
 
+def test_client_device_id_format():
+    """deviceId must be 44-char lowercase alphanumeric (matching upstream JS)."""
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    assert len(client._device_id) == 44
+    assert client._device_id.isalnum()
+    assert client._device_id == client._device_id.lower()
+
+
 def test_client_requires_region_and_websession():
     """TuyaCloudClient requires both region and websession."""
     import pytest as _pytest
@@ -457,6 +465,21 @@ _JS_ENCRYPT_CASES = [
         "expected_hex": "0077298706befea27ba8db39066b7cdb7aa435500afc1bc9c4a5eb67510151db",
     },
 ]
+
+
+def test_encrypt_password_odd_length_hex_key():
+    """RSA output must be correctly sized for odd-length hex public keys.
+
+    Real Tuya servers can return 309-char hex keys (1233-bit modulus).
+    key_size must be ceil(309/2)=155 bytes, not 309//2=154.
+    """
+    # Use a realistic odd-length hex key (309 chars, similar to JerryVDP's real key)
+    odd_hex_key = "1" * 309  # 309 hex chars → 155 bytes expected
+    result = _encrypt_password("eh-testuser", odd_hex_key, 3)
+    # Output should be 310 hex chars (155 bytes), not 308 (154 bytes)
+    assert len(result) == 310, (
+        f"Expected 310 hex chars (155 bytes) for 309-char key, got {len(result)}"
+    )
 
 
 @pytest.mark.parametrize(
