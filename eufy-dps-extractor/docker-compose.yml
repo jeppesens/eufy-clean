@@ -1,0 +1,8 @@
+services:
+  extractor:
+    build: .
+    volumes:
+      # Put your APK file(s) in the ./apk/ directory
+      - ./apk:/apk:ro
+      # Results will appear in ./output/
+      - ./output:/output
