@@ -445,15 +445,13 @@ Key Android router paths:
 | `proto/cloud/media_manager.proto` | MediaManagerRequest/Response (camera media, not clean records) |
 | `api/commands.py` | `build_get_map_command()` for DPS 170 MAP_GET_ALL |
 
-### Developed but not yet merged
+### Map rendering & camera (ready for data)
 
-The following files were developed during this research and exist locally but are not yet on main. They are ready to render map images as soon as a data source is found:
-
-| File | Purpose | Status |
-|------|---------|--------|
-| `map_renderer.py` | Full rendering pipeline: pure-Python LZ4 decompressor, pixel decoders, PNG renderer with 32 room colors, robot/dock/trail overlays, bitmap font room labels | Complete, tested |
-| `api/local.py` | TLS socket client for port 9668 (auth works, connection closes after — pairing only) | Complete, dead end for map data |
-| `camera.py` | HA camera entity that displays the rendered map PNG, falls back to schematic room layout | Complete, uses schematic fallback |
+| File | Purpose |
+|------|---------|
+| `map_renderer.py` | Full rendering pipeline: pure-Python LZ4 decompressor, pixel decoders, PNG renderer with 32 room colors, robot/dock/trail overlays, bitmap font room labels. Also `generate_schematic_map()` for room-grid fallback. |
+| `api/local.py` | TLS socket client for port 9668 (auth works, connection closes after — pairing only, dead end for map data) |
+| `camera.py` | HA camera entity that displays the rendered map PNG, falls back to schematic room layout from DPS 165 |
 
 ---
 
