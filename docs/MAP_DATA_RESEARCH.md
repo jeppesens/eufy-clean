@@ -429,19 +429,31 @@ Key Android router paths:
 
 ---
 
-## Existing Code (Ready for Data)
+## Existing Code
 
-The following code exists in this repo and is ready to render map images as soon as data becomes available:
+### Already on main (proto definitions)
 
 | File | Purpose |
 |------|---------|
-| `map_renderer.py` | Full rendering pipeline: LZ4 decompressor, pixel decoders, PNG renderer with room colors, robot/dock overlays, room name labels |
-| `api/local.py` | TLS socket client for port 9668 (auth works, no data channel) |
-| `api/commands.py` | `build_get_map_command()` for DPS 170 MAP_GET_ALL |
-| `camera.py` | HA camera entity that displays the rendered map PNG |
 | `proto/cloud/clean_record.proto` | CleanRecordData with Map + RoomOutline + CompleteMap |
+| `proto/cloud/clean_record_wrap.proto` | Debug wrapper with inline desc + data |
 | `proto/cloud/p2pdata.proto` | MapChannelMsg, CompleteMap, MapPixels, MapInfo |
 | `proto/cloud/multi_maps.proto` | MultiMapsManageRequest/Response with CompleteMaps |
+| `proto/cloud/stream.proto` | Map (2-bit LZ4 pixels), RoomOutline, RoomParams |
+| `proto/cloud/socket.proto` | SocketVerify, SocketBroadcast, SocketTransData |
+| `proto/cloud/ble.proto` | BtAppMsg (GetProductInfo, Ack, Distribute), BtRobotMsg (ProductInfo) |
+| `proto/cloud/media_manager.proto` | MediaManagerRequest/Response (camera media, not clean records) |
+| `api/commands.py` | `build_get_map_command()` for DPS 170 MAP_GET_ALL |
+
+### Developed but not yet merged
+
+The following files were developed during this research and exist locally but are not yet on main. They are ready to render map images as soon as a data source is found:
+
+| File | Purpose | Status |
+|------|---------|--------|
+| `map_renderer.py` | Full rendering pipeline: pure-Python LZ4 decompressor, pixel decoders, PNG renderer with 32 room colors, robot/dock/trail overlays, bitmap font room labels | Complete, tested |
+| `api/local.py` | TLS socket client for port 9668 (auth works, connection closes after — pairing only) | Complete, dead end for map data |
+| `camera.py` | HA camera entity that displays the rendered map PNG, falls back to schematic room layout | Complete, uses schematic fallback |
 
 ---
 
