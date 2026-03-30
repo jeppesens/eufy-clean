@@ -323,13 +323,43 @@ For anyone continuing this research, here are the working Tuya auth credentials 
 
 ### Extracting from APK
 
-The APK is an `.apkm` bundle (ZIP containing `base.apk` + split APKs). Use the `eufy-dps-extractor/` Docker tooling or manually:
+The APK is an `.apkm` bundle (ZIP containing `base.apk` + split APKs). The `eufy-dps-extractor/` directory contains Docker tooling to automate decompilation and DPS extraction — see its [README](../eufy-dps-extractor/README.md) for usage. Manual extraction:
 ```bash
 unzip eufy.apkm -d extracted/
-# base.apk (139MB) — main code
+# base.apk (139MB) — main code (only ~150 Java router classes after decompile)
 # split_config.arm64_v8a.apk (53MB) — native .so libs (114 files)
 # split_install_time_asset_pack.apk (129MB) — JS bundles, thing models, assets
 ```
+
+### Thing Model Schemas (Complete Device Definitions)
+
+The asset pack contains per-model Thing Model JSON files that define the **complete device interface** — every property, action, and event. These are far more comprehensive than anything obtainable from Java decompilation.
+
+```bash
+unzip split_install_time_asset_pack.apk 'assets/Documents/ThingModel/*' -d /tmp/tm
+ls /tmp/tm/assets/Documents/ThingModel/
+# T2265_thing.json T2267_thing.json T2268_thing.json T2275_thing.json
+# T2276_thing.json T2277_thing.json T2278_thing.json T2320_thing.json
+# T2351_thing.json T2352_thing.json T2353_thing.json
+```
+
+Coverage from v3.18.1:
+
+| Model | Properties | Actions | Notes |
+|-------|-----------|---------|-------|
+| T2265 | 197 | 107 | G-series |
+| T2267 | 197 | 107 | L60 |
+| T2268 | 197 | 107 | L70 |
+| T2275 | 197 | 107 | G-series |
+| T2276 | 197 | 117 | X8 Pro (10 extra decode_map actions) |
+| T2277 | 197 | 107 | G-series |
+| T2278 | 197 | 107 | L-series |
+| T2320 | 197 | 107 | X-series |
+| T2351 | 254 | 131 | X10 Pro Omni |
+| T2352 | 281 | 138 | X-series (most properties) |
+| T2353 | 274 | 138 | X-series |
+
+**284 unique properties** and **155 unique actions** across all 11 models. The `base.apk` also contains `assets/accessory/T*_accessory_json.json` files covering 60+ models with consumable/accessory definitions.
 
 ### Native Libraries (split_config.arm64_v8a.apk)
 
@@ -444,6 +474,12 @@ Key Android router paths:
 | `proto/cloud/ble.proto` | BtAppMsg (GetProductInfo, Ack, Distribute), BtRobotMsg (ProductInfo) |
 | `proto/cloud/media_manager.proto` | MediaManagerRequest/Response (camera media, not clean records) |
 | `api/commands.py` | `build_get_map_command()` for DPS 170 MAP_GET_ALL |
+
+### APK extraction tooling
+
+| File | Purpose |
+|------|---------|
+| `eufy-dps-extractor/` | Docker tooling: decompiles APK with jadx, runs grep passes + Python deep-scan for DPS codes. See its README for ThingModel extraction instructions. |
 
 ### Map rendering & camera (ready for data)
 
