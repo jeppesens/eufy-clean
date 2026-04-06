@@ -46,7 +46,31 @@ class EufyLogin:
 
     async def getDevices(self) -> None:
         self.eufy_api_devices = await self.eufyApi.get_cloud_device_list()
+        _LOGGER.debug(
+            "Cloud device list: %d device(s): %s",
+            len(self.eufy_api_devices),
+            [d.get("id", "?") for d in self.eufy_api_devices],
+        )
+
         devices = await self.eufyApi.get_device_list()
+        _LOGGER.debug(
+            "AIOT device list: %d device(s): %s",
+            len(devices),
+            [d.get("device_sn", "?") for d in devices],
+        )
+
+        # If AIOT returned nothing, construct entries from cloud device list
+        # so devices registered only in the new unified app can still be found.
+        if not devices and self.eufy_api_devices:
+            _LOGGER.info(
+                "AIOT device list empty — constructing device entries from cloud device list"
+            )
+            devices = [
+                {"device_sn": d["id"], "dps": {}}
+                for d in self.eufy_api_devices
+                if d.get("id")
+            ]
+
         devices = [
             {
                 **self.findModel(device["device_sn"]),
@@ -60,6 +84,11 @@ class EufyLogin:
             for device in devices
         ]
         self.mqtt_devices = [d for d in devices if not d["invalid"]]
+        _LOGGER.debug(
+            "Final mqtt_devices: %d device(s): %s",
+            len(self.mqtt_devices),
+            [(d["deviceId"], d["deviceModel"]) for d in self.mqtt_devices],
+        )
 
     async def getMqttDevice(self, deviceId: str):
         devices = await self.eufyApi.get_device_list()

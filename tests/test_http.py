@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -120,6 +121,185 @@ async def test_login_validate_only():
 
         # get_user_info must NOT have been called
         mock_gui.assert_not_called()
+
+
+# --- eufy_login v2/v1 fallback tests ---
+
+
+@pytest.mark.asyncio
+async def test_eufy_login_succeeds_via_v2():
+    """eufy_login() should succeed on v2 (first attempt) without trying v1."""
+    login_data = {"access_token": "tok_v2", "user_id": "u1"}
+
+    mock_response = AsyncMock()
+    mock_response.status = 200
+    mock_response.json = AsyncMock(return_value=login_data)
+
+    mock_session = _mock_aiohttp_session(mock_response)
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        client = _make_client()
+        result = await client.eufy_login()
+
+    assert result is not None
+    assert result["access_token"] == "tok_v2"
+    # Only one POST call — v2 succeeded, v1 not attempted
+    assert mock_session.post.call_count == 1
+    call_url = mock_session.post.call_args[0][0]
+    assert "v2/email/login" in call_url
+    # v2 must use category: Health header
+    call_headers = mock_session.post.call_args[1].get(
+        "headers", mock_session.post.call_args[0][1] if len(mock_session.post.call_args[0]) > 1 else {}
+    )
+    assert call_headers.get("category") == "Health"
+
+
+def _mock_aiohttp_sessions(*responses: AsyncMock) -> Callable[..., MagicMock]:
+    """Build a side_effect callable that returns a fresh mock session per call.
+
+    Each invocation of ``aiohttp.ClientSession()`` yields the next response in
+    *responses*.  This is needed because ``eufy_login`` creates a new session
+    for each login attempt.
+    """
+    call_count = 0
+
+    def _factory(*_args, **_kwargs):
+        nonlocal call_count
+        resp = responses[call_count]
+        call_count += 1
+
+        ctx = MagicMock()
+        ctx.__aenter__ = AsyncMock(return_value=resp)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+
+        session = MagicMock()
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+        session.post.return_value = ctx
+        session.get.return_value = ctx
+        return session
+
+    return _factory
+
+
+@pytest.mark.asyncio
+async def test_eufy_login_falls_back_to_v1():
+    """eufy_login() should fall back to v1 when v2 returns non-200."""
+    v2_fail = AsyncMock()
+    v2_fail.status = 401
+    v2_fail.json = AsyncMock(return_value={"error": "invalid_client"})
+    v2_fail.text = AsyncMock(return_value="Unauthorized")
+
+    v1_ok = AsyncMock()
+    v1_ok.status = 200
+    v1_ok.json = AsyncMock(return_value={"access_token": "tok_v1", "user_id": "u1"})
+
+    factory = _mock_aiohttp_sessions(v2_fail, v1_ok)
+
+    with patch("aiohttp.ClientSession", side_effect=factory):
+        client = _make_client()
+        result = await client.eufy_login()
+
+    assert result is not None
+    assert result["access_token"] == "tok_v1"
+
+
+@pytest.mark.asyncio
+async def test_eufy_login_all_attempts_fail():
+    """eufy_login() should return None when both v2 and v1 fail."""
+    fail_response = AsyncMock()
+    fail_response.status = 401
+    fail_response.json = AsyncMock(return_value=None)
+    fail_response.text = AsyncMock(return_value="Unauthorized")
+
+    mock_session = _mock_aiohttp_session(fail_response)
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        client = _make_client()
+        result = await client.eufy_login()
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_eufy_login_v2_no_token_falls_back_to_v1():
+    """eufy_login() should try v1 if v2 returns 200 but no access_token."""
+    v2_no_token = AsyncMock()
+    v2_no_token.status = 200
+    v2_no_token.json = AsyncMock(return_value={"some_other_field": "value"})
+    v2_no_token.text = AsyncMock(return_value="")
+
+    v1_ok = AsyncMock()
+    v1_ok.status = 200
+    v1_ok.json = AsyncMock(return_value={"access_token": "tok_v1"})
+
+    factory = _mock_aiohttp_sessions(v2_no_token, v1_ok)
+
+    with patch("aiohttp.ClientSession", side_effect=factory):
+        client = _make_client()
+        result = await client.eufy_login()
+
+    assert result is not None
+    assert result["access_token"] == "tok_v1"
+
+
+# --- Cloud device list fallback tests ---
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_device_list_falls_back_to_home_api():
+    """get_cloud_device_list() should try home-api when legacy returns empty."""
+    legacy_response = AsyncMock()
+    legacy_response.status = 200
+    legacy_response.json = AsyncMock(return_value={"devices": []})
+
+    home_response = AsyncMock()
+    home_response.status = 200
+    home_response.json = AsyncMock(
+        return_value={
+            "devices": [
+                {"id": "DEV001", "device_model": "T2276", "alias_name": "Vacuum"},
+            ]
+        }
+    )
+
+    factory = _mock_aiohttp_sessions(legacy_response, home_response)
+
+    client = _make_client()
+    client.session = {"access_token": "tok_test"}
+
+    with patch("aiohttp.ClientSession", side_effect=factory):
+        result = await client.get_cloud_device_list()
+
+    assert len(result) == 1
+    assert result[0]["id"] == "DEV001"
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_device_list_primary_succeeds_no_fallback():
+    """get_cloud_device_list() should not call home-api when legacy returns devices."""
+    legacy_response = AsyncMock()
+    legacy_response.status = 200
+    legacy_response.json = AsyncMock(
+        return_value={
+            "devices": [
+                {"id": "DEV002", "device_model": "T2261", "alias_name": "Robot"},
+            ]
+        }
+    )
+
+    mock_session = _mock_aiohttp_session(legacy_response)
+
+    client = _make_client()
+    client.session = {"access_token": "tok_test"}
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = await client.get_cloud_device_list()
+
+    assert len(result) == 1
+    assert result[0]["id"] == "DEV002"
+    # Only one GET call (legacy endpoint), no fallback
+    assert mock_session.get.call_count == 1
 
 
 # --- Configuration test ---
