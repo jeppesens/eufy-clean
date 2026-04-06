@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -148,7 +149,7 @@ async def test_eufy_login_succeeds_via_v2():
     assert "v2/email/login" in call_url
 
 
-def _mock_aiohttp_sessions(*responses: AsyncMock) -> MagicMock:
+def _mock_aiohttp_sessions(*responses: AsyncMock) -> Callable[..., MagicMock]:
     """Build a side_effect callable that returns a fresh mock session per call.
 
     Each invocation of ``aiohttp.ClientSession()`` yields the next response in

@@ -63,9 +63,7 @@ class EufyHTTPClient:
         last_error: str | None = None
 
         for config in _LOGIN_CONFIGS:
-            _LOGGER.debug(
-                "Attempting login via %s: %s", config["label"], config["url"]
-            )
+            _LOGGER.debug("Attempting login via %s: %s", config["label"], config["url"])
             async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
                 async with session.post(
                     config["url"],
@@ -93,9 +91,7 @@ class EufyHTTPClient:
 
                     if response.status == 200 and response_json:
                         if response_json.get("access_token"):
-                            _LOGGER.info(
-                                "Login successful via %s", config["label"]
-                            )
+                            _LOGGER.info("Login successful via %s", config["label"])
                             self.session = response_json
                             return response_json
 
