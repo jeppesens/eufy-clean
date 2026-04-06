@@ -21,6 +21,7 @@ EUFY_API_DEVICE_LIST: Final = (
     f"{EUFY_AIOT_API_BASE_URL}/app/devicerelation/get_device_list"
 )
 EUFY_API_DEVICE_V2: Final = f"{EUFY_API_BASE_URL}/v1/device/v2"
+EUFY_API_DEVICE_LIST_HOME: Final = f"{EUFY_HOME_API_BASE_URL}/v1/device/"
 EUFY_API_MQTT_INFO: Final = (
     f"{EUFY_AIOT_API_BASE_URL}/app/devicemanage/get_user_mqtt_info"
 )

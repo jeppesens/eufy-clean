@@ -147,6 +147,11 @@ async def test_eufy_login_succeeds_via_v2():
     assert mock_session.post.call_count == 1
     call_url = mock_session.post.call_args[0][0]
     assert "v2/email/login" in call_url
+    # v2 must use category: Health header
+    call_headers = mock_session.post.call_args[1].get(
+        "headers", mock_session.post.call_args[0][1] if len(mock_session.post.call_args[0]) > 1 else {}
+    )
+    assert call_headers.get("category") == "Health"
 
 
 def _mock_aiohttp_sessions(*responses: AsyncMock) -> Callable[..., MagicMock]:
@@ -171,6 +176,7 @@ def _mock_aiohttp_sessions(*responses: AsyncMock) -> Callable[..., MagicMock]:
         session.__aenter__ = AsyncMock(return_value=session)
         session.__aexit__ = AsyncMock(return_value=False)
         session.post.return_value = ctx
+        session.get.return_value = ctx
         return session
 
     return _factory
@@ -235,6 +241,65 @@ async def test_eufy_login_v2_no_token_falls_back_to_v1():
 
     assert result is not None
     assert result["access_token"] == "tok_v1"
+
+
+# --- Cloud device list fallback tests ---
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_device_list_falls_back_to_home_api():
+    """get_cloud_device_list() should try home-api when legacy returns empty."""
+    legacy_response = AsyncMock()
+    legacy_response.status = 200
+    legacy_response.json = AsyncMock(return_value={"devices": []})
+
+    home_response = AsyncMock()
+    home_response.status = 200
+    home_response.json = AsyncMock(
+        return_value={
+            "devices": [
+                {"id": "DEV001", "device_model": "T2276", "alias_name": "Vacuum"},
+            ]
+        }
+    )
+
+    factory = _mock_aiohttp_sessions(legacy_response, home_response)
+
+    client = _make_client()
+    client.session = {"access_token": "tok_test"}
+
+    with patch("aiohttp.ClientSession", side_effect=factory):
+        result = await client.get_cloud_device_list()
+
+    assert len(result) == 1
+    assert result[0]["id"] == "DEV001"
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_device_list_primary_succeeds_no_fallback():
+    """get_cloud_device_list() should not call home-api when legacy returns devices."""
+    legacy_response = AsyncMock()
+    legacy_response.status = 200
+    legacy_response.json = AsyncMock(
+        return_value={
+            "devices": [
+                {"id": "DEV002", "device_model": "T2261", "alias_name": "Robot"},
+            ]
+        }
+    )
+
+    mock_session = _mock_aiohttp_session(legacy_response)
+
+    client = _make_client()
+    client.session = {"access_token": "tok_test"}
+
+    with patch("aiohttp.ClientSession", return_value=mock_session):
+        result = await client.get_cloud_device_list()
+
+    assert len(result) == 1
+    assert result[0]["id"] == "DEV002"
+    # Only one GET call (legacy endpoint), no fallback
+    assert mock_session.get.call_count == 1
 
 
 # --- Configuration test ---

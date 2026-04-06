@@ -107,3 +107,29 @@ def test_find_model_empty_product_code():
     assert result["deviceModel"] == "T2210"
     assert result["deviceName"] == "Kitchen Vacuum"
     assert result["invalid"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_devices_constructs_from_cloud_when_aiot_empty():
+    """When AIOT returns no devices but cloud list has entries, construct from cloud."""
+    cloud_devices = [
+        {
+            "id": "SN123",
+            "product": {"product_code": "T2276xxx", "name": "X10 Pro Omni"},
+            "alias_name": "Living Room",
+            "device_model": "T2276",
+        }
+    ]
+
+    login = _make_login(eufy_api_devices=[])
+    login.eufyApi.get_cloud_device_list = AsyncMock(return_value=cloud_devices)
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])
+
+    await login.getDevices()
+
+    assert len(login.mqtt_devices) == 1
+    assert login.mqtt_devices[0]["deviceId"] == "SN123"
+    assert login.mqtt_devices[0]["deviceModel"] == "T2276"
+    assert login.mqtt_devices[0]["deviceName"] == "Living Room"
+    assert login.mqtt_devices[0]["dps"] == {}
+    assert login.mqtt_devices[0]["apiType"] == "legacy"
