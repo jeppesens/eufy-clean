@@ -10,6 +10,7 @@ from ..const import (
     EUFY_API_DEVICE_LIST,
     EUFY_API_DEVICE_V2,
     EUFY_API_LOGIN,
+    EUFY_API_LOGIN_V2,
     EUFY_API_MQTT_INFO,
     EUFY_API_USER_INFO,
 )
@@ -17,6 +18,21 @@ from ..const import (
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 _LOGGER = logging.getLogger(__name__)
+
+_LOGIN_CONFIGS: list[dict[str, str]] = [
+    {
+        "label": "v2 (Eufy app)",
+        "url": EUFY_API_LOGIN_V2,
+        "client_id": "eufy-app",
+        "client_secret": "8FHf22gaTKu7MZXqz5zytw",
+    },
+    {
+        "label": "v1 (Eufy Clean app)",
+        "url": EUFY_API_LOGIN,
+        "client_id": "eufyhome-app",
+        "client_secret": "GQCpr9dSp3uQpsOMgJ4xQ",
+    },
+]
 
 
 class EufyHTTPClient:
@@ -43,41 +59,57 @@ class EufyHTTPClient:
         return {"session": session, "user": user, "mqtt": mqtt}
 
     async def eufy_login(self) -> dict[str, Any] | None:
-        """Login to Eufy Cloud."""
-        async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
-            async with session.post(
-                EUFY_API_LOGIN,
-                headers={
-                    "category": "Home",
-                    "Accept": "*/*",
-                    "openudid": self.openudid,
-                    "Content-Type": "application/json",
-                    "clientType": "1",
-                    "User-Agent": "EufyHome-Android-3.1.3-753",
-                    "Connection": "keep-alive",
-                },
-                json={
-                    "email": self.username,
-                    "password": self.password,
-                    "client_id": "eufyhome-app",
-                    "client_secret": "GQCpr9dSp3uQpsOMgJ4xQ",
-                },
-            ) as response:
-                response_json = None
-                try:
-                    response_json = await response.json()
-                except Exception:
-                    pass
+        """Login to Eufy Cloud. Tries v2 (new Eufy app) first, falls back to v1."""
+        last_error: str | None = None
 
-                if response.status == 200 and response_json:
-                    if response_json.get("access_token"):
-                        _LOGGER.debug("eufyLogin successful")
-                        self.session = response_json
-                        return response_json
+        for config in _LOGIN_CONFIGS:
+            _LOGGER.debug(
+                "Attempting login via %s: %s", config["label"], config["url"]
+            )
+            async with aiohttp.ClientSession(timeout=_REQUEST_TIMEOUT) as session:
+                async with session.post(
+                    config["url"],
+                    headers={
+                        "category": "Home",
+                        "Accept": "*/*",
+                        "openudid": self.openudid,
+                        "Content-Type": "application/json",
+                        "clientType": "1",
+                        "User-Agent": "EufyHome-Android-3.1.3-753",
+                        "Connection": "keep-alive",
+                    },
+                    json={
+                        "email": self.username,
+                        "password": self.password,
+                        "client_id": config["client_id"],
+                        "client_secret": config["client_secret"],
+                    },
+                ) as response:
+                    response_json = None
+                    try:
+                        response_json = await response.json()
+                    except Exception:
+                        pass
 
-                body = response_json or await response.text()
-                _LOGGER.error("Login failed: %s %s", response.status, body)
-                return None
+                    if response.status == 200 and response_json:
+                        if response_json.get("access_token"):
+                            _LOGGER.info(
+                                "Login successful via %s", config["label"]
+                            )
+                            self.session = response_json
+                            return response_json
+
+                    body = response_json or await response.text()
+                    last_error = f"{config['label']}: {response.status} {body}"
+                    _LOGGER.debug(
+                        "Login attempt failed for %s: %s %s",
+                        config["label"],
+                        response.status,
+                        body,
+                    )
+
+        _LOGGER.error("All login attempts failed. Last error: %s", last_error)
+        return None
 
     async def get_user_info(self) -> dict[str, Any] | None:
         """Get User details."""
