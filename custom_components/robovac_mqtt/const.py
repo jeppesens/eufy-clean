@@ -9,6 +9,12 @@ DOMAIN: Final = "robovac_mqtt"
 VACS: Final = "vacs"
 DEVICES: Final = "devices"
 
+# Fired on the HA event bus whenever a raw DPS 179 (position/map) payload
+# arrives from the device. Allows external integrations to consume position
+# telemetry directly without depending on entity state propagation.
+# Event data: device_id, device_name, device_model, payload (raw base64 str).
+EVENT_DPS_179: Final = "robovac_mqtt_telemetry_179"
+
 # Eufy API URLs
 EUFY_API_BASE_URL: Final = "https://api.eufylife.com"
 EUFY_HOME_API_BASE_URL: Final = "https://home-api.eufylife.com"
