@@ -14,7 +14,12 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .api.cloud import EufyLogin, EufyLoginError
-from .const import DOMAIN
+from .const import (
+    CONF_LOCAL_DEVICES,
+    CONF_LOCAL_HOST,
+    CONF_LOCAL_VERSION,
+    DOMAIN,
+)
 from .coordinator import EufyCleanCoordinator
 
 PLATFORMS: list[Platform] = [
@@ -63,10 +68,32 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         len(all_devices),
     )
 
+    # Per-device local-Tuya overrides from options. The user enters the LAN
+    # address of each dock through the integration's options flow; we promote
+    # such devices from cloud-polled to direct local-push.
+    local_overrides: dict[str, dict] = entry.options.get(CONF_LOCAL_DEVICES, {})
+    if local_overrides:
+        _LOGGER.debug(
+            "Local Tuya overrides configured for: %s",
+            list(local_overrides.keys()),
+        )
+
     for device_info in all_devices:
         device_id = device_info.get("deviceId")
         if not device_id:
             continue
+        if (override := local_overrides.get(device_id)) and device_info.get("local_key"):
+            host = override.get(CONF_LOCAL_HOST, "").strip()
+            if host:
+                device_info = {
+                    **device_info,
+                    "connection_type": "local",
+                    "local_host": host,
+                    "local_version": override.get(CONF_LOCAL_VERSION, 3.3),
+                }
+                _LOGGER.info(
+                    "Device %s promoted to local Tuya (host=%s)", device_id, host
+                )
 
         _LOGGER.debug(
             "Found device: %s (%s)",

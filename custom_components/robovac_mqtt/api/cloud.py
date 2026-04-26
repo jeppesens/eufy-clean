@@ -126,7 +126,15 @@ class EufyLogin:
         )
 
     async def getCloudDevices(self) -> None:
-        """Fetch devices from Tuya Cloud and add those not already in MQTT list."""
+        """Fetch devices from Tuya Cloud and add those not already in MQTT list.
+
+        Per device the Tuya cloud returns ``localKey`` and the last-known
+        ``ip``. The local key is the credential needed to talk the Tuya v3
+        protocol on port 6668; the ``ip`` is the public address the dock used
+        to reach the cloud, which is rarely usable as a LAN target — the user
+        normally supplies the LAN address through the integration's options
+        (handled in __init__.py).
+        """
         if not self.tuya_client:
             return
 
@@ -150,7 +158,8 @@ class EufyLogin:
                 _LOGGER.debug("Cloud device %s: skipping (unknown model)", dev_id)
                 continue
 
-            dps = device.get("dps", {})
+            dps = self._coerce_dps(device.get("dps"))
+            local_key = device.get("localKey") or ""
             self.cloud_devices.append(
                 {
                     **model_info,
@@ -158,6 +167,11 @@ class EufyLogin:
                     "mqtt": False,
                     "dps": dps,
                     "softVersion": "",
+                    # Surface the local-Tuya credentials so the coordinator
+                    # (or user-supplied LAN address in options) can promote
+                    # the connection to direct local push.
+                    "local_key": local_key,
+                    "tuya_public_ip": device.get("ip") or "",
                 }
             )
 
@@ -167,6 +181,20 @@ class EufyLogin:
                 len(self.cloud_devices),
                 [d["deviceName"] for d in self.cloud_devices],
             )
+
+    @staticmethod
+    def _coerce_dps(value: Any) -> dict[str, Any]:
+        """Tuya cloud may return dps as a JSON string OR a dict — normalise."""
+        if isinstance(value, str):
+            try:
+                import json as _json  # local import to avoid module-top dep
+                parsed = _json.loads(value)
+                return parsed if isinstance(parsed, dict) else {}
+            except Exception:  # noqa: BLE001
+                return {}
+        if isinstance(value, dict):
+            return value
+        return {}
 
     async def getCloudDevice(self, device_id: str) -> dict[str, Any] | None:
         """Poll a cloud device's DPS via Tuya Cloud API.

@@ -19,6 +19,7 @@ from .api.cloud import EufyLogin
 from .api.commands import build_command
 from .api.legacy_commands import build_legacy_command
 from .api.legacy_parser import update_state_legacy
+from .api.local_tuya import LocalTuyaClient, LocalTuyaError
 from .api.parser import update_state
 from .const import DOMAIN
 from .models import VacuumState
@@ -49,8 +50,25 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         # API type determines parser/command builder
         self.api_type: str = device_info.get("apiType", "novel")
-        # Connection type determines transport (push vs poll)
-        self.connection_type: str = "mqtt" if device_info.get("mqtt", True) else "cloud"
+        # Connection type determines transport. Three options:
+        #   "mqtt"  — Anker AIOT MQTT (push, novel devices on the new Eufy app)
+        #   "local" — direct Tuya LAN socket (push, requires local_key + LAN reachability)
+        #   "cloud" — Tuya Cloud REST polling (legacy / fallback)
+        # Preserve historical default: mqtt-unspecified means mqtt (so MQTT
+        # devices, and tests that don't set the field, behave as before).
+        if device_info.get("connection_type"):
+            self.connection_type: str = device_info["connection_type"]
+        elif device_info.get("mqtt", True):
+            self.connection_type = "mqtt"
+        elif device_info.get("local_key") and device_info.get("local_host"):
+            self.connection_type = "local"
+        else:
+            self.connection_type = "cloud"
+
+        # Local Tuya credentials (only populated when connection_type=="local")
+        self._local_key: str | None = device_info.get("local_key")
+        self._local_host: str | None = device_info.get("local_host")
+        self._local_version: float = float(device_info.get("local_version", 3.3))
 
         update_interval = _CLOUD_POLL_INTERVAL if self.connection_type == "cloud" else None
 
@@ -66,7 +84,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             update_interval=update_interval,
         )
 
-        self.client: EufyCleanClient | None = None
+        self.client: EufyCleanClient | LocalTuyaClient | None = None
         self.data = VacuumState()
         self._consecutive_cloud_failures: int = 0
         self._base_poll_interval: timedelta | None = update_interval
@@ -112,8 +130,55 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         _LOGGER.debug("Initializing %s via %s", self.device_name, self.connection_type)
         if self.connection_type == "cloud":
             await self._initialize_cloud()
+        elif self.connection_type == "local":
+            await self._initialize_local()
         else:
             await self._initialize_mqtt()
+
+    async def _initialize_local(self) -> None:
+        """Initialize a direct local-Tuya socket connection.
+
+        Falls back to cloud polling if the local socket can't be opened —
+        the device may be on a different network segment, the local key may be
+        wrong, or the dock may be temporarily off-line.
+        """
+        if not self._local_key or not self._local_host:
+            _LOGGER.warning(
+                "Local Tuya requested for %s but local_key/host missing; "
+                "falling back to cloud polling",
+                self.device_name,
+            )
+            self.connection_type = "cloud"
+            self.update_interval = _CLOUD_POLL_INTERVAL
+            self._base_poll_interval = _CLOUD_POLL_INTERVAL
+            await self._initialize_cloud()
+            return
+
+        _LOGGER.info(
+            "Initializing local Tuya for %s (host=%s, version=%s)",
+            self.device_name, self._local_host, self._local_version,
+        )
+        self.client = LocalTuyaClient(
+            device_id=self.device_id,
+            local_key=self._local_key,
+            host=self._local_host,
+            version=self._local_version,
+        )
+        self.client.set_on_message(self._handle_mqtt_message)
+        try:
+            await self.client.connect()
+        except (LocalTuyaError, OSError, TimeoutError) as e:
+            _LOGGER.warning(
+                "Local Tuya connect failed for %s (%s); falling back to cloud polling",
+                self.device_name, e,
+            )
+            self.client = None
+            self.connection_type = "cloud"
+            self.update_interval = _CLOUD_POLL_INTERVAL
+            self._base_poll_interval = _CLOUD_POLL_INTERVAL
+            await self._initialize_cloud()
+            return
+        await self.async_load_storage()
 
     async def _initialize_mqtt(self) -> None:
         """Initialize MQTT connection."""
@@ -273,6 +338,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             if self.connection_type == "cloud":
                 await self.eufy_login.sendCloudCommand(self.device_id, command_dict)
             elif self.client:
+                # Both LocalTuyaClient and EufyCleanClient expose send_command.
                 await self.client.send_command(command_dict)
             else:
                 raise HomeAssistantError(

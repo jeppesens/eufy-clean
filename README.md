@@ -107,6 +107,37 @@ For exposing your Eufy vacuum to Apple Home, Google Home, or other Matter-compat
 3.  Search for "Eufy Robovac MQTT" and follow the setup flow.
 4.  Login with your Eufy App credentials.
 
+### Optional: Local Tuya transport (push, no 30 s polling)
+
+For devices reached over the **Tuya Cloud** path (legacy non-MQTT vacuums such
+as the S1 Pro / X8 Pro / RoboVac G-series — anything where the integration
+otherwise polls every 30 s) you can opt-in to a direct **LAN socket** on the
+dock instead. Updates then arrive within seconds of the device emitting them
+and continue to work while Eufy / Tuya cloud is unreachable.
+
+How to enable it:
+
+1.  Find the **LAN address** of your dock — DHCP reservation, your router's
+    device list, or a quick `nmap -sn 192.168.1.0/24`. The local key is
+    auto-supplied by the Tuya Cloud login, you don't need to extract it.
+2.  Go to Settings → Devices & Services → **Eufy Robovac MQTT** → **Configure**.
+3.  Enter the host (IP or DNS name) for each cloud-discovered vacuum and
+    pick the Tuya protocol version (3.3 fits most vacuums; try 3.4/3.5 if
+    your model is newer and 3.3 fails to connect).
+4.  Save. The integration reloads and switches that device to local push.
+
+If the local socket fails to open (wrong host, firewall, dock offline) the
+coordinator silently falls back to cloud polling, so the dashboard never goes
+unavailable just because the LAN address has shifted.
+
+> [!NOTE]
+> Live map and live X/Y position are **not** available over either Tuya
+> transport — Eufy delivers them through a separate encrypted P2P channel
+> (`eufy_mega` SDK) that no public reverse-engineering has cracked yet.
+> Everything else — vacuum/mop mode, water level, clean count, spot/zone/room
+> commands, station status, consumables, lifetime stats, all sensors —
+> works fine over both transports.
+
 ### Cleaning Scenes
 The integration provides a dynamic **Scene** select entity (under the Configuration category) that automatically populates with all **valid** scenes from your Eufy app. Selecting an option in the UI will immediately trigger that cleaning routine.
 

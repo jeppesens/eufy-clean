@@ -9,6 +9,12 @@ DOMAIN: Final = "robovac_mqtt"
 VACS: Final = "vacs"
 DEVICES: Final = "devices"
 
+# Config-entry options keys for the optional local-Tuya transport.
+# Stored as: options[CONF_LOCAL_DEVICES] = {device_id: {"host": "1.2.3.4", "version": 3.3}}
+CONF_LOCAL_DEVICES: Final = "local_devices"
+CONF_LOCAL_HOST: Final = "host"
+CONF_LOCAL_VERSION: Final = "version"
+
 # Eufy API URLs
 EUFY_API_BASE_URL: Final = "https://api.eufylife.com"
 EUFY_HOME_API_BASE_URL: Final = "https://home-api.eufylife.com"
