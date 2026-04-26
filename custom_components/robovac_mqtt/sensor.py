@@ -15,6 +15,8 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from ._orphan_cleanup import prune_orphan_entities
+
 from .const import ACCESSORY_MAX_LIFE, DOMAIN
 from .coordinator import EufyCleanCoordinator, VacuumState
 
@@ -119,17 +121,21 @@ async def async_setup_entry(
                 )
             )
 
-            # Water level sensor (Station Clean Water)
-            # Uses availability_fn to hide sensor on devices that don't report water level
+            # Dock clean-water tank percentage. Friendly name distinguishes
+            # this from select.robovac_water_level which sets the mop water
+            # intensity (Low/Medium/High). The unique_id is kept as
+            # "water_level" so existing entity_ids stay stable; only the
+            # display label changes.
             entities.append(
                 RoboVacSensor(
                     coordinator,
                     "water_level",
-                    "Water Level",
+                    "Dock Clean Water Tank",
                     lambda s: s.station_clean_water,
                     device_class=None,
                     unit=PERCENTAGE,
                     state_class=SensorStateClass.MEASUREMENT,
+                    icon="mdi:water-percent",
                     availability_fn=lambda s: "station_clean_water"
                     in s.received_fields,
                 )
@@ -150,21 +156,25 @@ async def async_setup_entry(
                 )
             )
 
-            # Active map ID sensor
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "active_map",
-                    "Active Map",
-                    lambda s: s.map_id,
-                    device_class=None,
-                    unit=None,
-                    state_class=None,
-                    icon="mdi:map-marker-path",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "map_id" in s.received_fields,
+            # Active map ID sensor — only populated by the MQTT/P2P transport.
+            # Tuya Cloud / local-Tuya don't carry MultiMapsManageResponse so
+            # the ID never arrives; skip the entity to avoid permanent
+            # `unavailable`.
+            if coordinator.connection_type == "mqtt":
+                entities.append(
+                    RoboVacSensor(
+                        coordinator,
+                        "active_map",
+                        "Active Map",
+                        lambda s: s.map_id,
+                        device_class=None,
+                        unit=None,
+                        state_class=None,
+                        icon="mdi:map-marker-path",
+                        category=EntityCategory.DIAGNOSTIC,
+                        availability_fn=lambda s: "map_id" in s.received_fields,
+                    )
                 )
-            )
 
             # Accessory Sensors
             accessories = [
@@ -215,6 +225,16 @@ async def async_setup_entry(
                         in s.received_fields,
                     )
                 )
+
+    # Prune registry orphans (e.g., active_map entity registered by an old
+    # build but no longer created on the Tuya transport).
+    prune_orphan_entities(
+        hass,
+        config_entry.entry_id,
+        coordinators,
+        added_unique_ids={e.unique_id for e in entities if e.unique_id},
+        platform="sensor",
+    )
 
     async_add_entities(entities)
 

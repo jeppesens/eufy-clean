@@ -33,6 +33,8 @@ def mock_coordinator():
     coordinator.async_send_command = AsyncMock()
     coordinator.build_device_command = MagicMock(return_value={"cmd": "val"})
     coordinator.last_update_success = True
+    # Manual room overrides default empty — falls through to coordinator.data.rooms
+    coordinator.room_name_overrides = {}
     return coordinator
 
 
