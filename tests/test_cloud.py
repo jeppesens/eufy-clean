@@ -107,3 +107,82 @@ def test_find_model_empty_product_code():
     assert result["deviceModel"] == "T2210"
     assert result["deviceName"] == "Kitchen Vacuum"
     assert result["invalid"] is False
+
+
+def test_find_model_aiot_fallback_when_v2_empty():
+    """When V2 device list is empty, fall back to AIOT data from get_device_list.
+
+    Reproduces the bug where accounts that only have devices registered through
+    the modern Eufy Clean app (not the legacy EufyHome app) get an empty V2
+    device list, causing every AIOT device to be marked invalid and filtered
+    out — leaving the integration with zero discovered vacuums.
+    """
+    login = _make_login(eufy_api_devices=[])
+
+    aiot_device = {
+        "device_sn": "ACN4A00F46300847",
+        "device_model": "T2081",
+        "device_name": "Robovac",
+        "alias_name": None,
+    }
+    result = login.findModel("ACN4A00F46300847", aiot_device=aiot_device)
+
+    assert result["deviceId"] == "ACN4A00F46300847"
+    assert result["deviceModel"] == "T2081"
+    assert result["deviceName"] == "Robovac"
+    assert result["invalid"] is False
+
+
+def test_find_model_aiot_fallback_prefers_alias_name():
+    """The AIOT fallback prefers alias_name (user-set) over device_name."""
+    login = _make_login(eufy_api_devices=[])
+
+    aiot_device = {
+        "device_sn": "DEV003",
+        "device_model": "T2080",
+        "device_name": "Robovac",
+        "alias_name": "Upstairs Vacuum",
+    }
+    result = login.findModel("DEV003", aiot_device=aiot_device)
+
+    assert result["deviceName"] == "Upstairs Vacuum"
+
+
+def test_find_model_aiot_fallback_invalid_without_model():
+    """When neither V2 nor AIOT supply a model code, the device stays invalid."""
+    login = _make_login(eufy_api_devices=[])
+
+    aiot_device = {
+        "device_sn": "DEV004",
+        "device_model": "",
+        "device_name": "Mystery Device",
+    }
+    result = login.findModel("DEV004", aiot_device=aiot_device)
+
+    assert result["deviceModel"] == ""
+    assert result["invalid"] is True
+
+
+def test_find_model_v2_takes_precedence_over_aiot():
+    """When V2 has the device, its richer metadata wins over the AIOT fallback."""
+    login = _make_login(
+        eufy_api_devices=[
+            {
+                "id": "DEV005",
+                "product": {"product_code": "T2261xx", "name": "X8 Pro"},
+                "alias_name": "From V2",
+                "device_model": "T2261",
+            }
+        ]
+    )
+
+    aiot_device = {
+        "device_sn": "DEV005",
+        "device_model": "T2081",
+        "device_name": "From AIOT",
+    }
+    result = login.findModel("DEV005", aiot_device=aiot_device)
+
+    assert result["deviceModel"] == "T2261"
+    assert result["deviceName"] == "From V2"
+    assert result["deviceModelName"] == "X8 Pro"
