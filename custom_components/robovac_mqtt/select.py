@@ -14,6 +14,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from ._orphan_cleanup import prune_orphan_entities
 from .const import (
     DOMAIN,
     DRY_DURATION_MAP,
@@ -129,6 +130,16 @@ async def async_setup_entry(
                     icon="mdi:delete-restore",
                 )
             )
+
+    # Prune registry orphans (e.g., scene/clean_room entities registered by an
+    # older build but no longer created on Tuya transports).
+    prune_orphan_entities(
+        hass,
+        config_entry.entry_id,
+        coordinators,
+        added_unique_ids={e.unique_id for e in entities if e.unique_id},
+        platform="select",
+    )
 
     async_add_entities(entities)
 
