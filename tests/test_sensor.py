@@ -170,7 +170,7 @@ async def test_legacy_coordinator_excludes_novel_sensors():
 
 @pytest.mark.asyncio
 async def test_novel_coordinator_creates_all_sensors():
-    """Novel devices should get all sensors including accessories."""
+    """Novel + MQTT devices should get all sensors including accessories."""
     from custom_components.robovac_mqtt.sensor import async_setup_entry
 
     coordinator = MagicMock()
@@ -178,6 +178,7 @@ async def test_novel_coordinator_creates_all_sensors():
     coordinator.device_name = "Novel Vac"
     coordinator.device_model = "T2261"
     coordinator.api_type = "novel"
+    coordinator.connection_type = "mqtt"
     coordinator.data = VacuumState()
     coordinator.last_update_success = True
 
@@ -219,3 +220,47 @@ async def test_novel_coordinator_creates_all_sensors():
         "mop_remaining",
     ]:
         assert f"novel_dev_{suffix}" in entity_ids
+
+
+@pytest.mark.asyncio
+async def test_novel_cloud_or_local_skips_p2p_only_sensors():
+    """Novel devices on Tuya transports (no P2P) should skip active_map sensor."""
+    from custom_components.robovac_mqtt.sensor import async_setup_entry
+
+    for transport in ("cloud", "local"):
+        coordinator = MagicMock()
+        coordinator.device_id = f"novel_{transport}"
+        coordinator.device_name = f"Novel Vac ({transport})"
+        coordinator.device_model = "T2080A"
+        coordinator.api_type = "novel"
+        coordinator.connection_type = transport
+        coordinator.data = VacuumState()
+        coordinator.last_update_success = True
+
+        hass = MagicMock()
+        config_entry = MagicMock()
+        config_entry.entry_id = f"entry_{transport}"
+        hass.data = {
+            "robovac_mqtt": {
+                f"entry_{transport}": {"coordinators": [coordinator]}
+            }
+        }
+
+        added_entities = []
+        await async_setup_entry(hass, config_entry, added_entities.extend)
+        entity_ids = [e.unique_id for e in added_entities]
+
+        # Should have 4 universal + 4 novel non-P2P + 6 accessories = 14 total
+        # (active_map skipped — it depends on MQTT/P2P data)
+        assert len(added_entities) == 14, (
+            f"transport={transport}: got {len(added_entities)} entities"
+        )
+        assert f"novel_{transport}_active_map" not in entity_ids
+        # Other novel sensors still present
+        for suffix in [
+            "cleaning_time",
+            "cleaning_area",
+            "water_level",
+            "dock_status",
+        ]:
+            assert f"novel_{transport}_{suffix}" in entity_ids

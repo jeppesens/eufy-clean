@@ -79,8 +79,13 @@ async def async_setup_entry(
             entities.append(WaterLevelSelectEntity(coordinator))
             entities.append(MopIntensitySelectEntity(coordinator))
             entities.append(CleaningIntensitySelectEntity(coordinator))
-            entities.append(SceneSelectEntity(coordinator))
-            entities.append(RoomSelectEntity(coordinator))
+            # Scene + Room data are delivered through Eufy's encrypted P2P
+            # channel which only the MQTT transport receives. On Tuya Cloud
+            # / local Tuya transports these entities never populate, so skip
+            # them rather than expose permanently-`unknown` UI.
+            if coordinator.connection_type == "mqtt":
+                entities.append(SceneSelectEntity(coordinator))
+                entities.append(RoomSelectEntity(coordinator))
 
             entities.append(
                 DockSelectEntity(

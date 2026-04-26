@@ -150,21 +150,25 @@ async def async_setup_entry(
                 )
             )
 
-            # Active map ID sensor
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "active_map",
-                    "Active Map",
-                    lambda s: s.map_id,
-                    device_class=None,
-                    unit=None,
-                    state_class=None,
-                    icon="mdi:map-marker-path",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "map_id" in s.received_fields,
+            # Active map ID sensor — only populated by the MQTT/P2P transport.
+            # Tuya Cloud / local-Tuya don't carry MultiMapsManageResponse so
+            # the ID never arrives; skip the entity to avoid permanent
+            # `unavailable`.
+            if coordinator.connection_type == "mqtt":
+                entities.append(
+                    RoboVacSensor(
+                        coordinator,
+                        "active_map",
+                        "Active Map",
+                        lambda s: s.map_id,
+                        device_class=None,
+                        unit=None,
+                        state_class=None,
+                        icon="mdi:map-marker-path",
+                        category=EntityCategory.DIAGNOSTIC,
+                        availability_fn=lambda s: "map_id" in s.received_fields,
+                    )
                 )
-            )
 
             # Accessory Sensors
             accessories = [
