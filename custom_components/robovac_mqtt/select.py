@@ -80,12 +80,18 @@ async def async_setup_entry(
             entities.append(WaterLevelSelectEntity(coordinator))
             entities.append(MopIntensitySelectEntity(coordinator))
             entities.append(CleaningIntensitySelectEntity(coordinator))
-            # Scene + Room data are delivered through Eufy's encrypted P2P
-            # channel which only the MQTT transport receives. On Tuya Cloud
-            # / local Tuya transports these entities never populate, so skip
-            # them rather than expose permanently-`unknown` UI.
+            # Scene data is delivered through Eufy's encrypted P2P channel
+            # which only the MQTT transport receives — skip on Tuya
+            # transports rather than expose permanently-`unknown` UI.
             if coordinator.connection_type == "mqtt":
                 entities.append(SceneSelectEntity(coordinator))
+            # Room list is normally P2P-only too, but the user can supply a
+            # manual {room_id: name} override through the options flow which
+            # works on every transport.
+            if (
+                coordinator.connection_type == "mqtt"
+                or coordinator.room_name_overrides
+            ):
                 entities.append(RoomSelectEntity(coordinator))
 
             entities.append(
@@ -325,7 +331,18 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
 
 class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
-    """Select entity for choosing and triggering room cleaning."""
+    """Select entity for choosing and triggering room cleaning.
+
+    Two data sources for the room list, in priority order:
+
+    1. ``coordinator.room_name_overrides`` — manual ``{room_id: name}`` mapping
+       supplied via the options flow. Used on transports that can't deliver
+       the room list from the device (Tuya cloud / local Tuya), and also
+       useful as an MQTT-side override if the device's auto-supplied names
+       are wrong or unfriendly.
+    2. ``coordinator.data.rooms`` — names received via the MQTT/P2P
+       MultiMapsManageResponse / RoomParams stream.
+    """
 
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize room select."""
@@ -338,11 +355,26 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
         self._attr_device_info = coordinator.device_info
 
+    def _override_rooms(self) -> list[dict[str, Any]]:
+        """Return manual overrides as a [{id, name}] list (sorted by ID for stable ordering)."""
+        overrides = self.coordinator.room_name_overrides
+        if not overrides:
+            return []
+        return [
+            {"id": rid, "name": name}
+            for rid, name in sorted(overrides.items())
+        ]
+
+    def _active_rooms(self) -> list[dict[str, Any]]:
+        """Choose between override and P2P-derived rooms (overrides win)."""
+        if rooms := self._override_rooms():
+            return rooms
+        return [r for r in self.coordinator.data.rooms if "name" in r]
+
     @property
     def options(self) -> list[str]:
         """Return available rooms."""
-        names = [r["name"] for r in self.coordinator.data.rooms if "name" in r]
-        return deduplicate_names(names)
+        return deduplicate_names([r["name"] for r in self._active_rooms()])
 
     @property
     def current_option(self) -> str | None:
@@ -351,6 +383,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
+        rooms = self._active_rooms()
         # Match by index in the deduplicated options list to handle duplicate names
         try:
             idx = self.options.index(option)
@@ -358,12 +391,11 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             _LOGGER.error("Room '%s' not found", option)
             return
 
-        named_rooms = [r for r in self.coordinator.data.rooms if "name" in r]
-        if idx >= len(named_rooms):
+        if idx >= len(rooms):
             _LOGGER.error("Room '%s' index out of range", option)
             return
 
-        room_id = named_rooms[idx]["id"]
+        room_id = rooms[idx]["id"]
         # Use discovered map_id if available, otherwise fallback to 1
         map_id = self.coordinator.data.map_id or 1
         _LOGGER.info(

@@ -16,6 +16,7 @@ from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
+    CONF_ROOM_NAMES,
     DOMAIN,
     VACS,
 )
@@ -184,9 +185,15 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Show one form per cloud-discovered device with its current LAN host."""
-        from homeassistant.const import CONF_HOST
-        from voluptuous import Optional as VOptional, Coerce, In
+        """Show one form per device. Per-device fields:
+
+        - ``__host`` / ``__version``: optional local-Tuya promotion (only
+          shown for devices for which Tuya Cloud handed us a local key).
+        - ``__rooms``: optional ``id: name`` lines (one room per line) used
+          when the device's auto-supplied room list isn't available — see
+          ``RoomSelectEntity`` for how the override is applied.
+        """
+        from voluptuous import Optional as VOptional, In
 
         # Pull live device list out of the running coordinator data so the
         # form lists exactly the devices the user can target. If the
@@ -194,56 +201,108 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         runtime = self.hass.data.get(DOMAIN, {}).get(self._entry_ref.entry_id, {})
         coordinators = runtime.get("coordinators", []) if runtime else []
         eligible = [
-            (c.device_id, c.device_name, c.device_model)
+            (c.device_id, c.device_name, c.device_model, c)
             for c in coordinators
             if getattr(c, "_local_key", None)  # only devices Tuya gave us a key for
             or self._entry_ref.options.get(CONF_LOCAL_DEVICES, {}).get(c.device_id)
         ]
+        # Coordinators without a local key still benefit from the room
+        # override field, so include them too.
+        seen = {dev_id for dev_id, *_ in eligible}
+        for c in coordinators:
+            if c.device_id not in seen:
+                eligible.append((c.device_id, c.device_name, c.device_model, c))
 
         existing: dict[str, dict] = self._entry_ref.options.get(CONF_LOCAL_DEVICES, {})
 
         if user_input is not None:
             new_overrides: dict[str, dict] = {}
-            for dev_id, _name, _model in eligible:
-                host_field = f"{dev_id}__host"
-                ver_field = f"{dev_id}__version"
-                host = (user_input.get(host_field) or "").strip()
-                if host:
-                    new_overrides[dev_id] = {
-                        CONF_LOCAL_HOST: host,
-                        CONF_LOCAL_VERSION: float(
-                            user_input.get(ver_field, 3.3) or 3.3
-                        ),
-                    }
+            for dev_id, _name, _model, coord in eligible:
+                host = (user_input.get(f"{dev_id}__host") or "").strip()
+                rooms_raw = user_input.get(f"{dev_id}__rooms") or ""
+                rooms_parsed = _parse_rooms_text(rooms_raw)
+                # Only persist a per-device entry if the user supplied
+                # something meaningful — saves churn in the storage file.
+                if not host and not rooms_parsed:
+                    continue
+                entry: dict[str, Any] = {}
+                if host and getattr(coord, "_local_key", None):
+                    entry[CONF_LOCAL_HOST] = host
+                    entry[CONF_LOCAL_VERSION] = float(
+                        user_input.get(f"{dev_id}__version", 3.3) or 3.3
+                    )
+                if rooms_parsed:
+                    entry[CONF_ROOM_NAMES] = rooms_parsed
+                new_overrides[dev_id] = entry
             return self.async_create_entry(
                 title="",
                 data={**self._entry_ref.options, CONF_LOCAL_DEVICES: new_overrides},
             )
 
         if not eligible:
-            # Nothing to configure — show an empty form so the user understands.
             return self.async_show_form(
                 step_id="init",
                 data_schema=Schema({}),
-                description_placeholders={"info": "no_local_capable_devices"},
+                description_placeholders={"info": "no_devices"},
             )
 
         schema_dict: dict = {}
-        for dev_id, name, model in eligible:
+        for dev_id, name, model, coord in eligible:
             current = existing.get(dev_id, {})
             label = f"{name} ({model}) — {dev_id[:8]}"
+            # Only offer host/version on devices we actually have a local key for.
+            if getattr(coord, "_local_key", None):
+                schema_dict[
+                    VOptional(
+                        f"{dev_id}__host",
+                        default=current.get(CONF_LOCAL_HOST, ""),
+                        description={"suggested_value": label},
+                    )
+                ] = cv.string
+                schema_dict[
+                    VOptional(
+                        f"{dev_id}__version",
+                        default=current.get(CONF_LOCAL_VERSION, 3.3),
+                    )
+                ] = In([3.1, 3.3, 3.4, 3.5])
             schema_dict[
                 VOptional(
-                    f"{dev_id}__host",
-                    default=current.get(CONF_LOCAL_HOST, ""),
-                    description={"suggested_value": label},
+                    f"{dev_id}__rooms",
+                    default=_format_rooms_text(current.get(CONF_ROOM_NAMES) or {}),
                 )
             ] = cv.string
-            schema_dict[
-                VOptional(
-                    f"{dev_id}__version",
-                    default=current.get(CONF_LOCAL_VERSION, 3.3),
-                )
-            ] = In([3.1, 3.3, 3.4, 3.5])
 
         return self.async_show_form(step_id="init", data_schema=Schema(schema_dict))
+
+
+def _parse_rooms_text(text: str) -> dict[int, str]:
+    """Parse a user-entered "id: name" multi-line string into a dict.
+
+    Lines starting with ``#`` are treated as comments. Whitespace and
+    duplicate IDs are tolerated; the LAST occurrence of an ID wins. Lines
+    that don't fit ``<int>: <text>`` are silently ignored — we'd rather
+    accept loose input than reject the whole form.
+    """
+    rooms: dict[int, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        id_part, _, name_part = line.partition(":")
+        try:
+            room_id = int(id_part.strip())
+        except ValueError:
+            continue
+        name = name_part.strip()
+        if name:
+            rooms[room_id] = name
+    return rooms
+
+
+def _format_rooms_text(rooms: dict[int, str]) -> str:
+    """Render the saved override dict back as the textarea default."""
+    if not rooms:
+        return ""
+    return "\n".join(f"{rid}: {name}" for rid, name in sorted(rooms.items()))

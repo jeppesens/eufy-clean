@@ -69,6 +69,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._local_key: str | None = device_info.get("local_key")
         self._local_host: str | None = device_info.get("local_host")
         self._local_version: float = float(device_info.get("local_version", 3.3))
+        # Manual room ID -> name overrides for transports that can't deliver
+        # the room list from the device (Tuya cloud / local Tuya). Empty dict
+        # = no overrides, RoomSelectEntity falls back to P2P-derived names.
+        self.room_name_overrides: dict[int, str] = dict(
+            device_info.get("room_name_overrides") or {}
+        )
 
         update_interval = _CLOUD_POLL_INTERVAL if self.connection_type == "cloud" else None
 

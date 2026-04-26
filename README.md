@@ -138,6 +138,31 @@ unavailable just because the LAN address has shifted.
 > commands, station status, consumables, lifetime stats, all sensors —
 > works fine over both transports.
 
+### Optional: Manual room name overrides
+
+The room list (and the `select.robovac_clean_room` entity that targets it)
+normally comes from the same encrypted P2P channel as the map, so on Tuya
+transports the dropdown is empty. If you'd like to drive room cleaning from
+HA anyway, you can supply your own `room_id: name` mapping:
+
+1.  Settings → Devices & Services → **Eufy Robovac MQTT** → **Configure**.
+2.  In the **Rooms** field for your vacuum, enter one room per line:
+    ```
+    1: Lounge
+    2: Kitchen
+    3: Playroom
+    ```
+3.  Save. The `Clean Room` select entity reappears with your names as the
+    options. Selecting one fires `room_clean` with the matching ID.
+
+Finding the IDs is iterative until someone wires up MQTT-side discovery for
+Tuya devices: try `1, 2, 3, ...` and watch which room the vacuum starts on
+each, then adjust the mapping. The IDs are stable across sessions (they
+change only when the dock re-maps the floor plan).
+
+Overrides also work on the MQTT transport — useful if the auto-discovered
+names from the device aren't friendly enough for your dashboard.
+
 ### Cleaning Scenes
 The integration provides a dynamic **Scene** select entity (under the Configuration category) that automatically populates with all **valid** scenes from your Eufy app. Selecting an option in the UI will immediately trigger that cleaning routine.
 

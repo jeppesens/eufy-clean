@@ -18,6 +18,7 @@ from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
+    CONF_ROOM_NAMES,
     DOMAIN,
 )
 from .coordinator import EufyCleanCoordinator
@@ -82,18 +83,38 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         device_id = device_info.get("deviceId")
         if not device_id:
             continue
-        if (override := local_overrides.get(device_id)) and device_info.get("local_key"):
-            host = override.get(CONF_LOCAL_HOST, "").strip()
-            if host:
-                device_info = {
-                    **device_info,
-                    "connection_type": "local",
-                    "local_host": host,
-                    "local_version": override.get(CONF_LOCAL_VERSION, 3.3),
-                }
+        if override := local_overrides.get(device_id):
+            extras: dict = {}
+            host = (override.get(CONF_LOCAL_HOST) or "").strip()
+            if host and device_info.get("local_key"):
+                extras["connection_type"] = "local"
+                extras["local_host"] = host
+                extras["local_version"] = override.get(CONF_LOCAL_VERSION, 3.3)
                 _LOGGER.info(
                     "Device %s promoted to local Tuya (host=%s)", device_id, host
                 )
+            # Room ID → name overrides apply to any transport.
+            # JSON storage stringifies int keys, so coerce back to int for
+            # correct sort order and so downstream protobuf builders get the
+            # right type.
+            if room_overrides := override.get(CONF_ROOM_NAMES):
+                coerced: dict[int, str] = {}
+                for raw_id, name in room_overrides.items():
+                    try:
+                        coerced[int(raw_id)] = str(name)
+                    except (TypeError, ValueError):
+                        _LOGGER.warning(
+                            "Device %s: ignoring non-integer room id %r",
+                            device_id, raw_id,
+                        )
+                if coerced:
+                    extras["room_name_overrides"] = coerced
+                    _LOGGER.info(
+                        "Device %s using %d manual room name override(s)",
+                        device_id, len(coerced),
+                    )
+            if extras:
+                device_info = {**device_info, **extras}
 
         _LOGGER.debug(
             "Found device: %s (%s)",
