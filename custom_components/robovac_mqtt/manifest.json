@@ -9,5 +9,5 @@
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/jeppesens/eufy-clean/issues",
   "requirements": [],
-  "version": "1.9.0"
+  "version": "1.9.1"
 }

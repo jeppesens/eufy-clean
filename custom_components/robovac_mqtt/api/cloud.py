@@ -49,7 +49,7 @@ class EufyLogin:
         devices = await self.eufyApi.get_device_list()
         devices = [
             {
-                **self.findModel(device["device_sn"]),
+                **self.findModel(device["device_sn"], aiot_device=device),
                 "apiType": self.checkApiType(device.get("dps", {})),
                 "mqtt": True,
                 "dps": device.get("dps", {}),
@@ -71,7 +71,7 @@ class EufyLogin:
             return "novel"
         return "legacy"
 
-    def findModel(self, deviceId: str):
+    def findModel(self, deviceId: str, aiot_device: dict | None = None):
         device = next((d for d in self.eufy_api_devices if d["id"] == deviceId), None)
 
         if device:
@@ -84,6 +84,23 @@ class EufyLogin:
                 or device.get("name"),
                 "deviceModelName": device.get("product", {}).get("name"),
                 "invalid": False,
+            }
+
+        # Fallback: accounts where the V2 endpoint returns no metadata for a
+        # device (e.g. devices added through the modern Eufy Clean app rather
+        # than the legacy EufyHome app) still get a usable entry from the
+        # AIOT device-list response, which carries device_model and
+        # device_name directly.
+        if aiot_device:
+            model_code = (aiot_device.get("device_model") or "")[:5]
+            return {
+                "deviceId": deviceId,
+                "deviceModel": model_code,
+                "deviceName": aiot_device.get("alias_name")
+                or aiot_device.get("device_name")
+                or "Eufy Robovac",
+                "deviceModelName": None,
+                "invalid": not bool(model_code),
             }
 
         return {
