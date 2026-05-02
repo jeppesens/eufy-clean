@@ -104,8 +104,8 @@ async def test_vacuum_entity_with_segment_detection(
     assert callback_arg.__func__ is RoboVacMQTTEntity._check_for_segment_changes
 
 
-def test_last_seen_segments_property(mock_coordinator, mock_config_entry):
-    """Test last_seen_segments property."""
+def test_stored_last_seen_segments_property(mock_coordinator, mock_config_entry):
+    """Test stored_last_seen_segments property."""
     # Setup stored segments
     stored_segments = [
         {"id": "1", "name": "Living Room", "group": None},
@@ -115,7 +115,7 @@ def test_last_seen_segments_property(mock_coordinator, mock_config_entry):
 
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
-    last_seen = entity.last_seen_segments
+    last_seen = entity.stored_last_seen_segments
     assert len(last_seen) == 2
     assert last_seen[0].id == "1"
     assert last_seen[0].name == "Living Room"
@@ -123,13 +123,15 @@ def test_last_seen_segments_property(mock_coordinator, mock_config_entry):
     assert last_seen[1].name == "Kitchen"
 
 
-def test_last_seen_segments_none_when_not_stored(mock_coordinator, mock_config_entry):
-    """Test last_seen_segments returns None when not stored."""
+def test_stored_last_seen_segments_none_when_not_stored(
+    mock_coordinator, mock_config_entry
+):
+    """Test stored_last_seen_segments returns None when not stored."""
     mock_coordinator.last_seen_segments = None
 
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
-    assert entity.last_seen_segments is None
+    assert entity.stored_last_seen_segments is None
 
 
 @patch("custom_components.robovac_mqtt.vacuum.async_create_issue")
@@ -273,7 +275,7 @@ async def test_storage_load_on_coordinator_init(mock_coordinator, mock_config_en
         entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
         # Verify entity can access the loaded segments
-        last_seen = entity.last_seen_segments
+        last_seen = entity.stored_last_seen_segments
         assert len(last_seen) == 2
         assert last_seen[0].id == "1"
         assert last_seen[0].name == "Living Room"
@@ -333,7 +335,7 @@ async def test_segment_change_detection_end_to_end():
     # Initially no rooms
     coordinator.data.rooms = []
     entity = RoboVacMQTTEntity(coordinator, config_entry=MagicMock())
-    assert entity.last_seen_segments is None
+    assert entity.stored_last_seen_segments is None
 
     # Simulate rooms appearing for the first time
     coordinator.data.rooms = [
@@ -347,8 +349,8 @@ async def test_segment_change_detection_end_to_end():
         await asyncio.sleep(0)
         mock_create_issue.assert_not_called()
 
-    assert entity.last_seen_segments is not None
-    assert len(entity.last_seen_segments) == 2
+    assert entity.stored_last_seen_segments is not None
+    assert len(entity.stored_last_seen_segments) == 2
 
     # No change — should not raise
     with patch.object(entity, "async_create_segments_issue") as mock_create_issue:
@@ -395,7 +397,7 @@ async def test_backward_compatibility_no_config_entry():
     # Create entity without config entry
     entity = RoboVacMQTTEntity(coordinator)
 
-    assert entity.last_seen_segments is None
+    assert entity.stored_last_seen_segments is None
 
     # Should not create issues when no config entry
     with patch(
