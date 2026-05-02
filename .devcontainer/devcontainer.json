@@ -1,7 +1,7 @@
 // See https://aka.ms/vscode-remote/devcontainer.json for format details.
 {
 	"name": "Eufy Clean Dev",
-	"image": "mcr.microsoft.com/devcontainers/python:3.13",
+	"image": "mcr.microsoft.com/devcontainers/python:3.14",
 	"postCreateCommand": "pip3 install --user pre-commit && pre-commit install",
 	"customizations": {
 		"vscode": {
