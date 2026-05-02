@@ -19,7 +19,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api.client import EufyCleanClient
 from .api.cloud import EufyLogin
 from .api.parser import update_state
-from .const import DOMAIN
+from .const import DOMAIN, EVENT_DPS_179
 from .models import VacuumState
 
 _LOGGER = logging.getLogger(__name__)
@@ -125,6 +125,26 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 payload_data = json.loads(payload_data)
 
             if dps := payload_data.get("data"):
+                # Fire raw DPS 179 onto the HA event bus before any parsing so
+                # external integrations can consume position telemetry directly.
+                raw_179 = dps.get("179")
+                if isinstance(raw_179, str):
+                    try:
+                        self.hass.bus.async_fire(
+                            EVENT_DPS_179,
+                            {
+                                "device_id": self.device_id,
+                                "device_name": self.device_name,
+                                "device_model": self.device_model,
+                                "payload": raw_179,
+                            },
+                        )
+                    except Exception:
+                        _LOGGER.exception(
+                            "Failed to fire DPS 179 event for %s",
+                            self.device_name,
+                        )
+
                 # Calculate new state based on connection
                 new_state, changes = update_state(self.data, dps)
 
