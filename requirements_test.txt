@@ -1,4 +1,4 @@
-pytest-homeassistant-custom-component>=0.13.102
+pytest-homeassistant-custom-component>=0.13.325
 pylint
 mypy
 types-requests

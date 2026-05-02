@@ -165,7 +165,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
     def _initialize_last_seen_segments(self) -> None:
         """Initialize last seen segments if not already stored and segments are available."""
-        if self.last_seen_segments is None:
+        if self.stored_last_seen_segments is None:
             current_segments = self._get_room_segments()
             if current_segments:
                 self._store_last_seen_segments(current_segments)
@@ -460,7 +460,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         return self._get_room_segments()
 
     @property
-    def last_seen_segments(self) -> list[Segment] | None:
+    def stored_last_seen_segments(self) -> list[Segment] | None:
         """Return segments as seen by the user, when last mapping the areas."""
         stored_segments = self.coordinator.last_seen_segments
         if stored_segments is None:
@@ -548,7 +548,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             # Cannot create issues without config entry
             return
         current_segments = self._get_room_segments()
-        last_seen = self.last_seen_segments
+        last_seen = self.stored_last_seen_segments
 
         if last_seen is None:
             # No previous mapping stored — silently record the baseline so future
