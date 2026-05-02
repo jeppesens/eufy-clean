@@ -26,6 +26,11 @@ from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
+# Sentinel option shown in Scene/Clean Room selects when nothing is actively
+# running. Avoids the default "Unknown" state in the more-info card and makes
+# the "no current selection" case explicit. Selecting it is a no-op.
+_IDLE_OPTION = "Idle"
+
 
 def _format_option_label(item: dict[str, Any], default_name: str) -> str:
     """Format a select option label as '<name> (ID: <id>)'."""
@@ -259,7 +264,9 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available scenes."""
-        return [_format_option_label(s, "Scene") for s in self.coordinator.data.scenes]
+        return [_IDLE_OPTION] + [
+            _format_option_label(s, "Scene") for s in self.coordinator.data.scenes
+        ]
 
     @property
     def current_option(self) -> str | None:
@@ -274,10 +281,13 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             if self.coordinator.data.current_scene_name:
                 return f"{self.coordinator.data.current_scene_name} (ID: {current_id})"
 
-        return None
+        return _IDLE_OPTION
 
     async def async_select_option(self, option: str) -> None:
         """Trigger the selected scene."""
+        if option == _IDLE_OPTION:
+            return
+
         scenes = self.coordinator.data.scenes
         scene = next(
             (s for s in scenes if _format_option_label(s, "Scene") == option),
@@ -313,15 +323,20 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available rooms."""
-        return [_format_option_label(r, "Room") for r in self.coordinator.data.rooms]
+        return [_IDLE_OPTION] + [
+            _format_option_label(r, "Room") for r in self.coordinator.data.rooms
+        ]
 
     @property
     def current_option(self) -> str | None:
         """Room selection is an action trigger."""
-        return None
+        return _IDLE_OPTION
 
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
+        if option == _IDLE_OPTION:
+            return
+
         rooms = self.coordinator.data.rooms
         room = next(
             (r for r in rooms if _format_option_label(r, "Room") == option),

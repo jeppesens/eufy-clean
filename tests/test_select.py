@@ -150,8 +150,8 @@ async def test_scene_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Scene"
-    assert entity.options == ["Scene 1 (ID: 1)", "Scene 2 (ID: 2)"]
-    assert entity.current_option is None
+    assert entity.options == ["Idle", "Scene 1 (ID: 1)", "Scene 2 (ID: 2)"]
+    assert entity.current_option == "Idle"
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
         mock_build.return_value = {"cmd": "scene_cmd"}
@@ -161,6 +161,25 @@ async def test_scene_select_entity(mock_coordinator):
         mock_build.assert_called_with("scene_clean", scene_id=2)
         mock_coordinator.async_send_command.assert_called_with({"cmd": "scene_cmd"})
         mock_coordinator.set_active_scene.assert_called_with(2, "Scene 2")
+
+
+@pytest.mark.asyncio
+async def test_scene_select_idle_option_is_noop(mock_coordinator):
+    """Selecting the Idle sentinel must not dispatch a command."""
+    mock_coordinator.data.scenes = [
+        {"id": 1, "name": "Scene 1", "type": 1},
+    ]
+
+    entity = SceneSelectEntity(mock_coordinator)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+
+    with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
+        await entity.async_select_option("Idle")
+
+    mock_build.assert_not_called()
+    mock_coordinator.async_send_command.assert_not_called()
+    mock_coordinator.set_active_scene.assert_not_called()
 
 
 @pytest.mark.asyncio
