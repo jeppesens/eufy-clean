@@ -1,0 +1,7 @@
+apk/
+output/
+.git/
+*.apk
+README.md
+docker-compose.yml
+.dockerignore
