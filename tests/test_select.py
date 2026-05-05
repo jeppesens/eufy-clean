@@ -137,6 +137,9 @@ async def test_dock_select_entity_async(mock_coordinator):
         mock_coordinator.async_send_command.assert_called_with({"cmd": "test_cmd"})
 
 
+_STATUS_OPTIONS_FIXTURE = ["Idle", "Cleaning", "Returning", "Paused", "Error"]
+
+
 @pytest.mark.asyncio
 async def test_scene_select_entity(mock_coordinator):
     """Test SceneSelectEntity."""
@@ -150,7 +153,11 @@ async def test_scene_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Scene"
-    assert entity.options == ["Idle", "Scene 1 (ID: 1)", "Scene 2 (ID: 2)"]
+    assert (
+        entity.options
+        == _STATUS_OPTIONS_FIXTURE + ["Scene 1 (ID: 1)", "Scene 2 (ID: 2)"]
+    )
+    # VacuumState defaults activity to "idle" → renders as "Idle".
     assert entity.current_option == "Idle"
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
@@ -163,23 +170,78 @@ async def test_scene_select_entity(mock_coordinator):
         mock_coordinator.set_active_scene.assert_called_with(2, "Scene 2")
 
 
+@pytest.mark.parametrize(
+    "activity,expected",
+    [
+        ("idle", "Idle"),
+        ("docked", "Idle"),
+        ("charging", "Idle"),
+        ("cleaning", "Cleaning"),
+        ("returning", "Returning"),
+        ("paused", "Paused"),
+        ("error", "Error"),
+        ("totally_unknown_state", None),
+    ],
+)
+def test_scene_select_current_option_mirrors_activity(
+    mock_coordinator, activity, expected
+):
+    """When no scene is active, current_option mirrors the vacuum activity."""
+    mock_coordinator.data.scenes = [{"id": 1, "name": "Scene 1", "type": 1}]
+    mock_coordinator.data.current_scene_id = 0
+    mock_coordinator.data.activity = activity
+
+    entity = SceneSelectEntity(mock_coordinator)
+    assert entity.current_option == expected
+
+
+def test_room_select_current_option_mirrors_activity(mock_coordinator):
+    """RoomSelectEntity surfaces the vacuum activity as its current option."""
+    mock_coordinator.data.rooms = [{"id": 10, "name": "Kitchen"}]
+    mock_coordinator.data.activity = "cleaning"
+
+    entity = RoomSelectEntity(mock_coordinator)
+    assert entity.current_option == "Cleaning"
+
+
 @pytest.mark.asyncio
-async def test_scene_select_idle_option_is_noop(mock_coordinator):
-    """Selecting the Idle sentinel must not dispatch a command."""
-    mock_coordinator.data.scenes = [
-        {"id": 1, "name": "Scene 1", "type": 1},
-    ]
+@pytest.mark.parametrize(
+    "sentinel", ["Idle", "Cleaning", "Returning", "Paused", "Error"]
+)
+async def test_scene_select_status_sentinels_are_noop(mock_coordinator, sentinel):
+    """Selecting any status sentinel must not dispatch a command."""
+    mock_coordinator.data.scenes = [{"id": 1, "name": "Scene 1", "type": 1}]
 
     entity = SceneSelectEntity(mock_coordinator)
     entity.hass = MagicMock()
     entity.async_write_ha_state = MagicMock()
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
-        await entity.async_select_option("Idle")
+        await entity.async_select_option(sentinel)
 
     mock_build.assert_not_called()
     mock_coordinator.async_send_command.assert_not_called()
     mock_coordinator.set_active_scene.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "sentinel", ["Idle", "Cleaning", "Returning", "Paused", "Error"]
+)
+async def test_room_select_status_sentinels_are_noop(mock_coordinator, sentinel):
+    """Selecting any status sentinel on the Room select must be a no-op."""
+    mock_coordinator.data.rooms = [{"id": 10, "name": "Kitchen"}]
+
+    entity = RoomSelectEntity(mock_coordinator)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+
+    with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
+        await entity.async_select_option(sentinel)
+
+    mock_build.assert_not_called()
+    mock_coordinator.async_send_command.assert_not_called()
+    mock_coordinator.set_active_cleaning_targets.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -196,8 +258,12 @@ async def test_room_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Clean Room"
-    assert entity.options == ["Kitchen (ID: 10)", "Living Room (ID: 12)"]
-    assert entity.current_option is None
+    assert (
+        entity.options
+        == _STATUS_OPTIONS_FIXTURE + ["Kitchen (ID: 10)", "Living Room (ID: 12)"]
+    )
+    # VacuumState defaults activity to "idle" → renders as "Idle".
+    assert entity.current_option == "Idle"
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
         mock_build.return_value = {"cmd": "room_cmd"}

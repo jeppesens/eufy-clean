@@ -26,10 +26,40 @@ from .coordinator import EufyCleanCoordinator
 
 _LOGGER = logging.getLogger(__name__)
 
-# Sentinel option shown in Scene/Clean Room selects when nothing is actively
-# running. Avoids the default "Unknown" state in the more-info card and makes
-# the "no current selection" case explicit. Selecting it is a no-op.
+# Status sentinels for SceneSelectEntity / RoomSelectEntity.
+#
+# The Scene and Room selects are momentary action triggers — they have no
+# inherent persistent state. Rather than fall back to "Unknown" (which HA
+# renders for ``state == None``) we surface the vacuum's current activity as
+# the select's ``current_option``. This is honest: when the device reports
+# ``docked``/``charging``/``idle`` the select shows "Idle", and when the
+# device is busy via some other path (manual clean, schedule, app) the select
+# shows the actual activity ("Cleaning", "Returning", etc.) instead of
+# misleadingly claiming "Idle".
+#
+# Selecting any of these sentinels is a no-op — they are not actionable.
 _IDLE_OPTION = "Idle"
+_ACTIVITY_LABELS: dict[str, str] = {
+    "docked": _IDLE_OPTION,
+    "charging": _IDLE_OPTION,
+    "idle": _IDLE_OPTION,
+    "cleaning": "Cleaning",
+    "returning": "Returning",
+    "paused": "Paused",
+    "error": "Error",
+}
+# Distinct labels in display order. "Idle" first; the rest reflect real
+# transient states the vacuum can be in. Used to populate the ``options``
+# list for SceneSelectEntity and RoomSelectEntity so that ``current_option``
+# is always a valid member of ``options``.
+_STATUS_OPTIONS: list[str] = list(dict.fromkeys(_ACTIVITY_LABELS.values()))
+
+
+def _activity_label(activity: str | None) -> str | None:
+    """Map a raw coordinator activity to a select sentinel option, if known."""
+    if activity is None:
+        return None
+    return _ACTIVITY_LABELS.get(activity)
 
 
 def _format_option_label(item: dict[str, Any], default_name: str) -> str:
@@ -263,14 +293,22 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Return available scenes."""
-        return [_IDLE_OPTION] + [
+        """Return status sentinels followed by available scenes."""
+        return _STATUS_OPTIONS + [
             _format_option_label(s, "Scene") for s in self.coordinator.data.scenes
         ]
 
     @property
     def current_option(self) -> str | None:
-        """Return the currently active scene."""
+        """Return the currently active scene, or a vacuum-activity sentinel.
+
+        When a scene is actively running we return the scene label. Otherwise
+        we mirror the coordinator's reported activity ("Idle" when docked or
+        idle, "Cleaning"/"Returning"/"Paused"/"Error" when busy via another
+        path). If the activity is unknown to us we fall through to ``None``
+        which renders as HA's standard "Unknown" — this should only occur
+        briefly on initial connect before the first DPS update arrives.
+        """
         current_id = self.coordinator.data.current_scene_id
         if current_id > 0:
             for scene in self.coordinator.data.scenes:
@@ -281,11 +319,13 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             if self.coordinator.data.current_scene_name:
                 return f"{self.coordinator.data.current_scene_name} (ID: {current_id})"
 
-        return _IDLE_OPTION
+        return _activity_label(self.coordinator.data.activity)
 
     async def async_select_option(self, option: str) -> None:
         """Trigger the selected scene."""
-        if option == _IDLE_OPTION:
+        # Status sentinels (Idle, Cleaning, etc.) are display-only — selecting
+        # them must not dispatch any command.
+        if option in _STATUS_OPTIONS:
             return
 
         scenes = self.coordinator.data.scenes
@@ -322,19 +362,26 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
     @property
     def options(self) -> list[str]:
-        """Return available rooms."""
-        return [_IDLE_OPTION] + [
+        """Return status sentinels followed by available rooms."""
+        return _STATUS_OPTIONS + [
             _format_option_label(r, "Room") for r in self.coordinator.data.rooms
         ]
 
     @property
     def current_option(self) -> str | None:
-        """Room selection is an action trigger."""
-        return _IDLE_OPTION
+        """Mirror the vacuum's current activity.
+
+        Room selection is purely an action trigger — there's no equivalent of
+        ``current_scene_id`` for room cleans, so we never try to identify a
+        specific room. Instead we surface the vacuum activity so the dropdown
+        is honest about what the device is doing.
+        """
+        return _activity_label(self.coordinator.data.activity)
 
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
-        if option == _IDLE_OPTION:
+        # Status sentinels (Idle, Cleaning, etc.) are display-only.
+        if option in _STATUS_OPTIONS:
             return
 
         rooms = self.coordinator.data.rooms
