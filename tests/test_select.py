@@ -153,10 +153,10 @@ async def test_scene_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Scene"
-    assert (
-        entity.options
-        == _STATUS_OPTIONS_FIXTURE + ["Scene 1 (ID: 1)", "Scene 2 (ID: 2)"]
-    )
+    assert entity.options == _STATUS_OPTIONS_FIXTURE + [
+        "Scene 1 (ID: 1)",
+        "Scene 2 (ID: 2)",
+    ]
     # VacuumState defaults activity to "idle" → renders as "Idle".
     assert entity.current_option == "Idle"
 
@@ -258,10 +258,10 @@ async def test_room_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Clean Room"
-    assert (
-        entity.options
-        == _STATUS_OPTIONS_FIXTURE + ["Kitchen (ID: 10)", "Living Room (ID: 12)"]
-    )
+    assert entity.options == _STATUS_OPTIONS_FIXTURE + [
+        "Kitchen (ID: 10)",
+        "Living Room (ID: 12)",
+    ]
     # VacuumState defaults activity to "idle" → renders as "Idle".
     assert entity.current_option == "Idle"
 
