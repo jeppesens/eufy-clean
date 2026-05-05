@@ -26,8 +26,10 @@ def test_scene_select_entity_mocked():
     entity = SceneSelectEntity(mock_coordinator)
     entity.hass = MagicMock()
 
-    # 2. Test Initial State (None)
-    assert entity.current_option is None
+    # 2. Test Initial State — VacuumState defaults activity to "idle" so the
+    # select reports "Idle" (the activity-mirrored sentinel) when no scene is
+    # active.
+    assert entity.current_option == "Idle"
 
     # 3. Simulate Scene Active (ID Match)
     mock_coordinator.data.current_scene_id = 8
@@ -42,11 +44,11 @@ def test_scene_select_entity_mocked():
     # Should use the reported name as fallback with ID
     assert entity.current_option == "New Scene (ID: 99)"
 
-    # 5. Simulate Scene Inactive (ID=0)
+    # 5. Simulate Scene Inactive (ID=0) — falls back to activity sentinel.
     mock_coordinator.data.current_scene_id = 0
     mock_coordinator.data.current_scene_name = None
 
-    assert entity.current_option is None
+    assert entity.current_option == "Idle"
 
 
 def test_scene_parsing_logic():
