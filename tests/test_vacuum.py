@@ -333,6 +333,64 @@ async def test_app_segment_clean_invalid_ids(mock_coordinator, mock_config_entry
 
 
 @pytest.mark.asyncio
+async def test_app_segment_clean_uses_scene_clean_when_no_rooms(
+    mock_coordinator, mock_config_entry
+):
+    """Test app_segment_clean routes to scene_clean when there are no rooms."""
+    mock_coordinator.data.rooms = []
+    mock_coordinator.data.scenes = [{"id": 1, "name": "Kitchen Scene"}]
+    mock_coordinator.set_active_scene = MagicMock()
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    entity.hass = mock_coordinator.hass
+
+    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
+        mock_build.return_value = {"cmd": "scene"}
+        await entity.async_send_command("app_segment_clean", params=["1"])
+
+        mock_build.assert_called_with("scene_clean", scene_id=1)
+        mock_coordinator.async_send_command.assert_called_with({"cmd": "scene"})
+        mock_coordinator.set_active_scene.assert_called_with(1, "Kitchen Scene")
+
+
+@pytest.mark.asyncio
+async def test_async_clean_segments_uses_scene_clean_when_no_rooms(
+    mock_coordinator, mock_config_entry
+):
+    """Test async_clean_segments uses scene_clean when no rooms are available."""
+    mock_coordinator.data.rooms = []
+    mock_coordinator.data.scenes = [{"id": 2, "name": "Living Room Scene"}]
+    mock_coordinator.set_active_scene = MagicMock()
+    mock_coordinator.async_send_command = AsyncMock()
+
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
+        mock_build.return_value = {"cmd": "scene"}
+        await entity.async_clean_segments(["2"])
+
+        mock_build.assert_called_with("scene_clean", scene_id=2)
+        mock_coordinator.async_send_command.assert_called_once_with({"cmd": "scene"})
+        mock_coordinator.set_active_scene.assert_called_with(2, "Living Room Scene")
+
+
+def test_get_segments_falls_back_to_scenes(mock_coordinator, mock_config_entry):
+    """Test that async_get_segments falls back to scenes when no rooms exist."""
+    mock_coordinator.data.rooms = []
+    mock_coordinator.data.scenes = [
+        {"id": 1, "name": "Kitchen Scene"},
+        {"id": 2, "name": "Bedroom Scene"},
+    ]
+
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    segments = entity._get_room_segments()
+
+    assert len(segments) == 2
+    assert segments[0].id == "1"
+    assert segments[0].name == "Kitchen Scene"
+    assert segments[1].id == "2"
+    assert segments[1].name == "Bedroom Scene"
+
+
+@pytest.mark.asyncio
 async def test_async_clean_segments_empty_list(mock_coordinator, mock_config_entry):
     """Test async_clean_segments with empty list does nothing."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
