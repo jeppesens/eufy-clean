@@ -458,18 +458,23 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         if not scene_ids:
             return
 
+        if len(scene_ids) > 1:
+            _LOGGER.warning(
+                "Multiple scene-based segments selected; only the first scene will be cleaned"
+            )
+
         scene_lookup = {
             scene["id"]: scene.get("name")
             for scene in self.coordinator.data.scenes
             if "id" in scene
         }
 
-        for scene_id in scene_ids:
-            scene_name = scene_lookup.get(scene_id)
-            await self.coordinator.async_send_command(
-                build_command("scene_clean", scene_id=scene_id)
-            )
-            self.coordinator.set_active_scene(scene_id, scene_name)
+        scene_id = scene_ids[0]
+        scene_name = scene_lookup.get(scene_id)
+        await self.coordinator.async_send_command(
+            build_command("scene_clean", scene_id=scene_id)
+        )
+        self.coordinator.set_active_scene(scene_id, scene_name)
 
 
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
