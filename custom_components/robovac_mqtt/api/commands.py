@@ -65,7 +65,7 @@ def _build_manual_cmd(cmd_name: str, active: bool = True) -> dict[str, str]:
     return {DPS_MAP["GO_HOME"]: value}
 
 
-def build_set_clean_speed_command(clean_speed: str) -> dict[str, str]:
+def build_set_clean_speed_command(clean_speed: str) -> dict[str, int]:
     """Build command to set fan speed."""
     try:
         speed_lower = clean_speed.lower()
@@ -73,7 +73,7 @@ def build_set_clean_speed_command(clean_speed: str) -> dict[str, str]:
 
         if speed_lower in variants:
             idx = variants.index(speed_lower)
-            return {DPS_MAP["CLEAN_SPEED"]: str(idx) if isinstance(idx, int) else idx}
+            return {DPS_MAP["CLEAN_SPEED"]: idx}
 
     except ValueError:
         pass

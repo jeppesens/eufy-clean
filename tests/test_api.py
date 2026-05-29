@@ -128,10 +128,10 @@ def test_build_set_clean_speed(mock_encode):
     """Test building set clean speed command."""
     # This one doesn't use encode, it sends raw index
     cmd = build_set_clean_speed_command("Standard")
-    assert cmd == {DPS_MAP["CLEAN_SPEED"]: "1"}
+    assert cmd == {DPS_MAP["CLEAN_SPEED"]: 1}
 
     cmd = build_command("set_fan_speed", fan_speed="Max")
-    assert cmd == {DPS_MAP["CLEAN_SPEED"]: "3"}
+    assert cmd == {DPS_MAP["CLEAN_SPEED"]: 3}
 
 
 @patch("custom_components.robovac_mqtt.api.commands.encode")
