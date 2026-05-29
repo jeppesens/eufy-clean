@@ -128,10 +128,10 @@ def test_build_set_clean_speed(mock_encode):
     """Test building set clean speed command."""
     # This one doesn't use encode, it sends raw index
     cmd = build_set_clean_speed_command("Standard")
-    assert cmd == {DPS_MAP["CLEAN_SPEED"]: "1"}
+    assert cmd == {DPS_MAP["CLEAN_SPEED"]: 1}
 
     cmd = build_command("set_fan_speed", fan_speed="Max")
-    assert cmd == {DPS_MAP["CLEAN_SPEED"]: "3"}
+    assert cmd == {DPS_MAP["CLEAN_SPEED"]: 3}
 
 
 @patch("custom_components.robovac_mqtt.api.commands.encode")
@@ -399,7 +399,7 @@ def test_update_state_device_info_dps169():
     # Real DPS 169 payload from a T2351 (X10 Pro Omni)
     dps = {
         DPS_MAP["MAP_MANAGE"]: "vgEKF2V1ZnkgQ2xlYW4gWDEwIFBybyBPbW5pGhFjMDo"
-        "4YTo2MDoyMzo4MzpkOSIGMy40Ljg1KAMyCkx1ZnRIYW1uZW46CjEwLjEuMC4xMDZCKD"
+        "4YTo2MDoyMzo4MzpkOSIGMy40Ljg1KAMyCkx1ZnRIYW1uZW06CjEwLjEuMC4xMDZCKD"
         "A5OTM2ZDFkNjdhZjE2YWJlYzJiNDdhOTZjYmU5M2RiNTY4NmM2YzhaCgoGMS4yLjI3EA"
         "hiLQgBEgQIAhADGgQIAhAPIgQIARABMgQIARADOgQIARABQgQIARADUgUIARCzJGoJVDI"
         "zNTFfb3Rh"
