@@ -399,7 +399,7 @@ def test_update_state_device_info_dps169():
     # Real DPS 169 payload from a T2351 (X10 Pro Omni)
     dps = {
         DPS_MAP["MAP_MANAGE"]: "vgEKF2V1ZnkgQ2xlYW4gWDEwIFBybyBPbW5pGhFjMDo"
-        "4YTo2MDoyMzo4MzpkOSIGMy40Ljg1KAMyCkx1ZnRIYW1uZW06CjEwLjEuMC4xMDZCKD"
+        "4YTo2MDoyMzo4MzpkOSIGMy40Ljg1KAMyCkx1ZnRIYW1uZW46CjEwLjEuMC4xMDZCKD"
         "A5OTM2ZDFkNjdhZjE2YWJlYzJiNDdhOTZjYmU5M2RiNTY4NmM2YzhaCgoGMS4yLjI3EA"
         "hiLQgBEgQIAhADGgQIAhAPIgQIARABMgQIARADOgQIARABQgQIARADUgUIARCzJGoJVDI"
         "zNTFfb3Rh"
