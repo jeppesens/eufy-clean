@@ -74,6 +74,7 @@ class _DoNotDisturbTimeEntity(CoordinatorEntity[EufyCleanCoordinator], TimeEntit
         data = self.coordinator.data
         command = build_command(
             "set_do_not_disturb",
+            api_type=self.coordinator.data.api_type,
             active=data.dnd_enabled,
             begin_hour=(
                 value.hour if self._field_prefix == "dnd_start" else data.dnd_start_hour

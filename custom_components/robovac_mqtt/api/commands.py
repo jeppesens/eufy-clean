@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any, cast
 
@@ -11,6 +12,10 @@ from ..const import (
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     MOP_CORNER_MAP,
     MOP_LEVEL_MAP,
+    SCALAR_CLEAN_PATTERN_NAMES,
+    SCALAR_DPS,
+    SCALAR_WORK_MODE_GO_HOME,
+    SCALAR_WORK_MODE_START,
 )
 from ..proto.cloud.clean_param_pb2 import CleanParam, CleanParamRequest, Fan
 from ..proto.cloud.consumable_pb2 import ConsumableRequest
@@ -290,6 +295,79 @@ def build_find_robot_command(active: bool) -> dict[str, Any]:
     return {DPS_MAP["FIND_ROBOT"]: active}
 
 
+# --- scalar command builders (e.g. T2210/G50) ----------------------
+# These DPS are scalar-protocol-only plain-int writes (no protobuf), so they are
+# model-agnostic. Verified live against a real G50 (see docs/g50_capture/FINDINGS.md).
+
+
+def build_set_boost_iq_command(active: bool) -> dict[str, Any]:
+    """scalar-protocol: toggle BoostIQ auto carpet boost (DPS 118)."""
+    return {SCALAR_DPS["BOOST_IQ"]: int(bool(active))}
+
+
+def build_set_cleaning_pattern_command(pattern: str) -> dict[str, Any]:
+    """scalar-protocol: set clean path pattern Arranged(1)/Random(2) (DPS 154)."""
+    reverse = {name: value for value, name in SCALAR_CLEAN_PATTERN_NAMES.items()}
+    return {SCALAR_DPS["CLEAN_PATTERN"]: reverse.get(pattern, 1)}
+
+
+def build_set_volume_command(volume_pct: int) -> dict[str, Any]:
+    """scalar-protocol: set voice volume (DPS 111, 0-10 = 0-100% in 10% steps)."""
+    step = max(0, min(10, round(volume_pct / 10)))
+    return {SCALAR_DPS["VOLUME"]: step}
+
+
+def build_set_auto_return_command(active: bool) -> dict[str, Any]:
+    """scalar-protocol: toggle "Auto-Return Cleaning" (DPS 135)."""
+    return {SCALAR_DPS["AUTO_RETURN"]: int(bool(active))}
+
+
+def build_set_activity_log_command(active: bool) -> dict[str, Any]:
+    """scalar-protocol: toggle activity-log upload (DPS 142)."""
+    return {SCALAR_DPS["ACTIVITY_LOG"]: int(bool(active))}
+
+
+def build_scalar_reset_accessory_command(accessory_key: str) -> dict[str, Any]:
+    """scalar-protocol: reset an accessory's life counter to 0 (DPS 150 JSON).
+
+    accessory_key is the DPS 150 field, e.g. "sensors", "dust_filter",
+    "side_brush", "roller_brush". Captured from the app's /req.
+    """
+    if not accessory_key:
+        return {}
+    return {SCALAR_DPS["ACCESSORIES"]: json.dumps({accessory_key: 0})}
+
+
+def build_scalar_suction_command(fan_speed: str) -> dict[str, Any]:
+    """scalar-protocol: set suction by name (DPS 102, 0=Quiet..3=Max)."""
+    levels = [s.value for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED[:4]]
+    if fan_speed not in levels:
+        return {}
+    return {SCALAR_DPS["SUCTION"]: levels.index(fan_speed)}
+
+
+def build_scalar_child_lock_command(active: bool) -> dict[str, Any]:
+    """scalar-protocol: toggle child lock (DPS 139)."""
+    return {SCALAR_DPS["CHILD_LOCK"]: int(bool(active))}
+
+
+def build_scalar_find_robot_command(active: bool) -> dict[str, Any]:
+    """scalar-protocol: find-robot start/stop (DPS 103)."""
+    return {SCALAR_DPS["FIND_ROBOT"]: int(bool(active))}
+
+
+def build_scalar_undisturbed_command(
+    active: bool, begin_hour: int, begin_minute: int, end_hour: int, end_minute: int
+) -> dict[str, Any]:
+    """scalar-protocol: set DND (DPS 107 JSON {en, start_t:"HHMM", end_t:"HHMM"})."""
+    payload = {
+        "en": bool(active),
+        "start_t": f"{begin_hour:02d}{begin_minute:02d}",
+        "end_t": f"{end_hour:02d}{end_minute:02d}",
+    }
+    return {SCALAR_DPS["DND"]: json.dumps(payload)}
+
+
 def build_set_child_lock_command(active: bool) -> dict[str, str]:
     """Build command to toggle the child lock setting."""
     value = encode(UnisettingRequest, {"children_lock": {"value": active}})
@@ -317,9 +395,51 @@ def build_set_undisturbed_command(
     return {DPS_MAP["UNDISTURBED"]: value}
 
 
-def build_command(command: str, **kwargs: Any) -> dict[str, Any]:
-    """Unified command builder."""
+def build_command(
+    command: str, api_type: str = "novel", **kwargs: Any
+) -> dict[str, Any]:
+    """Unified command builder.
+
+    *api_type* ("novel" | "scalar") lets shared commands branch to scalar
+    (Tuya-style int/JSON) writes for scalar-protocol devices (e.g. T2210/G50).
+    Callers that omit it get the default novel (protobuf) behaviour.
+    """
     cmd = command.lower()
+    is_scalar = api_type == "scalar"
+
+    if is_scalar:
+        # Movement, captured verbatim from the app's /req (see FINDINGS.md):
+        #   start/clean -> {"5": 1};  go home -> {"5": 3};
+        #   pause -> {"122": 1};  resume -> {"122": 0}.
+        # (DPS 2/101 — the Tuya-canonical movement DPs — are ACKed but ignored by
+        # the G50 firmware; the app drives DPS 5 + 122 instead.)
+        if cmd == "start_auto":
+            return {SCALAR_DPS["WORK_MODE"]: SCALAR_WORK_MODE_START}
+        if cmd in ("play", "resume"):
+            return {SCALAR_DPS["PAUSE"]: 2}
+        if cmd in ("pause", "stop"):
+            return {SCALAR_DPS["PAUSE"]: 1}
+        if cmd in ("return_to_base", "go_home"):
+            return {SCALAR_DPS["WORK_MODE"]: SCALAR_WORK_MODE_GO_HOME}
+        if cmd == "clean_spot":
+            _LOGGER.warning("Spot clean is not yet mapped for scalar devices.")
+            return {}
+        if cmd == "set_fan_speed":
+            return build_scalar_suction_command(kwargs.get("fan_speed", ""))
+        if cmd == "set_child_lock":
+            return build_scalar_child_lock_command(bool(kwargs.get("active", True)))
+        if cmd in ("locate", "find_robot"):
+            return build_scalar_find_robot_command(bool(kwargs.get("active", True)))
+        if cmd == "set_do_not_disturb":
+            return build_scalar_undisturbed_command(
+                bool(kwargs.get("active", True)),
+                int(kwargs.get("begin_hour", 22)),
+                int(kwargs.get("begin_minute", 0)),
+                int(kwargs.get("end_hour", 8)),
+                int(kwargs.get("end_minute", 0)),
+            )
+        if cmd == "reset_accessory":
+            return build_scalar_reset_accessory_command(kwargs.get("scalar_key", ""))
 
     # Mode Control
     if cmd == "start_auto":
@@ -391,5 +511,19 @@ def build_command(command: str, **kwargs: Any) -> dict[str, Any]:
             int(kwargs.get("end_hour", 8)),
             int(kwargs.get("end_minute", 0)),
         )
+
+    # scalar commands
+    if cmd == "set_boost_iq":
+        return build_set_boost_iq_command(bool(kwargs.get("active", True)))
+    if cmd == "set_cleaning_pattern":
+        return build_set_cleaning_pattern_command(kwargs.get("pattern", ""))
+    if cmd == "set_volume":
+        return build_set_volume_command(int(kwargs.get("volume", 0)))
+    if cmd == "set_auto_return":
+        return build_set_auto_return_command(bool(kwargs.get("active", True)))
+    if cmd == "set_activity_log":
+        return build_set_activity_log_command(bool(kwargs.get("active", True)))
+    if cmd == "detangle_brush":
+        return {SCALAR_DPS["DETANGLE"]: 1}
 
     return {}

@@ -20,6 +20,7 @@ def mock_coordinator():
     coordinator.device_id = "test_id"
     coordinator.device_name = "Test Vac"
     coordinator.device_model = "T2118"
+    coordinator.api_type = "novel"
     coordinator.data = VacuumState()
     coordinator.async_send_command = AsyncMock()
     return coordinator
@@ -46,7 +47,7 @@ async def test_button_press(mock_coordinator):
 
         await entity.async_press()
 
-        mock_build.assert_called_with("collect_dust")
+        mock_build.assert_called_with("collect_dust", api_type="novel")
         mock_coordinator.async_send_command.assert_called_with({"cmd": "collect"})
 
 
@@ -68,6 +69,8 @@ async def test_button_reset_accessory(mock_coordinator):
         await entity.async_press()
 
         mock_build.assert_called_with(
-            "reset_accessory", reset_type=ConsumableRequest.FILTER_MESH
+            "reset_accessory",
+            api_type="novel",
+            reset_type=ConsumableRequest.FILTER_MESH,
         )
         mock_coordinator.async_send_command.assert_called_with({"cmd": "reset"})

@@ -33,6 +33,16 @@ class AccessoryState:
 class VacuumState:
     """Represent the complete state of a Eufy vacuum."""
 
+    # Device identity (used for the HA device registry).
+    device_model: str = ""
+
+    # DPS protocol variant, classified cloud-side by EufyLogin.checkApiType and
+    # seeded by the coordinator at init:
+    #   "novel"  -> Anker protobuf DPS (X-series, default)
+    #   "scalar" -> plain int/JSON Tuya-style DPS over MQTT (e.g. T2210/G50)
+    #   "legacy" -> pure Tuya cloud devices (PR #110; no parser here yet)
+    api_type: str = "novel"
+
     # Basic
     activity: str = "idle"  # cleaning, docked, error, etc.
     battery_level: int = 0
@@ -86,6 +96,14 @@ class VacuumState:
     carpet_strategy: str = "Auto Raise"  # Clean carpet strategy from DPS 154
     corner_cleaning: str = "Normal"  # Mop corner cleaning from DPS 154
     smart_mode: bool = False  # Smart mode switch from DPS 154
+
+    # scalar-protocol fields (e.g. T2210/G50)
+    boost_iq: bool = False  # BoostIQ auto-carpet-boost (scalar-protocol DPS 118)
+    volume: int = 0  # Voice volume 0-100% (scalar-protocol DPS 111, 0-10 *10)
+    cleaning_pattern: str = "Arranged"  # Path pattern Arranged/Random (scalar-protocol DPS 154)
+    auto_return: bool = False  # "Auto-Return Cleaning" toggle (DPS 135)
+    activity_log_upload: bool = False  # Activity-log upload toggle (DPS 142)
+    schedules: list[dict[str, Any]] = field(default_factory=list)  # DPS 151 (read-only)
 
     # Device settings (from DPS 176 UnisettingResponse)
     wifi_signal: float = -100.0  # AP signal strength in dBm (converted from 0-100%)

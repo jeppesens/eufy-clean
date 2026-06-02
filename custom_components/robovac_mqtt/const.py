@@ -554,6 +554,79 @@ KNOWN_UNPROCESSED_DPS: frozenset[str] = frozenset(
 DPS_ROBOT_TELEMETRY = "179"
 
 
+# --- Scalar (Tuya-style) DPS protocol ---------------------------------------
+# Some Eufy models (verified: T2210 "G50") do NOT use the Anker length-prefixed
+# protobuf DPS blobs. Instead they expose state as plain integers / JSON on the
+# Tuya DPS numbers, and send NO protobuf WorkStatus. The protocol is detected at
+# runtime from value shapes (see api/cloud.py:checkApiType) — not from a model
+# list — so any cloud-only Tuya-schema device is handled generically.
+# This is a sibling of the Tuya-Cloud "legacy" path (jeppesens PR #110), but here
+# the transport is Anker MQTT and the values are ints (not strings).
+# See docs/g50_capture/FINDINGS.md for the reverse-engineering evidence and the
+# canonical Tuya DPS names (damacus/robovac).
+SCALAR_DPS = {
+    "STATE": "15",  # activity status (int Tuya STATUS)
+    "DETANGLE": "153",  # write 1 = start roller-brush detangle (read=0 in /res)
+    # DPS 5 is the work-mode command AND a reported sub-state. Captured from the
+    # app's /req: writing 5=1 starts an auto clean, 5=3 returns to the dock.
+    "WORK_MODE": "5",
+    "PAUSE": "122",  # write 1=pause, 2=resume (also a /res motion flag: 1=stationary)
+    "SUCTION": "102",  # Tuya FAN_SPEED: 0=Quiet 1=Standard 2=Turbo 3=Max
+    "FIND_ROBOT": "103",  # Tuya LOCATE: 0/1
+    "BATTERY": "104",  # Tuya BATTERY_LEVEL: 0-100 %
+    "DND": "107",  # Tuya DO_NOT_DISTURB: JSON {"en":bool,"start_t","end_t"}
+    "CLEAN_TIME": "109",  # cleaning time in SECONDS (verified: 300=5min, 780=13min)
+    "CLEAN_AREA": "110",  # cleaning area in m² (verified: 4=43ft², 3=32ft²)
+    "VOLUME": "111",  # voice volume 0-10 (=0-100% in 10% steps)
+    "BOOST_IQ": "118",  # Tuya BOOST_IQ: 0/1
+    "AUTO_RETURN": "135",  # "Auto-Return Cleaning" toggle: 0/1 (Tuya auto_return)
+    "CHILD_LOCK": "139",  # child lock: 0/1
+    "ACTIVITY_LOG": "142",  # activity-log upload toggle: 0/1
+    "SCHEDULE": "151",  # JSON {"l":[{e,t,r,s,f,id}]}
+    "CLEAN_PATTERN": "154",  # 1=Arranged 2=Random (int, NOT protobuf here)
+    "ACCESSORIES": "150",  # JSON usage counters
+    # Error code: canonical Tuya ERROR_CODE is 106; the G50 capture also showed a
+    # scalar on 177. We read both (non-zero wins) since which carries a live fault
+    # is unconfirmed.
+    "ERROR_CODE": "106",
+    "ERROR_CODE_ALT": "177",
+}
+
+# DPS 15 (scalar state int) -> activity string (same vocabulary the novel parser
+# produces, so the vacuum/binary_sensor entities consume it unchanged).
+SCALAR_STATE_NAMES = {
+    0: "idle",
+    1: "idle",
+    2: "cleaning",
+    4: "returning",
+    5: "docked",  # on dock, actively charging
+    6: "docked",  # on dock, charge complete (battery full)
+    7: "paused",
+}
+
+# Scalar suction reuses the first four EUFY_CLEAN_NOVEL_CLEAN_SPEED entries
+# (Quiet/Standard/Turbo/Max); BoostIQ is a separate switch (DPS 118), not a 5th speed.
+SCALAR_SUCTION_LEVELS = [s.value for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED[:4]]
+
+# DPS 154 (scalar clean path pattern)
+SCALAR_CLEAN_PATTERN_NAMES = {1: "Arranged", 2: "Random"}
+
+# Scalar movement command values (DPS 5 work-mode), captured from the app /req.
+SCALAR_WORK_MODE_START = 1  # {"5": 1} -> start auto clean
+SCALAR_WORK_MODE_GO_HOME = 3  # {"5": 3} -> return to dock
+
+# Scalar accessory max life in HOURS. DPS 150 reports usage counters in MINUTES;
+# % remaining = 1 - used_min / (max_h * 60). Calibrated against the G50 app's
+# reported remaining-hours/percentages (see docs/g50_capture/FINDINGS.md). These
+# differ from the X-series ACCESSORY_MAX_LIFE values below.
+SCALAR_ACCESSORY_MAX_LIFE = {
+    "filter_usage": 200,
+    "main_brush_usage": 360,  # rolling brush
+    "side_brush_usage": 250,
+    "sensor_usage": 35,
+}
+
+
 ACCESSORY_MAX_LIFE = {
     "filter_usage": 360,
     "main_brush_usage": 360,

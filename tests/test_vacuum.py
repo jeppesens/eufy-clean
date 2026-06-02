@@ -82,27 +82,29 @@ async def test_vacuum_commands(mock_coordinator, mock_config_entry):
     with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
         mock_build.return_value = {"cmd": "val"}
 
+        api = mock_coordinator.data.api_type
+
         # Start (Default/Docked)
         await entity.async_start()
-        mock_build.assert_called_with("start_auto")
+        mock_build.assert_called_with("start_auto", api_type=api)
         mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
 
         # Start (Paused -> Resume)
         mock_coordinator.data.activity = "paused"
         await entity.async_start()
-        mock_build.assert_called_with("play")
+        mock_build.assert_called_with("play", api_type=api)
 
         # Stop
         await entity.async_stop()
-        mock_build.assert_called_with("stop")
+        mock_build.assert_called_with("stop", api_type=api)
 
         # Pause
         await entity.async_pause()
-        mock_build.assert_called_with("pause")
+        mock_build.assert_called_with("pause", api_type=api)
 
         # Return to base
         await entity.async_return_to_base()
-        mock_build.assert_called_with("return_to_base")
+        mock_build.assert_called_with("return_to_base", api_type=api)
 
         # Spot Clean
         await entity.async_clean_spot()
@@ -110,7 +112,9 @@ async def test_vacuum_commands(mock_coordinator, mock_config_entry):
 
         # Locate
         await entity.async_locate()
-        mock_build.assert_called_with("find_robot", active=True)
+        mock_build.assert_called_with(
+            "find_robot", api_type=mock_coordinator.data.api_type, active=True
+        )
 
 
 @pytest.mark.asyncio
@@ -126,7 +130,9 @@ async def test_set_fan_speed(mock_coordinator, mock_config_entry):
 
         speed_max = EUFY_CLEAN_CLEAN_SPEED.MAX.value
         await entity.async_set_fan_speed(speed_max)
-        mock_build.assert_called_with("set_fan_speed", fan_speed=speed_max)
+        mock_build.assert_called_with(
+            "set_fan_speed", api_type=mock_coordinator.data.api_type, fan_speed=speed_max
+        )
         mock_coordinator.async_send_command.assert_called_with({"cmd": "speed"})
 
         # Invalid speed

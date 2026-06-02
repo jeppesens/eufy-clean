@@ -21,6 +21,8 @@ from .const import (
     EUFY_CLEAN_CLEANING_MODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     EUFY_CLEAN_WATER_LEVELS,
+    SCALAR_CLEAN_PATTERN_NAMES,
+    SCALAR_SUCTION_LEVELS,
 )
 from .coordinator import EufyCleanCoordinator
 
@@ -73,7 +75,15 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding select entities for %s", coordinator.device_name)
 
+        # Suction + cleaning pattern apply to all (incl. scalar/Tuya vacuums).
         entities.append(SuctionLevelSelectEntity(coordinator))
+        entities.append(CleaningPatternSelectEntity(coordinator))
+
+        # The rest are mop / station / map selects that scalar (Tuya) vacuum-only
+        # devices like the G50 don't have — skip them there.
+        if coordinator.api_type == "scalar":
+            continue
+
         entities.append(CleaningModeSelectEntity(coordinator))
         entities.append(WaterLevelSelectEntity(coordinator))
         entities.append(MopIntensitySelectEntity(coordinator))
@@ -398,7 +408,11 @@ class _StateBackedSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEn
 
         state_value = self._option_to_state(option)
         await self.coordinator.async_send_command(
-            build_command(self._command_name, **{self._command_arg_name: state_value})
+            build_command(
+                self._command_name,
+                api_type=self.coordinator.data.api_type,
+                **{self._command_arg_name: state_value},
+            )
         )
         _optimistically_update_state(
             self.coordinator,
@@ -427,6 +441,10 @@ class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize suction level select."""
         super().__init__(coordinator, "suction_level")
+        # scalar-protocol (scalar protocol) devices expose BoostIQ as a separate switch
+        # (DPS 118), so their suction list is the four levels without Boost_IQ.
+        if coordinator.data.api_type == "scalar":
+            self._attr_options = SCALAR_SUCTION_LEVELS
 
 
 class CleaningModeSelectEntity(_StateBackedSelectEntity):
@@ -449,6 +467,29 @@ class CleaningModeSelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize cleaning mode select."""
         super().__init__(coordinator, "cleaning_mode")
+
+
+class CleaningPatternSelectEntity(_StateBackedSelectEntity):
+    """Select entity for the cleaning path pattern (Arranged/Random).
+
+    scalar-protocol only (DPS 154 int). Distinct from CleaningModeSelectEntity, which is
+    the X-series Vacuum/Mop axis. Hidden until a pattern value is reported.
+    """
+
+    _attr_has_entity_name = True
+    _attr_name = "Cleaning Pattern"
+    _attr_icon = "mdi:vector-polyline"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = list(SCALAR_CLEAN_PATTERN_NAMES.values())
+    _command_name = "set_cleaning_pattern"
+    _command_arg_name = "pattern"
+    _state_field = "cleaning_pattern"
+    _available_field = "cleaning_pattern"
+    _log_label = "Cleaning pattern"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize cleaning pattern select."""
+        super().__init__(coordinator, "cleaning_pattern")
 
 
 class WaterLevelSelectEntity(_StateBackedSelectEntity):
