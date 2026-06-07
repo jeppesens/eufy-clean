@@ -37,6 +37,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         """Initialize coordinator."""
         self.device_id = device_info["deviceId"]
         self.device_model = device_info["deviceModel"]
+        # DPS protocol ("novel" protobuf / "scalar" Tuya-int / "legacy"),
+        # classified cloud-side by EufyLogin.checkApiType from the initial snapshot.
+        self.api_type = device_info.get("apiType", "novel")
         self.device_name = device_info["deviceName"]
         self.serial_number = device_info.get("deviceId")  # Usually deviceId is SN
         self.firmware_version = device_info.get("softVersion")
@@ -49,7 +52,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
 
         self.client: EufyCleanClient | None = None
-        self.data = VacuumState()
+        self.data = VacuumState(device_model=self.device_model, api_type=self.api_type)
         self._dock_idle_cancel: CALLBACK_TYPE | None = (
             None  # Timer for dock IDLE debounce
         )

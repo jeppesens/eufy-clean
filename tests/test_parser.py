@@ -9,6 +9,7 @@ from custom_components.robovac_mqtt.api.parser import (
     _map_work_status,
     _parse_map_data,
     _process_cleaning_parameters,
+    update_state,
 )
 from custom_components.robovac_mqtt.const import WORK_MODE_NAMES
 from custom_components.robovac_mqtt.models import VacuumState
@@ -477,3 +478,172 @@ def test_work_mode_names_mapping():
     assert WORK_MODE_NAMES[1] == "Room"
     assert WORK_MODE_NAMES[3] == "Spot"
     assert WORK_MODE_NAMES[8] == "Scene"
+
+
+# ── G-series scalar/JSON protocol (e.g. T2210/G50) ───────────────────
+# These devices send plain int/JSON DPS on different DPS numbers and emit no
+# WorkStatus (153). Captured from a real G50 — see docs/g50_capture/FINDINGS.md.
+
+_G50_DPS = {
+    "15": 5,  # state -> docked/charging
+    "5": 0,
+    "104": 86,  # battery
+    "102": 0,  # suction -> Quiet
+    "118": 1,  # BoostIQ on
+    "154": 2,  # pattern -> Random
+    "111": 5,  # volume -> 50%
+    "139": 0,  # child lock off
+    "103": 0,  # find robot off
+    "107": {"en": True, "start_t": "2100", "end_t": "0900"},  # DND
+    "150": {  # accessory usage counters (minutes)
+        "side_brush": 6209,
+        "roller_brush": 6209,
+        "dust_filter": 6209,
+        "mop": 0,
+        "roller_brush_cover": 6208,
+        "sensors": 1355,
+    },
+    "109": 300,  # clean time = 300 s (5 min)
+    "110": 4,  # clean area = 4 m² (≈43 ft²)
+    "177": 0,  # error code (scalar, not protobuf)
+}
+
+
+def _parse_g50(dps):
+    # api_type is sticky in real use (set from the first full message); set it
+    # here so partial-dps cases route to the scalar parser deterministically.
+    state = VacuumState(device_model="T2210", api_type="scalar")
+    new_state, _ = update_state(state, dps)
+    return new_state
+
+
+def test_g_series_state_and_battery():
+    s = _parse_g50(_G50_DPS)
+    assert s.activity == "docked"
+    assert s.charging is True
+    assert s.task_status == "Charging"
+    assert s.battery_level == 86
+
+
+def test_g_series_state_transitions():
+    assert _parse_g50({"15": 2}).activity == "cleaning"
+    assert _parse_g50({"15": 4}).activity == "returning"
+    assert _parse_g50({"15": 7}).activity == "paused"
+    assert _parse_g50({"15": 0}).activity == "idle"
+    assert _parse_g50({"15": 5}).activity == "docked"  # charging
+    assert _parse_g50({"15": 6}).activity == "docked"  # charge complete
+    assert _parse_g50({"15": 5}).charging is True
+    assert _parse_g50({"15": 6}).charging is False
+    assert _parse_g50({"15": 2}).charging is False
+
+
+def test_g_series_suction_scale():
+    assert _parse_g50({"102": 0}).fan_speed == "Quiet"
+    assert _parse_g50({"102": 1}).fan_speed == "Standard"
+    assert _parse_g50({"102": 2}).fan_speed == "Turbo"
+    assert _parse_g50({"102": 3}).fan_speed == "Max"
+
+
+def test_g_series_toggles_and_pattern():
+    s = _parse_g50(_G50_DPS)
+    assert s.boost_iq is True
+    assert s.cleaning_pattern == "Random"
+    assert _parse_g50({"154": 1}).cleaning_pattern == "Arranged"
+    assert s.volume == 50
+    assert s.child_lock is False
+    assert s.find_robot is False
+
+
+def test_g_series_dnd_json():
+    s = _parse_g50(_G50_DPS)
+    assert s.dnd_enabled is True
+    assert (s.dnd_start_hour, s.dnd_start_minute) == (21, 0)
+    assert (s.dnd_end_hour, s.dnd_end_minute) == (9, 0)
+
+
+def test_g_series_accessories_counters():
+    s = _parse_g50(_G50_DPS)
+    assert s.accessories.filter_usage == 6209
+    assert s.accessories.main_brush_usage == 6209
+    assert s.accessories.side_brush_usage == 6209
+    assert s.accessories.sensor_usage == 1355
+
+
+def test_scalar_clean_stats():
+    """DPS 109 = cleaning time (seconds), DPS 110 = cleaning area (m²).
+    Verified live: 300s/4m² -> app 5min/43ft²; 780s/3m² -> app 13min/32ft²."""
+    s = _parse_g50({"109": 300, "110": 4})
+    assert s.cleaning_time == 300
+    assert s.cleaning_area == 4
+    s = _parse_g50({"109": 780, "110": 3})
+    assert s.cleaning_time == 780
+    assert s.cleaning_area == 3
+
+
+def test_scalar_cleaning_pref_and_activity_log():
+    assert _parse_g50({"135": 1}).auto_return is True
+    assert _parse_g50({"135": 0}).auto_return is False
+    assert _parse_g50({"142": 1}).activity_log_upload is True
+    assert _parse_g50({"142": 0}).activity_log_upload is False
+
+
+def test_scalar_error_from_106_and_177():
+    assert _parse_g50({"106": 5}).error_code == 5
+    assert _parse_g50({"177": 7}).error_code == 7
+    assert _parse_g50({"106": 0, "177": 0}).error_code == 0
+    assert _parse_g50({"106": 0, "177": 0}).error_message == ""
+    # non-zero fault wins regardless of which key carries it
+    assert _parse_g50({"106": 0, "177": 9}).error_code == 9
+    # 4-digit codes map via EUFY_CLEAN_ERROR_CODES (verified live: 7002 lift fault)
+    s = _parse_g50({"106": 7002})
+    assert s.error_code == 7002
+    assert s.error_message == "MACHINE PICKED UP"
+
+
+def test_scalar_schedule_decode():
+    s = _parse_g50(
+        {"151": {"l": [{"e": True, "t": "0930", "r": "246", "s": 0, "f": 1, "id": 1}]}}
+    )
+    assert len(s.schedules) == 1
+    e = s.schedules[0]
+    assert e["enabled"] is True
+    assert e["time"] == "09:30"
+    assert e["days"] == "Tue, Thu, Sat"
+    assert e["suction"] == "Quiet"
+    assert e["pattern"] == "Arranged"
+
+
+def test_g_series_accepts_string_scalars():
+    """Device sometimes sends scalars as strings; parser must coerce."""
+    s = _parse_g50({"104": "73", "102": "2", "15": "2"})
+    assert s.battery_level == 73
+    assert s.fan_speed == "Turbo"
+    assert s.activity == "cleaning"
+
+
+def test_scalar_pause_flag_marks_paused():
+    """DPS 122=1 while mid-clean -> paused; 122=0 -> back to cleaning."""
+    s = VacuumState(device_model="T2210", api_type="scalar")
+    s, _ = update_state(s, {"15": 2})  # cleaning
+    assert s.activity == "cleaning"
+    s, _ = update_state(s, {"122": 1})  # stationary mid-clean -> paused
+    assert s.activity == "paused"
+    assert s.task_status == "Paused"
+    s, _ = update_state(s, {"122": 0, "15": 2})  # moving again
+    assert s.activity == "cleaning"
+    # 122=1 while docked must NOT be read as paused
+    d = VacuumState(device_model="T2210", api_type="scalar")
+    d, _ = update_state(d, {"15": 5, "122": 1})
+    assert d.activity == "docked"
+
+
+def test_novel_state_ignores_scalar_dps():
+    """A novel (protobuf) state must NOT interpret scalar DPS numbers as state."""
+    state = VacuumState(api_type="novel")
+    new_state, _ = update_state(state, {"104": 86, "102": 0})
+    # Novel path ignores Tuya scalar keys -> defaults preserved
+    assert new_state.battery_level == 0
+    assert new_state.activity == "idle"
+
+
+# Protocol classification (checkApiType) is tested in tests/test_cloud.py.

@@ -56,6 +56,24 @@ def test_check_api_type_legacy():
     assert EufyLogin.checkApiType({"999": "value"}) == "legacy"
 
 
+def test_check_api_type_scalar():
+    """Scalar (Tuya, e.g. G50) devices reuse protobuf DPS numbers with int values.
+
+    A key-presence check would misclassify these as 'novel'; value-shape
+    classification must return 'scalar'.
+    """
+    # Real G50 snapshot shape: 153/154 present as plain ints
+    assert EufyLogin.checkApiType({"153": 0, "154": 2, "104": 86}) == "scalar"
+    # 154 int alone
+    assert EufyLogin.checkApiType({"154": 2}) == "scalar"
+    # Numeric strings are scalar too
+    assert EufyLogin.checkApiType({"154": "2"}) == "scalar"
+    # Scalar-only state DPS 15 is a positive signal
+    assert EufyLogin.checkApiType({"15": 5}) == "scalar"
+    # Genuine protobuf base64 stays novel even alongside scalar-looking keys
+    assert EufyLogin.checkApiType({"153": "CgYIBRABGAU="}) == "novel"
+
+
 def test_find_model_found():
     """findModel returns device info with invalid=False for a known device."""
     login = _make_login(

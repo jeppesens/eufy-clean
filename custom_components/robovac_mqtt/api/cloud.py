@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..const import DPS_MAP
+from ..const import DPS_MAP, SCALAR_DPS
+from ..utils import is_protobuf_dps_value
 from .http import EufyHTTPClient
 
 _LOGGER = logging.getLogger(__name__)
@@ -67,6 +68,22 @@ class EufyLogin:
 
     @staticmethod
     def checkApiType(dps: dict):
+        """Classify a device's DPS protocol from its initial state snapshot.
+
+        - "novel"  : Anker protobuf DPS (WORK_STATUS/CLEANING_PARAMETERS as base64)
+        - "scalar" : Tuya-style plain int/JSON DPS over MQTT (e.g. T2210/G50) —
+                     reuses the protobuf DPS *numbers* but with int values
+        - "legacy" : no protobuf DPS at all (pure Tuya cloud devices, PR #110)
+
+        Value-shape based: a key-presence check alone misclassifies scalar
+        devices (which carry protobuf DPS numbers with int values) as novel.
+        """
+        for key in (DPS_MAP["WORK_STATUS"], DPS_MAP["CLEANING_PARAMETERS"]):
+            val = dps.get(key)
+            if val is not None:
+                return "novel" if is_protobuf_dps_value(val) else "scalar"
+        if SCALAR_DPS["STATE"] in dps:
+            return "scalar"
         if any(k in dps for k in DPS_MAP.values()):
             return "novel"
         return "legacy"
