@@ -205,7 +205,9 @@ async def test_cleaning_mode_select_entity(mock_coordinator):
         await entity.async_select_option("Mop")
 
         mock_build.assert_called_with(
-            "set_cleaning_mode", api_type=mock_coordinator.data.api_type, clean_mode="Mop"
+            "set_cleaning_mode",
+            api_type=mock_coordinator.data.api_type,
+            clean_mode="Mop",
         )
         mock_coordinator.async_send_command.assert_called_with(
             {"cmd": "clean_mode_cmd"}
@@ -228,7 +230,9 @@ async def test_water_level_select_entity(mock_coordinator):
         await entity.async_select_option("High")
 
         mock_build.assert_called_with(
-            "set_water_level", api_type=mock_coordinator.data.api_type, water_level="High"
+            "set_water_level",
+            api_type=mock_coordinator.data.api_type,
+            water_level="High",
         )
         mock_coordinator.async_send_command.assert_called_with(
             {"cmd": "water_level_cmd"}
@@ -251,7 +255,9 @@ async def test_cleaning_intensity_select_entity(mock_coordinator):
         await entity.async_select_option("Quick")
 
         mock_build.assert_called_with(
-            "set_cleaning_intensity", api_type=mock_coordinator.data.api_type, cleaning_intensity="Quick"
+            "set_cleaning_intensity",
+            api_type=mock_coordinator.data.api_type,
+            cleaning_intensity="Quick",
         )
         mock_coordinator.async_send_command.assert_called_with(
             {"cmd": "clean_intensity_cmd"}
@@ -300,7 +306,9 @@ async def test_mop_intensity_select_entity_async(mock_coordinator):
 
         # Should map "Max" to "High" for the device command
         mock_build.assert_called_with(
-            "set_water_level", api_type=mock_coordinator.data.api_type, water_level="High"
+            "set_water_level",
+            api_type=mock_coordinator.data.api_type,
+            water_level="High",
         )
         mock_coordinator.async_send_command.assert_called_with(
             {"cmd": "water_level_cmd"}

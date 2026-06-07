@@ -14,6 +14,7 @@ from homeassistant.const import (
     PERCENTAGE,
     SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
     EntityCategory,
+    UnitOfArea,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -25,6 +26,7 @@ from .const import (
     SCALAR_ACCESSORY_MAX_LIFE,
 )
 from .coordinator import EufyCleanCoordinator, VacuumState
+from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -65,11 +67,10 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding sensors for %s", coordinator.device_name)
 
-        # Battery sensor
-        entities.append(BatterySensorEntity(coordinator))
-
-        # Error Message Sensor
-        entities.append(
+        sensors: list[SensorEntity] = [
+            # Battery sensor
+            BatterySensorEntity(coordinator),
+            # Error Message Sensor
             RoboVacSensor(
                 coordinator,
                 "error_message",
@@ -80,11 +81,8 @@ async def async_setup_entry(
                 state_class=None,
                 icon="mdi:alert-circle-outline",
                 category=EntityCategory.DIAGNOSTIC,
-            )
-        )
-
-        # Task Status Sensor
-        entities.append(
+            ),
+            # Task Status Sensor
             RoboVacSensor(
                 coordinator,
                 "task_status",
@@ -95,27 +93,22 @@ async def async_setup_entry(
                 state_class=None,
                 icon="mdi:robot-vacuum",
                 category=EntityCategory.DIAGNOSTIC,
-            )
-        )
-
-        # Work Mode Sensor (novel WorkStatus mode; scalar G50 has no equivalent)
-        if coordinator.api_type != "scalar":
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "work_mode",
-                    "Work Mode",
-                    lambda s: s.work_mode,
-                    device_class=None,
-                    unit=None,
-                    state_class=None,
-                    icon="mdi:cog-outline",
-                    category=EntityCategory.DIAGNOSTIC,
-                )
-            )
-
-        # Cleaning Time Sensor
-        entities.append(
+            ),
+            # Work Mode Sensor (novel WorkStatus mode; scalar G50 has no
+            # equivalent)
+            RoboVacSensor(
+                coordinator,
+                "work_mode",
+                "Work Mode",
+                lambda s: s.work_mode,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:cog-outline",
+                category=EntityCategory.DIAGNOSTIC,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            # Cleaning Time Sensor
             RoboVacSensor(
                 coordinator,
                 "cleaning_time",
@@ -129,177 +122,150 @@ async def async_setup_entry(
                 # Stored in seconds; default the display to whole minutes.
                 suggested_unit_of_measurement="min",
                 suggested_display_precision=0,
-            )
-        )
-
-        # Cleaning Area Sensor (verified: scalar DPS 110 = m², 4=43ft²/3=32ft²;
-        # X-series via cleaning stats).
-        entities.append(
+            ),
+            # Cleaning Area Sensor (verified: scalar DPS 110 = m²,
+            # 4=43ft²/3=32ft²; X-series via cleaning stats).
             RoboVacSensor(
                 coordinator,
                 "cleaning_area",
                 "Cleaning Area",
                 lambda s: s.cleaning_area,
-                device_class=None,
-                unit="m²",
+                device_class=SensorDeviceClass.AREA,
+                unit=UnitOfArea.SQUARE_METERS,
                 state_class=SensorStateClass.MEASUREMENT,
                 icon="mdi:floor-plan",
                 availability_fn=lambda s: "cleaning_stats" in s.received_fields,
                 suggested_display_precision=0,
-            )
-        )
-
-        # Station / map sensors — scalar (Tuya) vacuum-only devices like the G50
-        # have no station and no maps, so skip these entirely there.
-        if coordinator.api_type != "scalar":
+            ),
+            # Station / map sensors — scalar (Tuya) vacuum-only devices like
+            # the G50 have no station and no maps.
             # Water level sensor (Station Clean Water)
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "water_level",
-                    "Water Level",
-                    lambda s: s.station_clean_water,
-                    device_class=None,
-                    unit=PERCENTAGE,
-                    state_class=SensorStateClass.MEASUREMENT,
-                    availability_fn=lambda s: "station_clean_water"
-                    in s.received_fields,
-                )
-            )
-
+            RoboVacSensor(
+                coordinator,
+                "water_level",
+                "Water Level",
+                lambda s: s.station_clean_water,
+                device_class=None,
+                unit=PERCENTAGE,
+                state_class=SensorStateClass.MEASUREMENT,
+                availability_fn=lambda s: "station_clean_water" in s.received_fields,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
             # Dock status sensor
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "dock_status",
-                    "Dock Status",
-                    lambda s: s.dock_status,
-                    device_class=None,
-                    unit=None,
-                    state_class=None,
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "dock_status" in s.received_fields,
-                )
-            )
-
+            RoboVacSensor(
+                coordinator,
+                "dock_status",
+                "Dock Status",
+                lambda s: s.dock_status,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "dock_status" in s.received_fields,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
             # Active map ID sensor
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "active_map",
-                    "Active Map",
-                    lambda s: s.map_id,
-                    device_class=None,
-                    unit=None,
-                    state_class=None,
-                    icon="mdi:map-marker-path",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "map_id" in s.received_fields,
-                )
-            )
-
+            RoboVacSensor(
+                coordinator,
+                "active_map",
+                "Active Map",
+                lambda s: s.map_id,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:map-marker-path",
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "map_id" in s.received_fields,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
             # Active cleaning target sensor
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "active_cleaning_target",
-                    "Active Cleaning Target",
-                    _active_rooms_value,
-                    device_class=None,
-                    unit=None,
-                    state_class=None,
-                    icon="mdi:floor-plan",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=_active_rooms_available,
-                    extra_state_attributes_fn=lambda s: {
-                        "room_ids": s.active_room_ids,
-                        "scene_id": s.current_scene_id,
-                        "scene_name": s.current_scene_name,
-                        "zone_count": s.active_zone_count,
-                    },
-                )
-            )
-
-        # WiFi + robot-position diagnostics come from novel-only DPS (169/176/179);
-        # scalar (Tuya) devices like the G50 never report them — skip there.
-        if coordinator.api_type != "scalar":
+            RoboVacSensor(
+                coordinator,
+                "active_cleaning_target",
+                "Active Cleaning Target",
+                _active_rooms_value,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                icon="mdi:floor-plan",
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=_active_rooms_available,
+                extra_state_attributes_fn=lambda s: {
+                    "room_ids": s.active_room_ids,
+                    "scene_id": s.current_scene_id,
+                    "scene_name": s.current_scene_name,
+                    "zone_count": s.active_zone_count,
+                },
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            # WiFi + robot-position diagnostics come from novel-only DPS
+            # (169/176/179); scalar (Tuya) devices never report them.
             # WiFi Signal Strength (from DPS 176 UnisettingResponse)
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "wifi_signal",
-                    "WiFi Signal Strength",
-                    lambda s: s.wifi_signal,
-                    device_class=SensorDeviceClass.SIGNAL_STRENGTH,
-                    unit=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
-                    state_class=SensorStateClass.MEASUREMENT,
-                    icon="mdi:wifi",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "wifi_signal" in s.received_fields,
-                    enabled_default=False,
-                )
-            )
-
+            RoboVacSensor(
+                coordinator,
+                "wifi_signal",
+                "WiFi Signal Strength",
+                lambda s: s.wifi_signal,
+                device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+                unit=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+                state_class=SensorStateClass.MEASUREMENT,
+                icon="mdi:wifi",
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "wifi_signal" in s.received_fields,
+                enabled_default=False,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
             # WiFi SSID (from DPS 169 DeviceInfo)
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "wifi_ssid",
-                    "WiFi SSID",
-                    lambda s: s.wifi_ssid or None,
-                    icon="mdi:wifi",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "wifi_ssid" in s.received_fields,
-                    enabled_default=False,
-                )
-            )
-
+            RoboVacSensor(
+                coordinator,
+                "wifi_ssid",
+                "WiFi SSID",
+                lambda s: s.wifi_ssid or None,
+                icon="mdi:wifi",
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "wifi_ssid" in s.received_fields,
+                enabled_default=False,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
             # WiFi IP Address (from DPS 169 DeviceInfo)
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "wifi_ip",
-                    "IP Address",
-                    lambda s: s.wifi_ip or None,
-                    icon="mdi:ip-network",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "wifi_ip" in s.received_fields,
-                    enabled_default=False,
-                )
-            )
-
+            RoboVacSensor(
+                coordinator,
+                "wifi_ip",
+                "IP Address",
+                lambda s: s.wifi_ip or None,
+                icon="mdi:ip-network",
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "wifi_ip" in s.received_fields,
+                enabled_default=False,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
             # Robot Position - raw (from DPS 179 telemetry, diagnostic)
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "robot_position_x",
-                    "Robot Position X (raw)",
-                    lambda s: s.robot_position_x,
-                    state_class=SensorStateClass.MEASUREMENT,
-                    icon="mdi:crosshairs-gps",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "robot_position" in s.received_fields,
-                    enabled_default=False,
-                )
-            )
-
-            entities.append(
-                RoboVacSensor(
-                    coordinator,
-                    "robot_position_y",
-                    "Robot Position Y (raw)",
-                    lambda s: s.robot_position_y,
-                    state_class=SensorStateClass.MEASUREMENT,
-                    icon="mdi:crosshairs-gps",
-                    category=EntityCategory.DIAGNOSTIC,
-                    availability_fn=lambda s: "robot_position" in s.received_fields,
-                    enabled_default=False,
-                )
-            )
-
-        # Schedules (read-only; scalar/Tuya devices, DPS 151). State = entry
-        # count; the decoded entries are exposed as attributes.
-        entities.append(
+            RoboVacSensor(
+                coordinator,
+                "robot_position_x",
+                "Robot Position X (raw)",
+                lambda s: s.robot_position_x,
+                state_class=SensorStateClass.MEASUREMENT,
+                icon="mdi:crosshairs-gps",
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "robot_position" in s.received_fields,
+                enabled_default=False,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            RoboVacSensor(
+                coordinator,
+                "robot_position_y",
+                "Robot Position Y (raw)",
+                lambda s: s.robot_position_y,
+                state_class=SensorStateClass.MEASUREMENT,
+                icon="mdi:crosshairs-gps",
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "robot_position" in s.received_fields,
+                enabled_default=False,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            # Schedules (read-only; scalar/Tuya devices, DPS 151). State =
+            # entry count; the decoded entries are exposed as attributes.
             RoboVacSensor(
                 coordinator,
                 "schedules",
@@ -312,29 +278,34 @@ async def async_setup_entry(
                 category=EntityCategory.DIAGNOSTIC,
                 availability_fn=lambda s: "schedules" in s.received_fields,
                 extra_state_attributes_fn=lambda s: {"entries": s.schedules},
-            )
-        )
+                supported_api_types=(API_TYPE_SCALAR,),
+            ),
+        ]
 
         # Accessory Sensors. Filter/brushes/sensor are universal; cleaning tray
-        # and mopping cloth only exist on mop-capable (non-scalar) devices.
+        # and mopping cloth only exist on mop-capable (novel) devices.
         accessories = [
-            ("filter_usage", "Filter Remaining", "mdi:air-filter"),
-            ("main_brush_usage", "Rolling Brush Remaining", "mdi:broom"),
-            ("side_brush_usage", "Side Brush Remaining", "mdi:broom"),
-            ("sensor_usage", "Sensor Remaining", "mdi:eye-outline"),
+            ("filter_usage", "Filter Remaining", "mdi:air-filter", None),
+            ("main_brush_usage", "Rolling Brush Remaining", "mdi:broom", None),
+            ("side_brush_usage", "Side Brush Remaining", "mdi:broom", None),
+            ("sensor_usage", "Sensor Remaining", "mdi:eye-outline", None),
+            (
+                "scrape_usage",
+                "Cleaning Tray Remaining",
+                "mdi:wiper",
+                (API_TYPE_NOVEL,),
+            ),
+            ("mop_usage", "Mopping Cloth Remaining", "mdi:water", (API_TYPE_NOVEL,)),
         ]
-        if coordinator.api_type != "scalar":
-            accessories += [
-                ("scrape_usage", "Cleaning Tray Remaining", "mdi:wiper"),
-                ("mop_usage", "Mopping Cloth Remaining", "mdi:water"),
-            ]
 
-        for attr, name, icon in accessories:
+        for attr, name, icon, supported_api_types in accessories:
             # We must capture the specific attr value in the lambda default args
             # otherwise all lambdas will point to the last attr in the loop.
             # X-series report usage in hours; scalar-protocol (scalar protocol) report
             # usage in MINUTES with their own per-accessory max life (hours).
-            def get_accessory_remaining(state: VacuumState, a: str = attr) -> int | None:
+            def get_accessory_remaining(
+                state: VacuumState, a: str = attr
+            ) -> int | None:
                 usage = getattr(state.accessories, a) or 0
                 if state.api_type == "scalar":
                     max_h = SCALAR_ACCESSORY_MAX_LIFE.get(a)
@@ -370,7 +341,7 @@ async def async_setup_entry(
                     return a in SCALAR_ACCESSORY_MAX_LIFE
                 return True
 
-            entities.append(
+            sensors.append(
                 RoboVacSensor(
                     coordinator,
                     attr.replace("_usage", "_remaining"),
@@ -383,8 +354,11 @@ async def async_setup_entry(
                     category=EntityCategory.DIAGNOSTIC,
                     extra_state_attributes_fn=get_attributes,
                     availability_fn=accessory_available,
+                    supported_api_types=supported_api_types,
                 )
             )
+
+        entities.extend(filter_supported_entities(coordinator, sensors))
 
     async_add_entities(entities)
 
@@ -410,9 +384,12 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
         enabled_default: bool = True,
         suggested_display_precision: int | None = None,
         suggested_unit_of_measurement: str | None = None,
+        supported_api_types: tuple[str, ...] | None = None,
     ) -> None:
         """Initialize the sensor."""
         super().__init__(coordinator)
+        # DPS protocols this sensor exists on (see entity.py); None = all.
+        self.supported_api_types = supported_api_types
         self._value_fn = value_fn
         self._extra_attrs_fn = extra_state_attributes_fn
         self._availability_fn = availability_fn

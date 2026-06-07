@@ -98,9 +98,9 @@ def test_g_series_commands_via_dispatch():
 def test_scalar_movement_commands():
     """G50 movement (captured from the app's /req): start/home via DPS 5,
     pause/resume via DPS 122. (DPS 2/101 are ignored by the firmware.)"""
-    from custom_components.robovac_mqtt.const import SCALAR_DPS
-
-    assert build_command("start_auto", api_type="scalar") == {SCALAR_DPS["WORK_MODE"]: 1}
+    assert build_command("start_auto", api_type="scalar") == {
+        SCALAR_DPS["WORK_MODE"]: 1
+    }
     assert build_command("return_to_base", api_type="scalar") == {
         SCALAR_DPS["WORK_MODE"]: 3
     }

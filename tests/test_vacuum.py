@@ -108,7 +108,7 @@ async def test_vacuum_commands(mock_coordinator, mock_config_entry):
 
         # Spot Clean
         await entity.async_clean_spot()
-        mock_build.assert_called_with("clean_spot")
+        mock_build.assert_called_with("clean_spot", api_type=api)
 
         # Locate
         await entity.async_locate()
@@ -131,7 +131,9 @@ async def test_set_fan_speed(mock_coordinator, mock_config_entry):
         speed_max = EUFY_CLEAN_CLEAN_SPEED.MAX.value
         await entity.async_set_fan_speed(speed_max)
         mock_build.assert_called_with(
-            "set_fan_speed", api_type=mock_coordinator.data.api_type, fan_speed=speed_max
+            "set_fan_speed",
+            api_type=mock_coordinator.data.api_type,
+            fan_speed=speed_max,
         )
         mock_coordinator.async_send_command.assert_called_with({"cmd": "speed"})
 
@@ -159,6 +161,34 @@ async def test_async_send_command_raw(mock_coordinator, mock_config_entry):
         mock_coordinator.data.map_id = 9
         await entity.async_send_command("room_clean", params={"room_ids": [1]})
         mock_build.assert_called_with("room_clean", room_ids=[1], map_id=9)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "command", ["start_auto", "pause", "return_to_base", "set_fan_speed"]
+)
+async def test_async_send_command_raw_passes_api_type(
+    mock_coordinator, mock_config_entry, command
+):
+    """Raw vacuum.send_command must route through the device's DPS protocol.
+
+    Regression: scalar (e.g. G50) devices got novel/protobuf payloads when
+    commands were sent via the generic service instead of entity methods.
+    """
+    mock_coordinator.data = VacuumState(api_type="scalar")
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
+        mock_build.return_value = {"cmd": "raw"}
+
+        params = {"fan_speed": "Max"} if command == "set_fan_speed" else None
+        await entity.async_send_command(command, params=params)
+        assert mock_build.call_args.kwargs["api_type"] == "scalar"
+        mock_coordinator.async_send_command.assert_called_with({"cmd": "raw"})
+
+        # An explicit api_type in params still wins over the detected one.
+        await entity.async_send_command(command, params={"api_type": "novel"})
+        assert mock_build.call_args.kwargs["api_type"] == "novel"
 
 
 @pytest.fixture

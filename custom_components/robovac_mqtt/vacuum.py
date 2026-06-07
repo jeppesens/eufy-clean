@@ -463,7 +463,9 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
     async def async_clean_spot(self, **kwargs: Any) -> None:
         """Perform a spot clean-up."""
-        await self.coordinator.async_send_command(build_command("clean_spot"))
+        await self.coordinator.async_send_command(
+            build_command("clean_spot", api_type=self._api_type)
+        )
 
     async def async_locate(self, **kwargs: Any) -> None:
         """Locate the vacuum cleaner."""
@@ -562,6 +564,10 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         if isinstance(params, dict):
             command_kwargs.update(params)
         command_kwargs.update(kwargs)
+        # Route raw service commands through the device's DPS protocol too, so
+        # e.g. vacuum.send_command "pause" emits a scalar write on scalar
+        # (Tuya) devices. An explicit api_type in params still wins.
+        command_kwargs.setdefault("api_type", self._api_type)
 
         command_dict = build_command(command, **command_kwargs)
         if command_dict:

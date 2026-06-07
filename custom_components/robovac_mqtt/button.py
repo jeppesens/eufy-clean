@@ -14,9 +14,67 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
+from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
 from .proto.cloud.consumable_pb2 import ConsumableRequest
 
 _LOGGER = logging.getLogger(__name__)
+
+# Accessory reset buttons: (name, id_suffix, novel reset_type, icon,
+# scalar DPS-150 key, supported api types). Filter/brushes/sensor are
+# universal; cleaning tray + mopping cloth only exist on mop-capable
+# (novel) devices.
+_ACCESSORY_RESET_BUTTONS: list[
+    tuple[str, str, int, str, str | None, tuple[str, ...] | None]
+] = [
+    (
+        "Reset Filter",
+        "_reset_filter",
+        ConsumableRequest.FILTER_MESH,
+        "mdi:air-filter",
+        "dust_filter",
+        None,
+    ),
+    (
+        "Reset Rolling Brush",
+        "_reset_main_brush",
+        ConsumableRequest.ROLLING_BRUSH,
+        "mdi:broom",
+        "roller_brush",
+        None,
+    ),
+    (
+        "Reset Side Brush",
+        "_reset_side_brush",
+        ConsumableRequest.SIDE_BRUSH,
+        "mdi:broom",
+        "side_brush",
+        None,
+    ),
+    (
+        "Reset Sensors",
+        "_reset_sensors",
+        ConsumableRequest.SENSOR,
+        "mdi:eye-outline",
+        "sensors",
+        None,
+    ),
+    (
+        "Reset Cleaning Tray",
+        "_reset_scrape",
+        ConsumableRequest.SCRAPE,
+        "mdi:wiper",
+        None,
+        (API_TYPE_NOVEL,),
+    ),
+    (
+        "Reset Mopping Cloth",
+        "_reset_mop",
+        ConsumableRequest.MOP,
+        "mdi:water",
+        None,
+        (API_TYPE_NOVEL,),
+    ),
+]
 
 
 async def async_setup_entry(
@@ -33,79 +91,58 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding buttons for %s", coordinator.device_name)
 
-        # Scalar (Tuya) devices like the G50 are vacuum-only: no station (wash/dry/
-        # dust), no mop. Skip those buttons entirely instead of leaving them dead.
-        is_scalar = coordinator.api_type == "scalar"
-
-        if not is_scalar:
-            entities.extend(
-                [
-                    RoboVacButton(coordinator, "Dry Mop", "_dry_mop", "go_dry"),
-                    RoboVacButton(
-                        coordinator, "Wash Mop", "_wash_mop", "go_selfcleaning"
-                    ),
-                    RoboVacButton(
-                        coordinator, "Empty Dust Bin", "_empty_dust_bin", "collect_dust"
-                    ),
-                    RoboVacButton(
-                        coordinator, "Stop Dry Mop", "_stop_dry_mop", "stop_dry"
-                    ),
-                ]
-            )
-
-        # Accessory Reset Buttons (filter/brushes/sensor are universal).
-        accessories = [
-            # (name, id_suffix, novel reset_type, icon, scalar DPS-150 key)
-            (
-                "Reset Filter",
-                "_reset_filter",
-                ConsumableRequest.FILTER_MESH,
-                "mdi:air-filter",
-                "dust_filter",
+        buttons = [
+            # Station buttons (wash/dry/dust) — scalar (Tuya) devices like the
+            # G50 are vacuum-only and have no station.
+            RoboVacButton(
+                coordinator,
+                "Dry Mop",
+                "_dry_mop",
+                "go_dry",
+                supported_api_types=(API_TYPE_NOVEL,),
             ),
-            (
-                "Reset Rolling Brush",
-                "_reset_main_brush",
-                ConsumableRequest.ROLLING_BRUSH,
+            RoboVacButton(
+                coordinator,
+                "Wash Mop",
+                "_wash_mop",
+                "go_selfcleaning",
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            RoboVacButton(
+                coordinator,
+                "Empty Dust Bin",
+                "_empty_dust_bin",
+                "collect_dust",
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            RoboVacButton(
+                coordinator,
+                "Stop Dry Mop",
+                "_stop_dry_mop",
+                "stop_dry",
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            # Detangle roller brush — scalar/Tuya devices only (DPS 153).
+            RoboVacButton(
+                coordinator,
+                "Detangle Roller Brush",
+                "_detangle_brush",
+                "detangle_brush",
                 "mdi:broom",
-                "roller_brush",
-            ),
-            (
-                "Reset Side Brush",
-                "_reset_side_brush",
-                ConsumableRequest.SIDE_BRUSH,
-                "mdi:broom",
-                "side_brush",
-            ),
-            (
-                "Reset Sensors",
-                "_reset_sensors",
-                ConsumableRequest.SENSOR,
-                "mdi:eye-outline",
-                "sensors",
+                category=EntityCategory.CONFIG,
+                supported_api_types=(API_TYPE_SCALAR,),
             ),
         ]
-        if not is_scalar:
-            # Cleaning tray + mopping cloth only exist on mop-capable devices.
-            accessories += [
-                (
-                    "Reset Cleaning Tray",
-                    "_reset_scrape",
-                    ConsumableRequest.SCRAPE,
-                    "mdi:wiper",
-                    None,
-                ),
-                (
-                    "Reset Mopping Cloth",
-                    "_reset_mop",
-                    ConsumableRequest.MOP,
-                    "mdi:water",
-                    None,
-                ),
-            ]
 
-        for name, suffix, reset_type, icon, scalar_key in accessories:
-            entities.append(
+        for (
+            name,
+            suffix,
+            reset_type,
+            icon,
+            scalar_key,
+            supported,
+        ) in _ACCESSORY_RESET_BUTTONS:
+            buttons.append(
                 RoboVacButton(
                     coordinator,
                     name,
@@ -113,23 +150,13 @@ async def async_setup_entry(
                     "reset_accessory",
                     icon,
                     category=EntityCategory.CONFIG,
+                    supported_api_types=supported,
                     reset_type=reset_type,
                     scalar_key=scalar_key,
                 )
             )
 
-        # Detangle roller brush — scalar/Tuya devices only (DPS 153).
-        if is_scalar:
-            entities.append(
-                RoboVacButton(
-                    coordinator,
-                    "Detangle Roller Brush",
-                    "_detangle_brush",
-                    "detangle_brush",
-                    "mdi:broom",
-                    category=EntityCategory.CONFIG,
-                )
-            )
+        entities.extend(filter_supported_entities(coordinator, buttons))
 
     async_add_entities(entities)
 
@@ -146,10 +173,13 @@ class RoboVacButton(CoordinatorEntity[EufyCleanCoordinator], ButtonEntity):
         icon: str | None = None,
         category: EntityCategory | None = None,
         available_fn: Callable[[EufyCleanCoordinator], bool] | None = None,
+        supported_api_types: tuple[str, ...] | None = None,
         **kwargs: Any,
     ) -> None:
         """Initialize button."""
         super().__init__(coordinator)
+        # DPS protocols this button exists on (see entity.py); None = all.
+        self.supported_api_types = supported_api_types
         self._command = command
         self._command_kwargs = kwargs
         self._available_fn = available_fn

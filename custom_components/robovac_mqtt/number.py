@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
+from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,28 +35,28 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding number entities for %s", coordinator.device_name)
 
-        # Wash Frequency Value — station/mop feature; skip on scalar (Tuya)
-        # vacuum-only devices like the G50.
-        if coordinator.api_type != "scalar":
-            entities.append(
-                DockNumberEntity(
-                    coordinator,
-                    "wash_frequency_value",
-                    "Wash Frequency Value (Time)",
-                    15,
-                    25,
-                    1,  # step
-                    lambda cfg: cfg.get("wash", {})
-                    .get("wash_freq", {})
-                    .get("time_or_area", {})
-                    .get("value", 15),
-                    _set_wash_freq_value,
-                    icon="mdi:clock-time-four-outline",
-                )
+        entities.extend(
+            filter_supported_entities(
+                coordinator,
+                [
+                    DockNumberEntity(
+                        coordinator,
+                        "wash_frequency_value",
+                        "Wash Frequency Value (Time)",
+                        15,
+                        25,
+                        1,  # step
+                        lambda cfg: cfg.get("wash", {})
+                        .get("wash_freq", {})
+                        .get("time_or_area", {})
+                        .get("value", 15),
+                        _set_wash_freq_value,
+                        icon="mdi:clock-time-four-outline",
+                    ),
+                    VolumeNumberEntity(coordinator),
+                ],
             )
-
-        # Voice volume (scalar-protocol, DPS 111). Hidden until reported.
-        entities.append(VolumeNumberEntity(coordinator))
+        )
 
     async_add_entities(entities)
 
@@ -74,7 +75,13 @@ def _set_wash_freq_value(cfg: dict[str, Any], val: float) -> None:
 
 
 class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
-    """Number entity for Dock settings."""
+    """Number entity for Dock settings.
+
+    Station/mop features; scalar (Tuya) vacuum-only devices like the G50 have
+    no station.
+    """
+
+    supported_api_types = (API_TYPE_NOVEL,)
 
     def __init__(
         self,
@@ -133,6 +140,8 @@ class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
 
 class VolumeNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
     """Voice volume control (scalar-protocol, DPS 111: 0-10 = 0-100% in 10% steps)."""
+
+    supported_api_types = (API_TYPE_SCALAR,)
 
     _attr_has_entity_name = True
     _attr_name = "Voice Volume"

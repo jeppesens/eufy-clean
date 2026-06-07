@@ -9,6 +9,7 @@ from custom_components.robovac_mqtt.api.parser import (
     _map_work_status,
     _parse_map_data,
     _process_cleaning_parameters,
+    update_state,
 )
 from custom_components.robovac_mqtt.const import WORK_MODE_NAMES
 from custom_components.robovac_mqtt.models import VacuumState
@@ -509,8 +510,6 @@ _G50_DPS = {
 
 
 def _parse_g50(dps):
-    from custom_components.robovac_mqtt.api.parser import update_state
-
     # api_type is sticky in real use (set from the first full message); set it
     # here so partial-dps cases route to the scalar parser deterministically.
     state = VacuumState(device_model="T2210", api_type="scalar")
@@ -624,8 +623,6 @@ def test_g_series_accepts_string_scalars():
 
 def test_scalar_pause_flag_marks_paused():
     """DPS 122=1 while mid-clean -> paused; 122=0 -> back to cleaning."""
-    from custom_components.robovac_mqtt.api.parser import update_state
-
     s = VacuumState(device_model="T2210", api_type="scalar")
     s, _ = update_state(s, {"15": 2})  # cleaning
     assert s.activity == "cleaning"
@@ -642,8 +639,6 @@ def test_scalar_pause_flag_marks_paused():
 
 def test_novel_state_ignores_scalar_dps():
     """A novel (protobuf) state must NOT interpret scalar DPS numbers as state."""
-    from custom_components.robovac_mqtt.api.parser import update_state
-
     state = VacuumState(api_type="novel")
     new_state, _ = update_state(state, {"104": 86, "102": 0})
     # Novel path ignores Tuya scalar keys -> defaults preserved

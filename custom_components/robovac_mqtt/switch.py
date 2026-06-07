@@ -16,6 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
+from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,39 +35,38 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding switch entities for %s", coordinator.device_name)
 
-        # Auto-empty / auto-wash are station features; scalar (Tuya) vacuum-only
-        # devices like the G50 have no station — skip them there.
-        if coordinator.api_type != "scalar":
-            entities.append(
-                DockSwitchEntity(
-                    coordinator,
-                    "auto_empty",
-                    "Auto Empty",
-                    lambda cfg: cfg.get("collectdust_v2", {})
-                    .get("sw", {})
-                    .get("value", False),
-                    set_collect_dust,
-                    icon="mdi:delete-restore",
-                )
+        entities.extend(
+            filter_supported_entities(
+                coordinator,
+                [
+                    DockSwitchEntity(
+                        coordinator,
+                        "auto_empty",
+                        "Auto Empty",
+                        lambda cfg: cfg.get("collectdust_v2", {})
+                        .get("sw", {})
+                        .get("value", False),
+                        set_collect_dust,
+                        icon="mdi:delete-restore",
+                    ),
+                    DockSwitchEntity(
+                        coordinator,
+                        "auto_wash",
+                        "Auto Wash",
+                        lambda cfg: cfg.get("wash", {}).get("cfg", "CLOSE")
+                        == "STANDARD",
+                        set_wash_cfg,
+                        icon="mdi:water-sync",
+                    ),
+                    DoNotDisturbSwitchEntity(coordinator),
+                    ChildLockSwitchEntity(coordinator),
+                    FindRobotSwitchEntity(coordinator),
+                    BoostIQSwitchEntity(coordinator),
+                    AutoReturnSwitchEntity(coordinator),
+                    ActivityLogSwitchEntity(coordinator),
+                ],
             )
-
-            entities.append(
-                DockSwitchEntity(
-                    coordinator,
-                    "auto_wash",
-                    "Auto Wash",
-                    lambda cfg: cfg.get("wash", {}).get("cfg", "CLOSE") == "STANDARD",
-                    set_wash_cfg,
-                    icon="mdi:water-sync",
-                )
-            )
-
-        entities.append(DoNotDisturbSwitchEntity(coordinator))
-        entities.append(ChildLockSwitchEntity(coordinator))
-        entities.append(FindRobotSwitchEntity(coordinator))
-        entities.append(BoostIQSwitchEntity(coordinator))
-        entities.append(AutoReturnSwitchEntity(coordinator))
-        entities.append(ActivityLogSwitchEntity(coordinator))
+        )
 
     async_add_entities(entities)
 
@@ -103,7 +103,13 @@ def _current_dnd_schedule(coordinator: EufyCleanCoordinator) -> dict[str, int | 
 
 
 class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
-    """Switch for Dock/Station settings."""
+    """Switch for Dock/Station settings.
+
+    Station features; scalar (Tuya) vacuum-only devices like the G50 have no
+    station.
+    """
+
+    supported_api_types = (API_TYPE_NOVEL,)
 
     def __init__(
         self,
@@ -301,9 +307,11 @@ class DoNotDisturbSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEn
 class BoostIQSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
     """Switch for BoostIQ (auto carpet suction boost).
 
-    scalar-protocol only (DPS 118). X-series lumps BoostIQ into the fan-speed list, so
-    this entity stays unavailable there (boost_iq is never reported).
+    scalar-protocol only (DPS 118). X-series lumps BoostIQ into the fan-speed
+    list, so this entity is not created there.
     """
+
+    supported_api_types = (API_TYPE_SCALAR,)
 
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize the BoostIQ switch."""
@@ -349,6 +357,8 @@ class _ScalarToggleSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchE
     attrs. Hidden until the field is reported (scalar devices only).
     """
 
+    supported_api_types = (API_TYPE_SCALAR,)
+
     _state_field: str
     _available_field: str
     _command_name: str
@@ -385,7 +395,7 @@ class _ScalarToggleSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchE
 
 
 class AutoReturnSwitchEntity(_ScalarToggleSwitchEntity):
-    """"Auto-Return Cleaning" toggle (scalar DPS 135)."""
+    """ "Auto-Return Cleaning" toggle (scalar DPS 135)."""
 
     _state_field = "auto_return"
     _available_field = "auto_return"

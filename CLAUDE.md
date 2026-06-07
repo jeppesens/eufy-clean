@@ -33,7 +33,8 @@ custom_components/robovac_mqtt/
 ├── config_flow.py       # HA config UI: email/password login
 ├── const.py             # DPS_MAP, device models, enums, error codes (100+), API URLs
 ├── coordinator.py       # EufyCleanCoordinator: MQTT lifecycle, state mgmt, dock debounce
-├── models.py            # VacuumState, AccessoryState, CleaningPreferences dataclasses
+├── entity.py            # Capability gating: supported_api_types + filter_supported_entities
+├── models.py            # VacuumState, AccessoryState, CleaningPreferences dataclasses + track_received_field
 ├── utils.py             # decode()/encode_message() for protobuf serialization
 ├── vacuum.py            # StateVacuumEntity: start/stop/pause/return/locate/fan_speed
 ├── sensor.py            # Battery, error, task status, cleaning stats, consumables
@@ -51,7 +52,8 @@ custom_components/robovac_mqtt/
 │   ├── cloud.py         # EufyLogin: orchestrates login flow, retrieves MQTT creds
 │   ├── client.py        # EufyCleanClient: Paho MQTT wrapper, connect/send/receive
 │   ├── commands.py      # build_command() dispatcher + protobuf command builders
-│   └── parser.py        # update_state(): DPS -> VacuumState mapping (most complex file)
+│   ├── parser.py        # update_state(): DPS -> VacuumState mapping (most complex file)
+│   └── parser_scalar.py # process_scalar_dps(): scalar (Tuya-style) DPS parsing (e.g. G50)
 └── proto/cloud/         # 37 .proto files + generated *_pb2.py (pre-compiled, not built)
     ├── work_status.proto      # Vacuum state (mode, charging, cleaning, dock activity)
     ├── station.proto          # Dock status, water levels, auto-config
@@ -167,6 +169,11 @@ await self.coordinator.async_send_command(build_command("room_clean", room_ids=[
 # Availability - sensors check received_fields to avoid showing unsupported features
 availability_fn=lambda s: "dock_status" in s.received_fields
 ```
+
+Protocol gating: entities declare `supported_api_types = ("novel",)` / `("scalar",)`
+(class attr, or ctor kwarg on generic classes); platform setups pass candidates
+through `entity.filter_supported_entities()` so unsupported entities never reach
+the registry. Any non-scalar api type (legacy/unknown) is treated as novel.
 
 ## Startup Flow
 

@@ -52,9 +52,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
 
         self.client: EufyCleanClient | None = None
-        self.data = VacuumState(
-            device_model=self.device_model, api_type=self.api_type
-        )
+        self.data = VacuumState(device_model=self.device_model, api_type=self.api_type)
         self._dock_idle_cancel: CALLBACK_TYPE | None = (
             None  # Timer for dock IDLE debounce
         )

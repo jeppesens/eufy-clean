@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import base64
-import json
 import logging
 from dataclasses import replace
 from typing import Any
@@ -21,9 +20,6 @@ from ..const import (
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     FAN_SUCTION_NAMES,
     KNOWN_UNPROCESSED_DPS,
-    SCALAR_CLEAN_PATTERN_NAMES,
-    SCALAR_DPS,
-    SCALAR_STATE_NAMES,
     MOP_WATER_LEVEL_NAMES,
     TRIGGER_SOURCE_NAMES,
     WORK_MODE_NAMES,
@@ -31,7 +27,7 @@ from ..const import (
     MopWaterLevel,
     TriggerSource,
 )
-from ..models import AccessoryState, VacuumState
+from ..models import AccessoryState, VacuumState, track_received_field
 from ..proto.cloud.app_device_info_pb2 import DeviceInfo
 from ..proto.cloud.clean_param_pb2 import CleanParamRequest, CleanParamResponse
 from ..proto.cloud.clean_statistics_pb2 import CleanStatistics
@@ -47,6 +43,7 @@ from ..proto.cloud.unisetting_pb2 import UnisettingResponse
 from ..proto.cloud.universal_data_pb2 import UniversalDataResponse
 from ..proto.cloud.work_status_pb2 import WorkStatus
 from ..utils import decode, deduplicate_names
+from .parser_scalar import process_scalar_dps
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -122,20 +119,6 @@ def _parse_robot_telemetry(value: str) -> dict[str, Any] | None:
     return {"x": inner[4], "y": inner[5]}
 
 
-def _track_field(state: VacuumState, changes: dict[str, Any], field_name: str) -> None:
-    """Track that a field has been received from the device.
-
-    This is used by sensors to determine availability.
-    Only updates if the field isn't already tracked.
-    """
-    if field_name not in state.received_fields:
-        _LOGGER.debug("Tracking new field for availability: %s", field_name)
-        # Get current set from changes if already modified, else from state
-        current = changes.get("received_fields", state.received_fields).copy()
-        current.add(field_name)
-        changes["received_fields"] = current
-
-
 def update_state(
     state: VacuumState, dps: dict[str, Any]
 ) -> tuple[VacuumState, dict[str, Any]]:
@@ -158,7 +141,7 @@ def update_state(
     # EufyLogin.checkApiType and carried on state.api_type.
     if state.api_type == "scalar":
         # Plain int/JSON Tuya-style DPS (e.g. T2210/G50), no protobuf.
-        _process_scalar_dps(state, dps, changes)
+        process_scalar_dps(state, dps, changes)
     else:
         # Novel: Anker length-prefixed protobuf DPS (X-series; also the
         # default for "legacy"/"unknown", which have no parser of their own).
@@ -172,246 +155,6 @@ def update_state(
         _LOGGER.debug("Received fields now: %s", changes["received_fields"])
 
     return replace(state, **changes), changes
-
-
-# scalar-protocol (scalar/JSON protocol) DPS keys whose JSON values map onto accessory
-# usage counters. See docs/g50_capture/FINDINGS.md.
-_SCALAR_ACCESSORY_FIELDS = {
-    "dust_filter": "filter_usage",
-    "roller_brush": "main_brush_usage",
-    "side_brush": "side_brush_usage",
-    "sensors": "sensor_usage",
-}
-
-
-def _g_int(value: Any) -> int | None:
-    """Coerce a scalar DPS value to int, or None if not numeric."""
-    if isinstance(value, bool):
-        return int(value)
-    if isinstance(value, int):
-        return value
-    if isinstance(value, str) and value.lstrip("-").isdigit():
-        return int(value)
-    return None
-
-
-def _process_scalar_dps(
-    state: VacuumState, dps: dict[str, Any], changes: dict[str, Any]
-) -> None:
-    """Process DPS for scalar/JSON devices (e.g. T2210/G50).
-
-    These devices send plain ints and JSON instead of the X-series protobuf
-    blobs, on a different set of DPS numbers, and emit NO WorkStatus (DPS 153).
-    Each DPS is handled independently so one bad value never aborts the batch.
-    """
-    for key, value in dps.items():
-        try:
-            if key == SCALAR_DPS["STATE"]:
-                code = _g_int(value)
-                if code is None:
-                    continue
-                changes["status_code"] = code
-                changes["activity"] = SCALAR_STATE_NAMES.get(code, "idle")
-                changes["charging"] = code == 5
-                changes["task_status"] = _map_scalar_task_status(code)
-
-            elif key == SCALAR_DPS["BATTERY"]:
-                level = _g_int(value)
-                if level is not None:
-                    changes["battery_level"] = level
-                    _track_field(state, changes, "battery_level")
-
-            elif key == SCALAR_DPS["SUCTION"]:
-                idx = _g_int(value)
-                if idx is not None and 0 <= idx < 4:
-                    changes["fan_speed"] = EUFY_CLEAN_NOVEL_CLEAN_SPEED[idx].value
-                    _track_field(state, changes, "fan_speed")
-
-            elif key == SCALAR_DPS["BOOST_IQ"]:
-                b = _g_int(value)
-                if b is not None:
-                    changes["boost_iq"] = bool(b)
-                    _track_field(state, changes, "boost_iq")
-
-            elif key == SCALAR_DPS["CLEAN_PATTERN"]:
-                p = _g_int(value)
-                if p is not None and p in SCALAR_CLEAN_PATTERN_NAMES:
-                    changes["cleaning_pattern"] = SCALAR_CLEAN_PATTERN_NAMES[p]
-                    _track_field(state, changes, "cleaning_pattern")
-
-            elif key == SCALAR_DPS["VOLUME"]:
-                v = _g_int(value)
-                if v is not None:
-                    changes["volume"] = max(0, min(100, v * 10))
-                    _track_field(state, changes, "volume")
-
-            elif key == SCALAR_DPS["CHILD_LOCK"]:
-                c = _g_int(value)
-                if c is not None:
-                    changes["child_lock"] = bool(c)
-                    _track_field(state, changes, "child_lock")
-
-            elif key == SCALAR_DPS["FIND_ROBOT"]:
-                f = _g_int(value)
-                if f is not None:
-                    changes["find_robot"] = bool(f)
-
-            elif key == SCALAR_DPS["DND"]:
-                _process_scalar_dnd(state, value, changes)
-
-            elif key in (SCALAR_DPS["ERROR_CODE"], SCALAR_DPS["ERROR_CODE_ALT"]):
-                code = _g_int(value)
-                if code:  # non-zero fault wins (106 and 177 are both candidates)
-                    changes["error_code"] = code
-                    changes["error_message"] = EUFY_CLEAN_ERROR_CODES.get(
-                        code, "Unknown Error"
-                    )
-                elif "error_code" not in changes:  # clear only if nothing set yet
-                    changes["error_code"] = 0
-                    changes["error_message"] = ""
-
-            elif key == SCALAR_DPS["AUTO_RETURN"]:
-                c = _g_int(value)
-                if c is not None:
-                    changes["auto_return"] = bool(c)
-                    _track_field(state, changes, "auto_return")
-
-            elif key == SCALAR_DPS["ACTIVITY_LOG"]:
-                a = _g_int(value)
-                if a is not None:
-                    changes["activity_log_upload"] = bool(a)
-                    _track_field(state, changes, "activity_log_upload")
-
-            elif key == SCALAR_DPS["SCHEDULE"]:
-                scheds = _parse_scalar_schedules(value)
-                if scheds is not None:
-                    changes["schedules"] = scheds
-                    _track_field(state, changes, "schedules")
-
-            elif key == SCALAR_DPS["CLEAN_TIME"]:
-                secs = _g_int(value)  # DPS 109 is already in seconds
-                if secs is not None:
-                    changes["cleaning_time"] = secs
-                    _track_field(state, changes, "cleaning_stats")
-
-            elif key == SCALAR_DPS["CLEAN_AREA"]:
-                area = _g_int(value)  # DPS 110 is in m²
-                if area is not None:
-                    changes["cleaning_area"] = area
-                    _track_field(state, changes, "cleaning_stats")
-
-            elif key == SCALAR_DPS["ACCESSORIES"]:
-                _process_scalar_accessories(state, value, changes)
-
-            else:
-                _LOGGER.debug("scalar-protocol unhandled DPS %s: %s", key, value)
-
-        except Exception as e:
-            _LOGGER.warning(
-                "Error parsing scalar-protocol DPS %s: %s", key, e, exc_info=True
-            )
-
-    # DPS 122 is a motion flag (1=stationary, 0=moving). A stationary robot that
-    # is otherwise mid-clean is paused — reconcile after the loop so it doesn't
-    # matter whether 122 or 15 was processed first.
-    pause_flag = dps.get(SCALAR_DPS["PAUSE"])
-    if pause_flag is not None:
-        activity = changes.get("activity", state.activity)
-        if _g_int(pause_flag) == 1 and activity == "cleaning":
-            changes["activity"] = "paused"
-            changes["task_status"] = "Paused"
-
-
-def _map_scalar_task_status(code: int) -> str:
-    """Map scalar-protocol state int (DPS 15) to a human task-status string."""
-    return {
-        0: "Standby",
-        1: "Standby",
-        2: "Cleaning",
-        4: "Returning",
-        5: "Charging",
-        6: "Docked",
-        7: "Paused",
-    }.get(code, "Standby")
-
-
-_SCALAR_SCHEDULE_DAYS = {
-    "1": "Mon",
-    "2": "Tue",
-    "3": "Wed",
-    "4": "Thu",
-    "5": "Fri",
-    "6": "Sat",
-    "7": "Sun",
-}
-
-
-def _parse_scalar_schedules(value: Any) -> list[dict[str, Any]] | None:
-    """Decode the DPS 151 schedule JSON into friendly read-only entries.
-
-    Raw entry: {"e":bool, "t":"HHMM", "r":"<day digits 1=Mon..7=Sun>",
-                "s":suction 0-3, "f":pattern 1/2, "id":int}.
-    """
-    data = value if isinstance(value, dict) else json.loads(value)
-    out: list[dict[str, Any]] = []
-    for e in data.get("l", []):
-        t = str(e.get("t", "")).zfill(4)
-        s = e.get("s")
-        f = e.get("f")
-        out.append(
-            {
-                "id": e.get("id"),
-                "enabled": bool(e.get("e")),
-                "time": f"{t[:2]}:{t[2:]}" if t.isdigit() and len(t) == 4 else t,
-                "days": ", ".join(
-                    _SCALAR_SCHEDULE_DAYS.get(d, d) for d in str(e.get("r", ""))
-                ),
-                "suction": (
-                    EUFY_CLEAN_NOVEL_CLEAN_SPEED[s].value
-                    if isinstance(s, int) and 0 <= s < 4
-                    else s
-                ),
-                "pattern": SCALAR_CLEAN_PATTERN_NAMES.get(f, f),
-            }
-        )
-    return out
-
-
-def _process_scalar_dnd(
-    state: VacuumState, value: Any, changes: dict[str, Any]
-) -> None:
-    """Parse scalar-protocol DND JSON: {"en":bool,"start_t":"HHMM","end_t":"HHMM"}."""
-    data = value if isinstance(value, dict) else json.loads(value)
-    if "en" in data:
-        changes["dnd_enabled"] = bool(data["en"])
-    start = str(data.get("start_t", "")).zfill(4)
-    end = str(data.get("end_t", "")).zfill(4)
-    if start.isdigit() and len(start) == 4:
-        changes["dnd_start_hour"] = int(start[:2])
-        changes["dnd_start_minute"] = int(start[2:])
-    if end.isdigit() and len(end) == 4:
-        changes["dnd_end_hour"] = int(end[:2])
-        changes["dnd_end_minute"] = int(end[2:])
-    _track_field(state, changes, "do_not_disturb")
-
-
-def _process_scalar_accessories(
-    state: VacuumState, value: Any, changes: dict[str, Any]
-) -> None:
-    """Parse scalar-protocol accessory usage-counter JSON (DPS 150) into AccessoryState.
-
-    Stores raw usage counters; conversion to % remaining happens in the sensor
-    layer (per-accessory max life). See docs/g50_capture/FINDINGS.md.
-    """
-    data = value if isinstance(value, dict) else json.loads(value)
-    accessory_changes = {
-        field: int(data[json_key])
-        for json_key, field in _SCALAR_ACCESSORY_FIELDS.items()
-        if json_key in data
-    }
-    if accessory_changes:
-        changes["accessories"] = replace(state.accessories, **accessory_changes)
-        _track_field(state, changes, "accessories")
 
 
 def _process_station_status(
@@ -428,11 +171,11 @@ def _process_station_status(
         new_dock_status = _map_dock_status(station)
         # Debouncing is handled in coordinator, not here
         changes["dock_status"] = new_dock_status
-        _track_field(state, changes, "dock_status")
+        track_received_field(state, changes, "dock_status")
 
         if station.HasField("clean_water"):
             changes["station_clean_water"] = station.clean_water.value
-            _track_field(state, changes, "station_clean_water")
+            track_received_field(state, changes, "station_clean_water")
 
         # Auto Empty Config
         if station.HasField("auto_cfg_status"):
@@ -488,7 +231,7 @@ def _process_work_status(
         if work_status.HasField("mode"):
             mode_val = work_status.mode.value
             changes["work_mode"] = WORK_MODE_NAMES.get(mode_val, "unknown")
-            _track_field(state, changes, "work_mode")
+            track_received_field(state, changes, "work_mode")
         elif state.work_mode == "unknown" and changes.get("activity") == "cleaning":
             # If we don't know the mode yet but we are cleaning, default to Auto
             changes["work_mode"] = "Auto"
@@ -624,7 +367,7 @@ def _process_play_pause(
             changes["active_zone_count"] = 0
             changes["current_scene_id"] = 0
             changes["current_scene_name"] = None
-            _track_field(state, changes, "active_room_ids")
+            track_received_field(state, changes, "active_room_ids")
 
         elif mode_ctrl.HasField("select_zones_clean"):
             changes["active_zone_count"] = len(mode_ctrl.select_zones_clean.zones)
@@ -632,7 +375,7 @@ def _process_play_pause(
             changes["active_room_names"] = ""
             changes["current_scene_id"] = 0
             changes["current_scene_name"] = None
-            _track_field(state, changes, "active_room_ids")
+            track_received_field(state, changes, "active_room_ids")
 
         # Scene: intentionally skipped (already tracked via WorkStatus.current_scene)
         # Control commands (pause/resume/stop): no Param oneof, naturally ignored
@@ -657,11 +400,11 @@ def _process_other_dps(
         try:
             if key == DPS_MAP["BATTERY_LEVEL"]:
                 changes["battery_level"] = int(value)
-                _track_field(state, changes, "battery_level")
+                track_received_field(state, changes, "battery_level")
 
             elif key == DPS_MAP["CLEAN_SPEED"]:
                 changes["fan_speed"] = _map_clean_speed(value)
-                _track_field(state, changes, "fan_speed")
+                track_received_field(state, changes, "fan_speed")
 
             elif key == DPS_MAP["ERROR_CODE"]:
                 error_proto = decode(ErrorCode, value)
@@ -680,7 +423,7 @@ def _process_other_dps(
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug("Received ACCESSORIES_STATUS: %s", value)
                 changes["accessories"] = _parse_accessories(state.accessories, value)
-                _track_field(state, changes, "accessories")
+                track_received_field(state, changes, "accessories")
 
             elif key == DPS_MAP["CLEANING_STATISTICS"]:
                 stats = decode(CleanStatistics, value)
@@ -688,7 +431,7 @@ def _process_other_dps(
                 if stats.HasField("single"):
                     changes["cleaning_time"] = stats.single.clean_duration
                     changes["cleaning_area"] = stats.single.clean_area
-                    _track_field(state, changes, "cleaning_stats")
+                    track_received_field(state, changes, "cleaning_stats")
 
             elif key == DPS_MAP["SCENE_INFO"]:
                 _LOGGER.debug("Received SCENE_INFO: %s", value)
@@ -700,7 +443,7 @@ def _process_other_dps(
                 if map_info:
                     changes["map_id"] = map_info.get("map_id", 0)
                     changes["rooms"] = map_info.get("rooms", [])
-                    _track_field(state, changes, "map_id")
+                    track_received_field(state, changes, "map_id")
 
             elif key == DPS_MAP["CLEANING_PARAMETERS"]:
                 _LOGGER.debug("Received CLEANING_PARAMETERS: %s", value)
@@ -721,10 +464,10 @@ def _process_other_dps(
                     changes["device_mac"] = info.device_mac
                 if info.wifi_name:
                     changes["wifi_ssid"] = info.wifi_name
-                    _track_field(state, changes, "wifi_ssid")
+                    track_received_field(state, changes, "wifi_ssid")
                 if info.wifi_ip:
                     changes["wifi_ip"] = info.wifi_ip
-                    _track_field(state, changes, "wifi_ip")
+                    track_received_field(state, changes, "wifi_ip")
 
             elif key == DPS_MAP["MULTI_MAP_MANAGE"]:
                 if value is None:
@@ -738,10 +481,10 @@ def _process_other_dps(
                 _LOGGER.debug("Decoded UnisettingResponse: %s", settings)
                 # Device reports 0-100%, approximate to dBm for HA convention
                 changes["wifi_signal"] = (settings.ap_signal_strength / 2) - 100
-                _track_field(state, changes, "wifi_signal")
+                track_received_field(state, changes, "wifi_signal")
                 if settings.HasField("children_lock"):
                     changes["child_lock"] = settings.children_lock.value
-                    _track_field(state, changes, "child_lock")
+                    track_received_field(state, changes, "child_lock")
 
             elif key == DPS_MAP["UNDISTURBED"]:
                 undisturbed = decode(UndisturbedResponse, value)
@@ -756,7 +499,7 @@ def _process_other_dps(
                     if undisturbed.undisturbed.HasField("end"):
                         changes["dnd_end_hour"] = undisturbed.undisturbed.end.hour
                         changes["dnd_end_minute"] = undisturbed.undisturbed.end.minute
-                    _track_field(state, changes, "do_not_disturb")
+                    track_received_field(state, changes, "do_not_disturb")
 
             elif key == DPS_ROBOT_TELEMETRY:
                 pos = _parse_robot_telemetry(value)
@@ -769,7 +512,7 @@ def _process_other_dps(
                     raw_x, raw_y = pos["x"], pos["y"]
                     changes["robot_position_x"] = raw_x
                     changes["robot_position_y"] = raw_y
-                    _track_field(state, changes, "robot_position")
+                    track_received_field(state, changes, "robot_position")
 
             elif key in KNOWN_UNPROCESSED_DPS:
                 _LOGGER.debug(
@@ -1144,13 +887,13 @@ def _process_cleaning_parameters(
         changes["cleaning_mode"] = CLEANING_MODE_NAMES.get(
             CleaningMode(mode_val), "Vacuum"
         )
-        _track_field(state, changes, "cleaning_mode")
+        track_received_field(state, changes, "cleaning_mode")
 
     # Extract Fan Speed (available on newer devices in DPS 154)
     if clean_param.HasField("fan"):
         fan_val = clean_param.fan.suction
         changes["fan_speed"] = FAN_SUCTION_NAMES.get(fan_val, "Standard")
-        _track_field(state, changes, "fan_speed")
+        track_received_field(state, changes, "fan_speed")
         _LOGGER.debug(
             "DPS 154: Extracted fan speed %s (value: %s)", changes["fan_speed"], fan_val
         )
@@ -1161,7 +904,7 @@ def _process_cleaning_parameters(
         changes["mop_water_level"] = MOP_WATER_LEVEL_NAMES.get(
             MopWaterLevel(level_val), "Medium"
         )
-        _track_field(state, changes, "mop_water_level")
+        track_received_field(state, changes, "mop_water_level")
         _LOGGER.debug(
             "DPS 154: Extracted mop water level %s (value: %s)",
             changes["mop_water_level"],
@@ -1174,7 +917,7 @@ def _process_cleaning_parameters(
     if clean_param.HasField("mop_mode"):
         corner_val = clean_param.mop_mode.corner_clean
         changes["corner_cleaning"] = CORNER_CLEANING_NAMES.get(corner_val, "Normal")
-        _track_field(state, changes, "corner_cleaning")
+        track_received_field(state, changes, "corner_cleaning")
         _LOGGER.debug(
             "DPS 154: Extracted corner cleaning %s (value: %s)",
             changes["corner_cleaning"],
@@ -1187,7 +930,7 @@ def _process_cleaning_parameters(
         changes["cleaning_intensity"] = CLEANING_INTENSITY_NAMES.get(
             extent_val, "Normal"
         )
-        _track_field(state, changes, "cleaning_intensity")
+        track_received_field(state, changes, "cleaning_intensity")
         _LOGGER.debug(
             "DPS 154: Extracted cleaning intensity %s (value: %s)",
             changes["cleaning_intensity"],
@@ -1198,7 +941,7 @@ def _process_cleaning_parameters(
     if clean_param.HasField("clean_carpet"):
         carpet_val = clean_param.clean_carpet.strategy
         changes["carpet_strategy"] = CARPET_STRATEGY_NAMES.get(carpet_val, "Auto Raise")
-        _track_field(state, changes, "carpet_strategy")
+        track_received_field(state, changes, "carpet_strategy")
         _LOGGER.debug(
             "DPS 154: Extracted carpet strategy %s (value: %s)",
             changes["carpet_strategy"],
@@ -1208,7 +951,7 @@ def _process_cleaning_parameters(
     # Extract Smart Mode Switch
     if clean_param.HasField("smart_mode_sw"):
         changes["smart_mode"] = clean_param.smart_mode_sw.value
-        _track_field(state, changes, "smart_mode")
+        track_received_field(state, changes, "smart_mode")
         _LOGGER.debug("DPS 154: Extracted smart mode %s", changes["smart_mode"])
 
     if _LOGGER.isEnabledFor(logging.DEBUG):
