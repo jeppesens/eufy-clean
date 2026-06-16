@@ -7,6 +7,12 @@ import time
 from dataclasses import replace
 from typing import Any
 
+from homeassistant.components.persistent_notification import (
+    async_create as pn_async_create,
+)
+from homeassistant.components.persistent_notification import (
+    async_dismiss as pn_async_dismiss,
+)
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
@@ -25,12 +31,9 @@ from .api.map_stream import (
     parse_biz_protocol41,
     render_map_png,
     try_decode_as_dynamic_data,
-
     try_extract_map_data,
 )
 from .api.parser import update_state
-from homeassistant.components.persistent_notification import async_create as pn_async_create
-from homeassistant.components.persistent_notification import async_dismiss as pn_async_dismiss
 
 from .const import (
     CONF_MAP_MAX_PX,
@@ -556,14 +559,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     self.device_name,
                 )
             if trail := data.get("robot_trail"):
-                self._robot_trail = [tuple(p) for p in trail]  # type: ignore[misc]
+                self._robot_trail = [tuple(p) for p in trail]
                 _LOGGER.debug(
                     "Loaded robot trail (%d points) for %s",
                     len(self._robot_trail),
                     self.device_name,
                 )
             if dp := data.get("dock_pixel"):
-                self._dock_pixel = tuple(dp)  # type: ignore[assignment]
+                self._dock_pixel = tuple(dp)
             if md_raw := data.get("map_data"):
                 try:
                     self._map_data = MapData(

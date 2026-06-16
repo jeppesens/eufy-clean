@@ -238,7 +238,7 @@ def render_map_png(
     # Step 2 — create PIL image, Y-flip, scale
     # ------------------------------------------------------------------
     img: Image.Image = Image.new("RGB", (width, height))
-    img.putdata(colors)  # type: ignore[arg-type]
+    img.putdata(colors)
     img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
     scale = min(max_px / max(width, height), 1.0)

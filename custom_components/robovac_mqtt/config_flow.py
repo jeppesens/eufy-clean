@@ -90,6 +90,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             )
 
         errors: dict[str, str] = {}
+        title = current_username
         username = user_input[CONF_USERNAME]
 
         # Verify username matches existing entry (optional, but robust)

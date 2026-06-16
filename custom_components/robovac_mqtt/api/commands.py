@@ -7,7 +7,6 @@ from typing import Any, cast
 
 from ..const import (
     CLEAN_EXTENT_MAP,
-    VOICE_CATALOG,
     CLEAN_TYPE_MAP,
     DPS_MAP,
     EUFY_CLEAN_CONTROL,
@@ -18,6 +17,7 @@ from ..const import (
     SCALAR_DPS,
     SCALAR_WORK_MODE_GO_HOME,
     SCALAR_WORK_MODE_START,
+    VOICE_CATALOG,
 )
 from ..proto.cloud.clean_param_pb2 import CleanParam, CleanParamRequest, Fan
 from ..proto.cloud.consumable_pb2 import ConsumableRequest
