@@ -54,7 +54,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         """Handle the initial step."""
         if user_input is None:
             return self.async_show_form(step_id="user", data_schema=USER_SCHEMA)
-        errors = {}
+        errors: dict[str, str] = {}
         username = user_input[CONF_USERNAME]
         await self.async_set_unique_id(username)
         self._abort_if_unique_id_configured()
@@ -89,7 +89,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
                 step_id="reconfigure", data_schema=schema, description_placeholders={}
             )
 
-        errors = {}
+        errors: dict[str, str] = {}
         username = user_input[CONF_USERNAME]
 
         # Verify username matches existing entry (optional, but robust)
