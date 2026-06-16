@@ -91,7 +91,7 @@ def set_wash_cfg(cfg: dict[str, Any], val: bool) -> None:
         cfg["wash"]["cfg"] = "STANDARD" if val else "CLOSE"
 
 
-def _current_off_peak_schedule(coordinator: EufyCleanCoordinator) -> dict[str, int | bool]:
+def _current_off_peak_schedule(coordinator: EufyCleanCoordinator) -> dict[str, Any]:
     """Return the current off-peak charging schedule from coordinator state."""
     data = coordinator.data
     return {
@@ -103,7 +103,7 @@ def _current_off_peak_schedule(coordinator: EufyCleanCoordinator) -> dict[str, i
     }
 
 
-def _current_dnd_schedule(coordinator: EufyCleanCoordinator) -> dict[str, int | bool]:
+def _current_dnd_schedule(coordinator: EufyCleanCoordinator) -> dict[str, Any]:
     """Return the current Do Not Disturb schedule from coordinator state."""
     data = coordinator.data
     return {

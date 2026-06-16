@@ -26,8 +26,8 @@ def test_scene_select_entity_mocked():
     entity = SceneSelectEntity(mock_coordinator)
     entity.hass = MagicMock()
 
-    # 2. Test Initial State (None)
-    assert entity.current_option is None
+    # 2. Test Initial State (placeholder shown when idle)
+    assert entity.current_option == "None"
 
     # 3. Simulate Scene Active (ID Match)
     mock_coordinator.data.current_scene_id = 8
@@ -46,7 +46,7 @@ def test_scene_select_entity_mocked():
     mock_coordinator.data.current_scene_id = 0
     mock_coordinator.data.current_scene_name = None
 
-    assert entity.current_option is None
+    assert entity.current_option == "None"
 
 
 def test_scene_parsing_logic():
