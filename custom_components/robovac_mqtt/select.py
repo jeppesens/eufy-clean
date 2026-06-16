@@ -278,8 +278,8 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         ]
 
     @property
-    def current_option(self) -> str:
-        """Return the currently active task, or the placeholder when idle."""
+    def current_option(self) -> str | None:
+        """Return the currently active task, or None when idle."""
         current_id = self.coordinator.data.current_scene_id
         if current_id > 0:
             for scene in self.coordinator.data.scenes:
@@ -289,7 +289,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             if self.coordinator.data.current_scene_name:
                 return f"{self.coordinator.data.current_scene_name} (ID: {current_id})"
 
-        return self._PLACEHOLDER
+        return None
 
     async def async_select_option(self, option: str) -> None:
         """Trigger the selected task."""
@@ -340,15 +340,15 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         ]
 
     @property
-    def current_option(self) -> str:
-        """Return active room if cleaning, otherwise the placeholder."""
+    def current_option(self) -> str | None:
+        """Return active room if cleaning, otherwise None."""
         active = self.coordinator.data.active_room_names
         if active:
             # Return first active room name if it matches an option
             for r in self.coordinator.data.rooms:
                 if _format_option_label(r, "Room") in active:
                     return _format_option_label(r, "Room")
-        return self._PLACEHOLDER
+        return None
 
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""

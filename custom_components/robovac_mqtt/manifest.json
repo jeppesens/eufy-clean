@@ -1,13 +1,18 @@
 {
   "domain": "robovac_mqtt",
   "name": "Eufy Robovac MQTT",
-  "codeowners": ["@jeppesens", "@m11tch"],
+  "codeowners": [
+    "@jeppesens",
+    "@m11tch"
+  ],
   "config_flow": true,
   "dependencies": [],
   "documentation": "https://github.com/jeppesens/eufy-clean",
   "integration_type": "device",
   "iot_class": "cloud_push",
   "issue_tracker": "https://github.com/jeppesens/eufy-clean/issues",
-  "requirements": ["Pillow>=10.0.0"],
-  "version": "1.10.0"
+  "requirements": [
+    "Pillow>=10.0.0"
+  ],
+  "version": "1.11.0"
 }
