@@ -1,5 +1,5 @@
 # pylint: disable=redefined-outer-name
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant import config_entries, data_entry_flow
@@ -11,9 +11,11 @@ from custom_components.robovac_mqtt.const import DOMAIN
 
 @pytest.fixture
 def mock_login_fixture():
-    with patch("custom_components.robovac_mqtt.api.http.EufyHTTPClient.login") as mock:
-        mock.return_value = {"session": "dummy"}
-        yield mock
+    with patch("custom_components.robovac_mqtt.config_flow.EufyLogin") as mock_cls:
+        mock_instance = mock_cls.return_value
+        mock_instance.init = AsyncMock()
+        mock_instance.mqtt_devices = [{"deviceName": "Test Vac", "deviceId": "test123"}]
+        yield mock_cls
 
 
 async def test_duplicate_entry(hass: HomeAssistant, mock_login_fixture):

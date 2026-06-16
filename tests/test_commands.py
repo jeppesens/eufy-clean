@@ -81,7 +81,7 @@ def test_g_series_commands_via_dispatch():
     assert build_command("set_cleaning_pattern", pattern="Random") == {
         SCALAR_DPS["CLEAN_PATTERN"]: 2
     }
-    assert build_command("set_volume", volume=70) == {SCALAR_DPS["VOLUME"]: 7}
+    assert build_command("set_volume", api_type="scalar", volume=70) == {SCALAR_DPS["VOLUME"]: 7}
     assert build_command("set_auto_return", active=True) == {
         SCALAR_DPS["AUTO_RETURN"]: 1
     }
