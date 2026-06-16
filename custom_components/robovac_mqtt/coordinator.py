@@ -34,7 +34,6 @@ from .api.map_stream import (
     try_extract_map_data,
 )
 from .api.parser import update_state
-
 from .const import (
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_DESKTOP,
