@@ -151,7 +151,7 @@ async def test_scene_select_entity(mock_coordinator):
 
     assert entity.name == "Scene/Task"
     assert entity.options == ["None", "Scene 1 (ID: 1)", "Scene 2 (ID: 2)"]
-    assert entity.current_option is None
+    assert entity.current_option == "None"
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
         mock_build.return_value = {"cmd": "scene_cmd"}
@@ -178,7 +178,7 @@ async def test_room_select_entity(mock_coordinator):
 
     assert entity.name == "Clean Room"
     assert entity.options == ["None", "Kitchen (ID: 10)", "Living Room (ID: 12)"]
-    assert entity.current_option is None
+    assert entity.current_option == "None"
 
     with patch("custom_components.robovac_mqtt.select.build_command") as mock_build:
         mock_build.return_value = {"cmd": "room_cmd"}

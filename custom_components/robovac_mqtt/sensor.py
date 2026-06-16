@@ -33,7 +33,9 @@ _LOGGER = logging.getLogger(__name__)
 
 def _active_rooms_available(state: VacuumState) -> bool:
     """Return whether the active cleaning target sensor has meaningful data."""
-    return bool(state.active_room_names or state.current_scene_name or state.active_zone_count)
+    return bool(
+        state.active_room_names or state.current_scene_name or state.active_zone_count
+    )
 
 
 def _active_rooms_value(state: VacuumState) -> str:
