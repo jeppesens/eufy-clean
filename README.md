@@ -7,8 +7,8 @@ Full-featured Home Assistant custom component for Eufy robot vacuums. Controls c
 [![GitHub commit activity](https://img.shields.io/github/commit-activity/y/smcneece/eufy-clean.svg)](https://github.com/smcneece/eufy-clean/commits/main)
 [![GitHub](https://img.shields.io/github/license/smcneece/eufy-clean)](LICENSE)
 [![Maintainer](https://img.shields.io/badge/maintainer-%40smcneece-blue.svg)](https://github.com/smcneece)
-[![Validate with hassfest](https://github.com/smcneece/eufy-clean/workflows/Validate%20with%20hassfest/badge.svg)](https://github.com/smcneece/eufy-clean/actions/workflows/hassfest.yaml)
-[![HACS Validation](https://github.com/smcneece/eufy-clean/workflows/Validate/badge.svg)](https://github.com/smcneece/eufy-clean/actions/workflows/hacs_validation.yaml)
+[![Validate with hassfest](https://github.com/smcneece/eufy-clean/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/smcneece/eufy-clean/actions/workflows/hassfest.yaml)
+[![HACS Validation](https://github.com/smcneece/eufy-clean/actions/workflows/hacs_validation.yaml/badge.svg)](https://github.com/smcneece/eufy-clean/actions/workflows/hacs_validation.yaml)
 
 > ⭐ **Help others find this integration!** If it's working well for you, please star this repository.
 >
