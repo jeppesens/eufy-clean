@@ -1,4 +1,23 @@
 {
+  "options": {
+    "step": {
+      "init": {
+        "title": "Options",
+        "data": {
+          "map_max_px": "Map image size (px)",
+          "robot_style": "Robot marker style",
+          "notify_desktop": "Desktop notification (HA bell)",
+          "notify_mobile_service": "Mobile notification service"
+        },
+        "data_description": {
+          "map_max_px": "Maximum pixel dimension for the rendered map image. Higher values give more detail but use more memory and bandwidth.",
+          "robot_style": "How the robot is drawn on the map.",
+          "notify_desktop": "Show a persistent notification in the Home Assistant UI (the bell icon) when the robot reports an error.",
+          "notify_mobile_service": "Select your phone from the list, or type a service name (e.g. mobile_app_my_phone). Leave blank to skip mobile alerts."
+        }
+      }
+    }
+  },
   "issues": {
     "segments_changed": {
       "title": "Vacuum segments have changed",

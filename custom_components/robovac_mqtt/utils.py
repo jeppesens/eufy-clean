@@ -49,6 +49,20 @@ def encode(
     return encode_message(m, has_length)
 
 
+def decode_varint(data: bytes, pos: int) -> tuple[int, int]:
+    """Decode a protobuf varint starting at *pos*. Returns (value, new_pos)."""
+    value = 0
+    shift = 0
+    while pos < len(data):
+        b = data[pos]
+        value |= (b & 0x7F) << shift
+        pos += 1
+        if not b & 0x80:
+            return value, pos
+        shift += 7
+    return value, pos
+
+
 def encode_varint(n: int) -> bytes:
     """Encode an integer as a protobuf varint."""
     if n < 0:

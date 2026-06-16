@@ -88,12 +88,17 @@ class EufyCleanClient:
         self._key_path: str | None = None
         self._client_id: str | None = None
         self._on_message_callback: Callable[[bytes], None] | None = None
+        self._on_biz_message_callback: Callable[[bytes], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected_event = asyncio.Event()
 
     def set_on_message(self, callback: Callable[[bytes], None]):
         """Set callback for incoming raw MQTT payloads."""
         self._on_message_callback = callback
+
+    def set_on_biz_message(self, callback: Callable[[bytes], None]):
+        """Set callback for biz/ MQTT topic payloads (map stream data)."""
+        self._on_biz_message_callback = callback
 
     async def send_command(self, data_payload: dict[str, Any]) -> None:
         """Send a formatted command to the device."""
@@ -215,16 +220,21 @@ class EufyCleanClient:
             _LOGGER.info("Connected to MQTT Broker!")
             if self._loop:
                 self._loop.call_soon_threadsafe(self._connected_event.set)
-            # Subscribe to specific device topic
             if self.device_id:
-                topic = f"cmd/eufy_home/{self.device_model}/{self.device_id}/res"
-                _LOGGER.debug("Subscribing to %s", topic)
-                client.subscribe(topic)
+                cmd_topic = f"cmd/eufy_home/{self.device_model}/{self.device_id}/res"
+                _LOGGER.debug("Subscribing to %s", cmd_topic)
+                client.subscribe(cmd_topic)
+                biz_topic = f"biz/eufy_home/{self.device_model}/{self.device_id}/res"
+                _LOGGER.debug("Subscribing to %s", biz_topic)
+                client.subscribe(biz_topic)
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
 
     def _on_disconnect(self, client, userdata, rc):
-        _LOGGER.warning("Disconnected from MQTT broker, rc=%d", rc)
+        if rc == 0:
+            _LOGGER.debug("Disconnected from MQTT broker (clean)")
+        else:
+            _LOGGER.warning("Disconnected from MQTT broker unexpectedly, rc=%d", rc)
         if self._loop:
             self._loop.call_soon_threadsafe(self._connected_event.clear)
 
@@ -232,9 +242,13 @@ class EufyCleanClient:
         """Handle incoming MQTT messages."""
         try:
             payload = msg.payload
-            _LOGGER.debug("Received MQTT message on %s: %s", msg.topic, payload)
-            if self._on_message_callback:
-                if self._loop:
+            _LOGGER.debug("Received MQTT message on %s", msg.topic)
+            biz_topic = f"biz/eufy_home/{self.device_model}/{self.device_id}/res"
+            if msg.topic == biz_topic:
+                if self._on_biz_message_callback and self._loop:
+                    self._loop.call_soon_threadsafe(self._on_biz_message_callback, payload)
+            else:
+                if self._on_message_callback and self._loop:
                     self._loop.call_soon_threadsafe(self._on_message_callback, payload)
         except Exception as e:
             _LOGGER.exception("Error handling MQTT message: %s", e)

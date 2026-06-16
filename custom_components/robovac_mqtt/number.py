@@ -16,7 +16,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
-from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
+from .entity import API_TYPE_NOVEL, filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -139,9 +139,7 @@ class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
 
 
 class VolumeNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
-    """Voice volume control (scalar-protocol, DPS 111: 0-10 = 0-100% in 10% steps)."""
-
-    supported_api_types = (API_TYPE_SCALAR,)
+    """Voice volume control (novel: DPS 161 0-100; scalar: DPS 111 0-10 *10)."""
 
     _attr_has_entity_name = True
     _attr_name = "Voice Volume"
@@ -159,11 +157,6 @@ class VolumeNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
         self._attr_device_info = coordinator.device_info
 
     @property
-    def available(self) -> bool:
-        """Return whether the entity is available."""
-        return super().available and "volume" in self.coordinator.data.received_fields
-
-    @property
     def native_value(self) -> float | None:
         """Return the current volume percentage."""
         return self.coordinator.data.volume
@@ -171,7 +164,7 @@ class VolumeNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Set the volume (percentage, rounded to nearest 10%)."""
         pct = max(0, min(100, round(value / 10) * 10))
-        command = build_command("set_volume", volume=pct)
+        command = build_command("set_volume", api_type=self.coordinator.data.api_type, volume=pct)
         await self.coordinator.async_send_command(command)
         self.coordinator.async_set_updated_data(
             replace(self.coordinator.data, volume=pct)

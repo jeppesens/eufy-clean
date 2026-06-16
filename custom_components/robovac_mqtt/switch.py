@@ -59,6 +59,7 @@ async def async_setup_entry(
                         icon="mdi:water-sync",
                     ),
                     DoNotDisturbSwitchEntity(coordinator),
+                    OffPeakChargingSwitchEntity(coordinator),
                     ChildLockSwitchEntity(coordinator),
                     FindRobotSwitchEntity(coordinator),
                     BoostIQSwitchEntity(coordinator),
@@ -88,6 +89,18 @@ def set_wash_cfg(cfg: dict[str, Any], val: bool) -> None:
         cfg["wash"] = {"cfg": "STANDARD" if val else "CLOSE"}
     else:
         cfg["wash"]["cfg"] = "STANDARD" if val else "CLOSE"
+
+
+def _current_off_peak_schedule(coordinator: EufyCleanCoordinator) -> dict[str, int | bool]:
+    """Return the current off-peak charging schedule from coordinator state."""
+    data = coordinator.data
+    return {
+        "active": data.off_peak_enabled,
+        "begin_hour": data.off_peak_start_hour,
+        "begin_minute": data.off_peak_start_minute,
+        "end_hour": data.off_peak_end_hour,
+        "end_minute": data.off_peak_end_minute,
+    }
 
 
 def _current_dnd_schedule(coordinator: EufyCleanCoordinator) -> dict[str, int | bool]:
@@ -301,6 +314,60 @@ class DoNotDisturbSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEn
         await self.coordinator.async_send_command(command)
         self.coordinator.async_set_updated_data(
             replace(self.coordinator.data, dnd_enabled=state)
+        )
+
+
+class OffPeakChargingSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
+    """Switch for the Off-Peak Charging schedule."""
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize the off-peak charging switch."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_off_peak_charging"
+        self._attr_has_entity_name = True
+        self._attr_name = "Off-Peak Charging"
+        self._attr_icon = "mdi:calendar-clock"
+        self._attr_entity_category = EntityCategory.CONFIG
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def is_on(self) -> bool | None:
+        """Return true if off-peak charging is enabled."""
+        return self.coordinator.data.off_peak_enabled
+
+    @property
+    def available(self) -> bool:
+        """Return whether the entity is available."""
+        return (
+            super().available
+            and "off_peak_charging" in self.coordinator.data.received_fields
+        )
+
+    @property
+    def extra_state_attributes(self) -> dict[str, str]:
+        """Return the current off-peak charging schedule."""
+        data = self.coordinator.data
+        return {
+            "start_time": f"{data.off_peak_start_hour:02d}:{data.off_peak_start_minute:02d}",
+            "end_time": f"{data.off_peak_end_hour:02d}:{data.off_peak_end_minute:02d}",
+        }
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Enable off-peak charging."""
+        await self._set_state(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Disable off-peak charging."""
+        await self._set_state(False)
+
+    async def _set_state(self, state: bool) -> None:
+        """Send off-peak charging command and optimistically update state."""
+        schedule = _current_off_peak_schedule(self.coordinator)
+        schedule["active"] = state
+        command = build_command("set_off_peak_charging", **schedule)
+        await self.coordinator.async_send_command(command)
+        self.coordinator.async_set_updated_data(
+            replace(self.coordinator.data, off_peak_enabled=state)
         )
 
 

@@ -9,10 +9,22 @@ import homeassistant.helpers.config_validation as cv
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.helpers import selector
 from voluptuous import Required, Schema
 
-from .api.http import EufyHTTPClient
-from .const import DOMAIN, VACS
+from .api.cloud import EufyLogin
+from .const import (
+    CONF_MAP_MAX_PX,
+    CONF_NOTIFY_DESKTOP,
+    CONF_NOTIFY_MOBILE_SERVICE,
+    CONF_ROBOT_STYLE,
+    DEFAULT_MAP_MAX_PX,
+    DEFAULT_NOTIFY_DESKTOP,
+    DEFAULT_NOTIFY_MOBILE_SERVICE,
+    DEFAULT_ROBOT_STYLE,
+    DOMAIN,
+    VACS,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -30,6 +42,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
     VERSION = 1
     data: dict[str, Any] | None
 
+    @staticmethod
+    def async_get_options_flow(
+        config_entry: config_entries.ConfigEntry,
+    ) -> config_entries.OptionsFlow:
+        return OptionsFlowHandler(config_entry)
+
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
@@ -41,12 +59,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         await self.async_set_unique_id(username)
         self._abort_if_unique_id_configured()
 
-        errors = await self._validate_login(username, user_input[CONF_PASSWORD])
+        title, errors = await self._login_and_get_title(username, user_input[CONF_PASSWORD])
 
         if not errors:
             data = user_input.copy()
             data[VACS] = {}
-            return self.async_create_entry(title=username, data=data)
+            return self.async_create_entry(title=title, data=data)
 
         return self.async_show_form(
             step_id="user", data_schema=USER_SCHEMA, errors=errors
@@ -78,12 +96,13 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         if username != current_username:
             errors[CONF_USERNAME] = "username_mismatch"
         else:
-            errors = await self._validate_login(username, user_input[CONF_PASSWORD])
+            title, errors = await self._login_and_get_title(username, user_input[CONF_PASSWORD])
 
         if not errors:
             return self.async_update_reload_and_abort(
                 entry,
                 data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]},
+                title=title,
             )
 
         schema = Schema(
@@ -97,20 +116,88 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         )
 
     @staticmethod
-    async def _validate_login(username: str, password: str) -> dict[str, str]:
-        """Validate login credentials."""
+    async def _login_and_get_title(username: str, password: str) -> tuple[str, dict[str, str]]:
+        """Login and return (title, errors). Title is device name(s) or username fallback."""
         errors: dict[str, str] = {}
+        title = username
         try:
-            # Generate a new openudid for validation
             openudid = "".join(random.choices(string.hexdigits, k=32))
             _LOGGER.info("Trying to login with username: %s", username)
-
-            eufy_api = EufyHTTPClient(username, password, openudid)
-            login_resp = await eufy_api.login(validate_only=True)
-            if not login_resp.get("session"):
-                errors["base"] = "invalid_auth"
+            eufy_login = EufyLogin(username, password, openudid)
+            await eufy_login.init()
+            devices = eufy_login.mqtt_devices
+            if devices:
+                title = ", ".join(
+                    d.get("deviceName") or "Eufy Robot" for d in devices
+                )
+            else:
+                errors["base"] = "no_devices"
         except Exception as e:
             _LOGGER.exception("Unexpected exception: %s", e)
-            errors["base"] = "unknown"
+            errors["base"] = "invalid_auth"
 
-        return errors
+        return title, errors
+
+
+class OptionsFlowHandler(config_entries.OptionsFlow):
+    """Handle options for Eufy Robovac."""
+
+    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        self._config_entry = config_entry
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Manage the options."""
+        if user_input is not None:
+            return self.async_create_entry(title="", data=user_input)
+
+        opts = self._config_entry.options
+        current_max_px = str(opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
+        current_robot_style = opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
+        current_notify_desktop = opts.get(CONF_NOTIFY_DESKTOP, DEFAULT_NOTIFY_DESKTOP)
+        current_notify_mobile_service = opts.get(CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE)
+
+        # Discover available mobile app notify services
+        all_notify = self.hass.services.async_services().get("notify", {})
+        mobile_services = sorted(
+            svc for svc in all_notify if svc.startswith("mobile_app_")
+        )
+        mobile_options = [
+            selector.SelectOptionDict(value=svc, label=svc.replace("mobile_app_", "").replace("_", " ").title())
+            for svc in mobile_services
+        ]
+
+        schema = Schema(
+            {
+                Required(CONF_MAP_MAX_PX, default=current_max_px): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value="256", label="256 px (low)"),
+                            selector.SelectOptionDict(value="512", label="512 px (default)"),
+                            selector.SelectOptionDict(value="1024", label="1024 px (high)"),
+                            selector.SelectOptionDict(value="2048", label="2048 px (ultra)"),
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+                Required(CONF_ROBOT_STYLE, default=current_robot_style): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(value="googly", label="Googly Eyes"),
+                            selector.SelectOptionDict(value="dot", label="Dot"),
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+                Required(CONF_NOTIFY_DESKTOP, default=current_notify_desktop): selector.BooleanSelector(),
+                Required(CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=mobile_options,
+                        custom_value=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
+                    )
+                ),
+            }
+        )
+        return self.async_show_form(step_id="init", data_schema=schema)

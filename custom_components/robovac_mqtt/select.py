@@ -23,6 +23,7 @@ from .const import (
     EUFY_CLEAN_WATER_LEVELS,
     SCALAR_CLEAN_PATTERN_NAMES,
     SCALAR_SUCTION_LEVELS,
+    VOICE_CATALOG,
 )
 from .coordinator import EufyCleanCoordinator
 from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
@@ -122,6 +123,7 @@ async def async_setup_entry(
                         _set_collect_dust_mode,
                         icon="mdi:delete-restore",
                     ),
+                    VoiceSelectEntity(coordinator),
                 ],
             )
         )
@@ -261,40 +263,46 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.device_id}_scene_select"
         self._attr_has_entity_name = True
-        self._attr_name = "Scene"
+        self._attr_name = "Scene/Task"
         self._attr_icon = "mdi:play-circle-outline"
 
         self._attr_device_info = coordinator.device_info
 
-    @property
-    def options(self) -> list[str]:
-        """Return available scenes."""
-        return [_format_option_label(s, "Scene") for s in self.coordinator.data.scenes]
+    _PLACEHOLDER = "None"
 
     @property
-    def current_option(self) -> str | None:
-        """Return the currently active scene."""
+    def options(self) -> list[str]:
+        """Return available tasks with a placeholder as the first entry."""
+        return [self._PLACEHOLDER] + [
+            _format_option_label(s, "Task") for s in self.coordinator.data.scenes
+        ]
+
+    @property
+    def current_option(self) -> str:
+        """Return the currently active task, or the placeholder when idle."""
         current_id = self.coordinator.data.current_scene_id
         if current_id > 0:
             for scene in self.coordinator.data.scenes:
                 if scene["id"] == current_id:
-                    return _format_option_label(scene, "Scene")
+                    return _format_option_label(scene, "Task")
 
-            # Fallback to reported name if available (even if not in options list)
             if self.coordinator.data.current_scene_name:
                 return f"{self.coordinator.data.current_scene_name} (ID: {current_id})"
 
-        return None
+        return self._PLACEHOLDER
 
     async def async_select_option(self, option: str) -> None:
-        """Trigger the selected scene."""
+        """Trigger the selected task."""
+        if option == self._PLACEHOLDER:
+            return
+
         scenes = self.coordinator.data.scenes
         scene = next(
-            (s for s in scenes if _format_option_label(s, "Scene") == option),
+            (s for s in scenes if _format_option_label(s, "Task") == option),
             None,
         )
         if not scene:
-            _LOGGER.error("Scene '%s' not found", option)
+            _LOGGER.error("Task '%s' not found", option)
             return
 
         scene_id = scene["id"]
@@ -322,18 +330,31 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
         self._attr_device_info = coordinator.device_info
 
-    @property
-    def options(self) -> list[str]:
-        """Return available rooms."""
-        return [_format_option_label(r, "Room") for r in self.coordinator.data.rooms]
+    _PLACEHOLDER = "None"
 
     @property
-    def current_option(self) -> str | None:
-        """Room selection is an action trigger."""
-        return None
+    def options(self) -> list[str]:
+        """Return available rooms with a placeholder as the first entry."""
+        return [self._PLACEHOLDER] + [
+            _format_option_label(r, "Room") for r in self.coordinator.data.rooms
+        ]
+
+    @property
+    def current_option(self) -> str:
+        """Return active room if cleaning, otherwise the placeholder."""
+        active = self.coordinator.data.active_room_names
+        if active:
+            # Return first active room name if it matches an option
+            for r in self.coordinator.data.rooms:
+                if _format_option_label(r, "Room") in active:
+                    return _format_option_label(r, "Room")
+        return self._PLACEHOLDER
 
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
+        if option == self._PLACEHOLDER:
+            return
+
         rooms = self.coordinator.data.rooms
         room = next(
             (r for r in rooms if _format_option_label(r, "Room") == option),
@@ -581,3 +602,46 @@ class CleaningIntensitySelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize cleaning intensity select."""
         super().__init__(coordinator, "cleaning_intensity")
+
+
+_VOICE_OPTIONS = [label for label, _ in VOICE_CATALOG.values()]
+_VOICE_LABEL_TO_SET_ID = {label: set_id for set_id, (label, _) in VOICE_CATALOG.items()}
+
+
+class VoiceSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
+    """Select entity for voice/language pack selection (novel-protocol, DPS 162)."""
+
+    supported_api_types = (API_TYPE_NOVEL,)
+
+    _attr_has_entity_name = True
+    _attr_name = "Voice"
+    _attr_icon = "mdi:account-voice"
+    _attr_entity_category = EntityCategory.CONFIG
+    _attr_options = _VOICE_OPTIONS
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize voice select."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_voice"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the label for the current voice pack."""
+        entry = VOICE_CATALOG.get(self.coordinator.data.voice_set_id)
+        return entry[0] if entry else None
+
+    async def async_select_option(self, option: str) -> None:
+        """Change the active voice pack."""
+        set_id = _VOICE_LABEL_TO_SET_ID.get(option)
+        if set_id is None:
+            _LOGGER.warning("Unknown voice option '%s'", option)
+            return
+
+        command = build_command("set_voice", set_id=set_id)
+        if not command:
+            return
+
+        await self.coordinator.async_send_command(command)
+        _optimistically_update_state(self.coordinator, voice_set_id=set_id)
+        self.async_write_ha_state()

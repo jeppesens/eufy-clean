@@ -9,6 +9,19 @@ DOMAIN: Final = "robovac_mqtt"
 VACS: Final = "vacs"
 DEVICES: Final = "devices"
 
+# Options keys
+CONF_MAP_MAX_PX: Final = "map_max_px"
+DEFAULT_MAP_MAX_PX: Final = 512
+MAP_SIZE_OPTIONS: Final = ["256", "512", "1024", "2048"]
+
+CONF_ROBOT_STYLE: Final = "robot_style"
+DEFAULT_ROBOT_STYLE: Final = "googly"
+
+CONF_NOTIFY_DESKTOP: Final = "notify_desktop"
+DEFAULT_NOTIFY_DESKTOP: Final = True
+CONF_NOTIFY_MOBILE_SERVICE: Final = "notify_mobile_service"
+DEFAULT_NOTIFY_MOBILE_SERVICE: Final = ""
+
 # Eufy API URLs
 EUFY_API_BASE_URL: Final = "https://api.eufylife.com"
 EUFY_HOME_API_BASE_URL: Final = "https://home-api.eufylife.com"
@@ -519,6 +532,8 @@ DPS_MAP = {
     "MULTI_MAP_SW": "156",
     "MAP_STREAM": "166",
     "UNSETTING": "176",
+    "VOICE_LANGUAGE": "162",
+    "VOLUME": "161",
     "MAP_EDIT_REQUEST": "170",
     "MULTI_MAP_MANAGE": "172",
     "MAP_MANAGE": "169",
@@ -541,8 +556,6 @@ KNOWN_UNPROCESSED_DPS: frozenset[str] = frozenset(
         "150",  # Unknown, value: None
         "151",  # Unknown, value: True
         "159",  # Unknown, value: True
-        "161",  # Unknown, likely volume (value: 80)
-        "162",  # Unknown protobuf, timing config
         "171",  # Unknown, value: None
         "174",  # Unknown, value: None
         "175",  # Unknown, value: None
@@ -552,6 +565,30 @@ KNOWN_UNPROCESSED_DPS: frozenset[str] = frozenset(
 
 # DPS 179 key (no named entry in DPS_MAP — undocumented telemetry channel)
 DPS_ROBOT_TELEMETRY = "179"
+
+# DPS 162 voice/language catalog: set_id → (display_label, raw_b64_request)
+# raw_b64_request is the exact LanguageRequest proto payload captured from the
+# Eufy app's /req MQTT messages (firmware v22). If a firmware update changes
+# voice pack URLs the device will reject the MD5 check — re-capture then.
+VOICE_CATALOG: dict[int, tuple[str, str]] = {
+    1200: ("Chinese (Simplified)", "hAEKgQEIsAkSVGh0dHBzOi8vZDNwa2JnazAxb291aGwuY2xvdWRmcm9udC5uZXQvdm9pY2UvcHJvZC8xNzc0MjMwOTIxMjA1Nzc2X3poX2NuLTEyMDAtdjIyLnppcBogNjY3NmIyMzYxZWIzMWM0NTQyODhjYTc3YjZjNTg5ZjAgFijUgEc="),
+    1201: ("English (Female)", "iwEKiAEIsQkSW2h0dHBzOi8vZDNwa2JnazAxb291aGwuY2xvdWRmcm9udC5uZXQvdm9pY2UvcHJvZC8xNzc0MjMwOTk4MzUxODc3X2VuX3VzX2ZlbWFsZS0xMjAxLXYyMi56aXAaIGE2ZTY5OGUxZDRmNWQ2ZDExOWY1YTEwMTEzZTQ0NmVjIBYowvtX"),
+    1202: ("English (Male)", "iQEKhgEIsgkSWWh0dHBzOi8vZDNwa2JnazAxb291aGwuY2xvdWRmcm9udC5uZXQvdm9pY2UvcHJvZC8xNzc0MjMxMDQzODE2NDY1X2VuX3VzX21hbGUtMTIwMi12MjIuemlwGiBjNzcwNmRkN2U1NTFkZjUwNjQ4MjNlNWQ4MGVjN2IzMCAWKN67Vg=="),
+    1203: ("German", "gAEKfgizCRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzEwODQ0NzE4NTJfZGUtMTIwMy12MjIuemlwGiAyYmJjZWYzNzczNjJjOWFkNjY4MjY4YzI1MWM3NWI1NiAWKJa7bA=="),
+    1204: ("Japanese", "gAEKfgi0CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzExNTU5OTYyNDNfamEtMTIwNC12MjIuemlwGiBiNmVmOGUzM2ZjMTgwOGU1OWQyZDRjN2UxOWM3MTBhOSAWKP6IcA=="),
+    1205: ("Spanish", "gAEKfgi1CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzEyNDU4OTEyODJfZXMtMTIwNS12MjIuemlwGiAwNzM1ZTYzY2NhYjcwNTZlYjJlNDQ4ZGY2YzM5ZGRkMyAWKIbuZA=="),
+    1206: ("Italian", "gAEKfgi2CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzEyODY3ODQ3MTZfaXQtMTIwNi12MjIuemlwGiBhODgwNDBlNjZmNGRmNGU2N2RjNTk1MTNiZjVhMGNhYiAWKNaqVw=="),
+    1207: ("French", "gAEKfgi3CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzEzNTcyMjIwOTBfZnItMTIwNy12MjIuemlwGiAzNzNhZDEyODA1NGZkYmM5NzEwMWQwNTJmZjNjN2IyZCAWKI65XQ=="),
+    1208: ("Portuguese (Brazil)", "gAEKfgi4CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzEzOTk4NTMxNDFfcHQtMTIwOC12MjIuemlwGiBkYTI3ZjEyMGRlMTkyNjE5ZTc1YjdmODdhYzgwNmM3ZCAWKN6UaQ=="),
+    1209: ("Turkish", "gAEKfgi5CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzE0NDc2MTMyMDlfdHItMTIwOS12MjIuemlwGiAxOTE1ZDEzNmIwZTM1ODlmNDYzZjVhZjBmZWMyYmI1MSAWKP7kXQ=="),
+    1210: ("Russian", "gAEKfgi6CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzE0OTY0NDgzMTBfcnUtMTIxMC12MjIuemlwGiA5ODkyNWQ5MTFjYWVmNDQ4ZTg2ZmE3ZWYwMjZmMjJhNCAWKO7/ag=="),
+    1211: ("Arabic", "gAEKfgi7CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzE1NTUwMDE0NDhfYXItMTIxMS12MjIuemlwGiBmMTcyMTYwYTRmMmMzODFkMDJkYzY4OWJjMzZkNTdjNyAWKN6cbg=="),
+    1212: ("Korean", "gAEKfgi8CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzI2MjIyNDA5NjFfa28tMTIxMi12MjIuemlwGiBjZTQ0NDIzYTMzZjhjYzhkNzUxMGM0NGU1OWExODMzYSAWKJ7MZg=="),
+    1213: ("Dutch", "gAEKfgi9CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzI2NTEzMDg4NTVfbmwtMTIxMy12MjIuemlwGiBjODNiN2JmOWNkMmYzM2U3OTFkMzRkZmZiOWExMzc5MyAWKP6SYg=="),
+    1214: ("Polish", "gAEKfgi+CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzI2OTU1NDY3ODFfcGwtMTIxNC12MjIuemlwGiBhNTA0OWFhZjJmMmFiMTc4MWZlOGU3NjAxMTRiZDQ5NSAWKJbobA=="),
+    1215: ("Thai", "gAEKfgi/CRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzI4Mzc1MzMzNzNfdGgtMTIxNS12MjIuemlwGiAwZWMwZjIwZWQwMzNmOGM3YTRmMDMyOWJmYzY5Y2Q0OCAWKM6QVA=="),
+    1216: ("Vietnamese", "gAEKfgjACRJRaHR0cHM6Ly9kM3BrYmdrMDFvb3VobC5jbG91ZGZyb250Lm5ldC92b2ljZS9wcm9kLzE3NzQyMzI5MzYzMTU1NzZfdm4tMTIxNi12MjIuemlwGiBkY2I4YmIyZGM0YzJlNjk5ZDA5M2NhYzMzNzYwZDgxOSAWKL77VA=="),
+}
 
 
 # --- Scalar (Tuya-style) DPS protocol ---------------------------------------

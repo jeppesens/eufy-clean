@@ -28,6 +28,8 @@ async def async_setup_entry(
     for coordinator in coordinators:
         entities.append(DoNotDisturbStartTimeEntity(coordinator))
         entities.append(DoNotDisturbEndTimeEntity(coordinator))
+        entities.append(OffPeakChargingStartTimeEntity(coordinator))
+        entities.append(OffPeakChargingEndTimeEntity(coordinator))
 
     async_add_entities(entities)
 
@@ -113,7 +115,7 @@ class DoNotDisturbStartTimeEntity(_DoNotDisturbTimeEntity):
         super().__init__(
             coordinator,
             "do_not_disturb_start",
-            "Do Not Disturb Start",
+            "Do Not Disturb Begin",
             "mdi:clock-start",
         )
 
@@ -129,5 +131,111 @@ class DoNotDisturbEndTimeEntity(_DoNotDisturbTimeEntity):
             coordinator,
             "do_not_disturb_end",
             "Do Not Disturb End",
+            "mdi:clock-end",
+        )
+
+
+class _OffPeakChargingTimeEntity(CoordinatorEntity[EufyCleanCoordinator], TimeEntity):
+    """Base class for Off-Peak Charging time entities."""
+
+    _field_prefix: str
+
+    def __init__(
+        self,
+        coordinator: EufyCleanCoordinator,
+        unique_id_suffix: str,
+        name: str,
+        icon: str,
+    ) -> None:
+        """Initialize the off-peak charging time entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_{unique_id_suffix}"
+        self._attr_has_entity_name = True
+        self._attr_name = name
+        self._attr_icon = icon
+        self._attr_entity_category = EntityCategory.CONFIG
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def available(self) -> bool:
+        """Return whether the entity is available."""
+        return (
+            super().available
+            and "off_peak_charging" in self.coordinator.data.received_fields
+        )
+
+    @property
+    def native_value(self) -> dt_time:
+        """Return the current off-peak time value."""
+        data = self.coordinator.data
+        hour = getattr(data, f"{self._field_prefix}_hour")
+        minute = getattr(data, f"{self._field_prefix}_minute")
+        return dt_time(hour=hour, minute=minute)
+
+    async def async_set_value(self, value: dt_time) -> None:
+        """Update the off-peak charging schedule time."""
+        data = self.coordinator.data
+        command = build_command(
+            "set_off_peak_charging",
+            active=data.off_peak_enabled,
+            begin_hour=(
+                value.hour
+                if self._field_prefix == "off_peak_start"
+                else data.off_peak_start_hour
+            ),
+            begin_minute=(
+                value.minute
+                if self._field_prefix == "off_peak_start"
+                else data.off_peak_start_minute
+            ),
+            end_hour=(
+                value.hour
+                if self._field_prefix == "off_peak_end"
+                else data.off_peak_end_hour
+            ),
+            end_minute=(
+                value.minute
+                if self._field_prefix == "off_peak_end"
+                else data.off_peak_end_minute
+            ),
+        )
+        await self.coordinator.async_send_command(command)
+        self.coordinator.async_set_updated_data(
+            replace(
+                data,
+                **{
+                    f"{self._field_prefix}_hour": value.hour,
+                    f"{self._field_prefix}_minute": value.minute,
+                },
+            )
+        )
+
+
+class OffPeakChargingStartTimeEntity(_OffPeakChargingTimeEntity):
+    """Time entity for off-peak charging start time."""
+
+    _field_prefix = "off_peak_start"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize the start time entity."""
+        super().__init__(
+            coordinator,
+            "off_peak_charging_start",
+            "Off-Peak Charging Begin",
+            "mdi:clock-start",
+        )
+
+
+class OffPeakChargingEndTimeEntity(_OffPeakChargingTimeEntity):
+    """Time entity for off-peak charging end time."""
+
+    _field_prefix = "off_peak_end"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize the end time entity."""
+        super().__init__(
+            coordinator,
+            "off_peak_charging_end",
+            "Off-Peak Charging End",
             "mdi:clock-end",
         )
