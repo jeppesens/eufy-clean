@@ -1,5 +1,21 @@
 {
   "config": {
+    "step": {
+      "user": {
+        "title": "Login",
+        "data": {
+          "username": "Email address",
+          "password": "Password"
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure",
+        "data": {
+          "username": "Email address",
+          "password": "Password"
+        }
+      }
+    },
     "error": {
       "no_devices": "No supported devices found on this account. Make sure at least one MQTT-capable Eufy robot vacuum is registered."
     }

@@ -14,7 +14,9 @@ from custom_components.robovac_mqtt.api.parser import (
 from custom_components.robovac_mqtt.const import DPS_MAP, WORK_MODE_NAMES
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.proto.cloud.app_device_info_pb2 import DeviceInfo
-from custom_components.robovac_mqtt.proto.cloud.clean_statistics_pb2 import CleanStatistics
+from custom_components.robovac_mqtt.proto.cloud.clean_statistics_pb2 import (
+    CleanStatistics,
+)
 from custom_components.robovac_mqtt.proto.cloud.language_pb2 import LanguageResponse
 from custom_components.robovac_mqtt.utils import encode_message
 

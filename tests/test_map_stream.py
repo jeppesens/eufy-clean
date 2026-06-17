@@ -13,7 +13,6 @@ from custom_components.robovac_mqtt.api.map_stream import (
 from custom_components.robovac_mqtt.proto.cloud import stream_pb2
 from custom_components.robovac_mqtt.utils import encode_varint
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

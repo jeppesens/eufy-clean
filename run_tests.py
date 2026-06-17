@@ -27,10 +27,10 @@ for _mod in ("fcntl", "grp", "termios", "tty", "pty", "resource"):
         sys.modules[_mod] = MagicMock()
 
 _fcntl = sys.modules["fcntl"]
-_fcntl.LOCK_EX = 2
-_fcntl.LOCK_SH = 1
-_fcntl.LOCK_NB = 4
-_fcntl.LOCK_UN = 8
+_fcntl.LOCK_EX = 2  # type: ignore[attr-defined]
+_fcntl.LOCK_SH = 1  # type: ignore[attr-defined]
+_fcntl.LOCK_NB = 4  # type: ignore[attr-defined]
+_fcntl.LOCK_UN = 8  # type: ignore[attr-defined]
 
 # ── 2. Stub out pytest_socket before the HA plugin imports it ────────────────
 # The HA plugin calls disable_socket() at session start, which replaces
@@ -46,6 +46,6 @@ if sys.platform == "win32" and "pytest_socket" not in sys.modules:
     _ps.SocketBlockedError = OSError                    # type: ignore[attr-defined]
     sys.modules["pytest_socket"] = _ps
 
-import pytest  # noqa: E402 — must come after the stubs above
+import pytest  # noqa: E402  # pylint: disable=wrong-import-position
 
 sys.exit(pytest.main(sys.argv[1:]))

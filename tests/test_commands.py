@@ -162,7 +162,7 @@ def test_build_set_voice_command_known():
 
 def test_build_set_voice_command_unknown():
     """Unknown voice set_id returns an empty dict (no command sent)."""
-    assert build_set_voice_command(9999) == {}
+    assert not build_set_voice_command(9999)
 
 
 def test_build_command_volume_novel_dispatch():
