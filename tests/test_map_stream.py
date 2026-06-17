@@ -17,6 +17,7 @@ from custom_components.robovac_mqtt.utils import encode_varint
 # Helpers
 # ---------------------------------------------------------------------------
 
+
 def _make_map_hex(width: int, height: int) -> str:
     """Return a hex string encoding a minimal plain Map proto with a varint prefix."""
     n_pixels = width * height
