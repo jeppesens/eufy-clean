@@ -258,7 +258,6 @@ mypy custom_components/robovac_mqtt/
 ## Support
 
 - **Issues:** [GitHub Issues](https://github.com/jeppesens/eufy-clean/issues)
-- **Changelog:** [CHANGELOG.md](CHANGELOG.md)
 
 ---
 
