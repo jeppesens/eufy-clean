@@ -210,6 +210,30 @@ data:
         clean_mode: "vacuum"
 ```
 
+### Zone Cleaning
+
+Clean one or more free-form rectangles instead of whole rooms. Each zone is given as
+normalized coordinates `[x0, y0, x1, y1]` — fractions (`0`–`1`) of the rendered map
+image, with `(0, 0)` at the **top-left** and `(1, 1)` at the **bottom-right** of the map
+camera image. They are converted to the robot's world frame against the current map, so the
+map must have been received at least once (run a clean or dock first).
+
+```yaml
+action: vacuum.send_command
+target:
+  entity_id: vacuum.eufy_omni_c28
+data:
+  command: zone_clean
+  params:
+    zones:
+      - [0.05, 0.70, 0.35, 0.95]   # bottom-left corner of the map
+      - [0.40, 0.40, 0.60, 0.60]   # a box in the centre
+    clean_times: 1
+```
+
+`map_id` is taken from the current map automatically; pass it explicitly to override. The
+robot uses its current cleaning mode (vacuum / mop) and fan settings for the zone run.
+
 ### Map and Room IDs
 - **Active Map sensor** — `sensor.<device>_active_map` shows the current map ID (needed for service calls)
 - **Room IDs** — available in the vacuum entity's `rooms` / `segments` state attributes; inspect via **Developer Tools → States**

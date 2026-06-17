@@ -15,9 +15,15 @@ from custom_components.robovac_mqtt.api.commands import (
     build_set_volume_command,
     build_set_volume_novel_command,
     build_set_water_level_command,
+    build_zone_clean_command,
 )
 from custom_components.robovac_mqtt.api.parser import _extract_off_peak_charging
-from custom_components.robovac_mqtt.const import DPS_MAP, SCALAR_DPS
+from custom_components.robovac_mqtt.const import (
+    DPS_MAP,
+    EUFY_CLEAN_CONTROL,
+    SCALAR_DPS,
+)
+from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
 from custom_components.robovac_mqtt.proto.cloud.unisetting_pb2 import UnisettingRequest
 from custom_components.robovac_mqtt.utils import decode, decode_varint, encode_varint
 
@@ -69,6 +75,49 @@ def test_set_child_lock_command():
     assert DPS_MAP["UNSETTING"] in result
     decoded = decode(UnisettingRequest, result[DPS_MAP["UNSETTING"]])
     assert decoded.children_lock.value is True
+
+
+# ── zone (select-zones) clean ────────────────────────────────────────
+
+
+def test_build_zone_clean_command():
+    """Zone clean encodes a SelectZonesClean ModeCtrlRequest on DPS 152."""
+    quad = [(100, 200), (500, 200), (500, 600), (100, 600)]
+    result = build_zone_clean_command([quad], map_id=3, clean_times=2)
+
+    assert DPS_MAP["PLAY_PAUSE"] in result
+    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+    assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ZONES_CLEAN
+    assert decoded.WhichOneof("Param") == "select_zones_clean"
+    szc = decoded.select_zones_clean
+    assert szc.map_id == 3
+    assert len(szc.zones) == 1
+    zone = szc.zones[0]
+    assert zone.clean_times == 2
+    q = zone.quadrangle
+    got = [(q.p0.x, q.p0.y), (q.p1.x, q.p1.y), (q.p2.x, q.p2.y), (q.p3.x, q.p3.y)]
+    assert got == quad
+
+
+def test_build_zone_clean_command_empty():
+    """No zones -> empty dict (nothing dispatched)."""
+    assert not build_zone_clean_command([])
+
+
+def test_build_zone_clean_command_skips_bad_quad():
+    """A quad without exactly four corners is skipped (no zones left -> empty)."""
+    assert not build_zone_clean_command([[(0, 0), (1, 1)]])
+
+
+def test_build_command_zone_clean_dispatch():
+    """build_command routes 'zone_clean' to the zone builder."""
+    quad = [(0, 0), (10, 0), (10, 10), (0, 10)]
+    result = build_command("zone_clean", zones_cm=[quad], map_id=1)
+
+    assert DPS_MAP["PLAY_PAUSE"] in result
+    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+    assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ZONES_CLEAN
+    assert decoded.select_zones_clean.map_id == 1
 
 
 # ── G-series scalar command builders (T2210/G50) ─────────────────────

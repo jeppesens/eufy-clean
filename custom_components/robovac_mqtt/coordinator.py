@@ -375,6 +375,57 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return px, py
         return None
 
+    def normalized_rects_to_quads_cm(
+        self, rects: list[Any]
+    ) -> list[list[tuple[int, int]]]:
+        """Convert normalized rectangles on the rendered map image to world-cm quads.
+
+        Each rect is ``(x0, y0, x1, y1)`` in fractions (0-1) of the rendered map
+        image, origin at the TOP-LEFT (HA camera-image convention).  Returns one
+        4-corner quadrilateral per rect in centimetres (the device world frame),
+        ready for ``build_zone_clean_command``.  Returns ``[]`` if no map has been
+        received yet.
+
+        This is the exact inverse of ``render_map_png``'s forward transform.  The
+        render scale cancels out — normalized coords are already relative to the
+        scaled output, so only the grid dimensions, resolution and the baked-in
+        Y-flip remain::
+
+            wx = origin_x + nx * width  * res
+            wy = origin_y + (height - 1 - ny * height) * res
+        """
+        md = self._map_data
+        if md is None:
+            return []
+        res = md.resolution or 5
+        w, h = md.width, md.height
+
+        def _to_cm(nx: float, ny: float) -> tuple[int, int]:
+            nx = min(max(float(nx), 0.0), 1.0)
+            ny = min(max(float(ny), 0.0), 1.0)
+            wx = md.origin_x + nx * w * res
+            wy = md.origin_y + (h - 1 - ny * h) * res
+            return round(wx), round(wy)
+
+        quads: list[list[tuple[int, int]]] = []
+        for rect in rects:
+            try:
+                x0, y0, x1, y1 = (float(v) for v in rect)
+            except (TypeError, ValueError):
+                _LOGGER.warning("Ignoring malformed zone rect: %s", rect)
+                continue
+            lo_x, hi_x = sorted((x0, x1))
+            lo_y, hi_y = sorted((y0, y1))
+            quads.append(
+                [
+                    _to_cm(lo_x, lo_y),  # top-left
+                    _to_cm(hi_x, lo_y),  # top-right
+                    _to_cm(hi_x, hi_y),  # bottom-right
+                    _to_cm(lo_x, hi_y),  # bottom-left
+                ]
+            )
+        return quads
+
     def _get_robot_status(self) -> str | None:
         """Return a status badge string for the current dock/activity state."""
         dock = self.data.dock_status
