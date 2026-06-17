@@ -273,9 +273,14 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     @property
     def options(self) -> list[str]:
         """Return available tasks with a placeholder as the first entry."""
-        return [self._PLACEHOLDER] + [
+        opts = [self._PLACEHOLDER] + [
             _format_option_label(s, "Task") for s in self.coordinator.data.scenes
         ]
+        # If the active scene is not in the list, append it so HA does not log a warning.
+        current = self.current_option
+        if current and current != self._PLACEHOLDER and current not in opts:
+            opts.append(current)
+        return opts
 
     @property
     def current_option(self) -> str | None:
@@ -623,6 +628,10 @@ class VoiceSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         super().__init__(coordinator)
         self._attr_unique_id = f"{coordinator.device_id}_voice"
         self._attr_device_info = coordinator.device_info
+
+    @property
+    def available(self) -> bool:
+        return super().available and "voice" in self.coordinator.data.received_fields
 
     @property
     def current_option(self) -> str | None:

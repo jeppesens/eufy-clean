@@ -320,6 +320,8 @@ class DoNotDisturbSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEn
 class OffPeakChargingSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
     """Switch for the Off-Peak Charging schedule."""
 
+    supported_api_types = (API_TYPE_NOVEL,)
+
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize the off-peak charging switch."""
         super().__init__(coordinator)

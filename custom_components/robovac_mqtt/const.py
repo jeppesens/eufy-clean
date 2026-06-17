@@ -12,7 +12,6 @@ DEVICES: Final = "devices"
 # Options keys
 CONF_MAP_MAX_PX: Final = "map_max_px"
 DEFAULT_MAP_MAX_PX: Final = 512
-MAP_SIZE_OPTIONS: Final = ["256", "512", "1024", "2048"]
 
 CONF_ROBOT_STYLE: Final = "robot_style"
 DEFAULT_ROBOT_STYLE: Final = "googly"

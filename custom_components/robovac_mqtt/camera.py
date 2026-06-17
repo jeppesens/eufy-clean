@@ -12,6 +12,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
+from .entity import API_TYPE_NOVEL, filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -24,12 +25,16 @@ async def async_setup_entry(
     """Set up Eufy map camera entities."""
     data = hass.data[DOMAIN][config_entry.entry_id]
     coordinators: list[EufyCleanCoordinator] = data["coordinators"]
-    async_add_entities(EufyMapCamera(coordinator) for coordinator in coordinators)
+    entities = []
+    for coordinator in coordinators:
+        entities.extend(filter_supported_entities(coordinator, [EufyMapCamera(coordinator)]))
+    async_add_entities(entities)
 
 
 class EufyMapCamera(CoordinatorEntity[EufyCleanCoordinator], Camera):
     """Camera entity that displays the robot's live floor map."""
 
+    supported_api_types = (API_TYPE_NOVEL,)
     _attr_has_entity_name = True
     _attr_name = "Map"
     _attr_content_type = "image/png"

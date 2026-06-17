@@ -394,13 +394,13 @@ def _encode_proto_varint_field(field_num: int, value: int) -> bytes:
     return encode_varint((field_num << 3) | 0) + encode_varint(value)
 
 
-_OFF_PEAK_FIELD_NUM = 22  # Field 22 in UnisettingRequest = OffPeakCharging (field 23 in Response)
+_OFF_PEAK_REQUEST_FIELD_NUM = 22  # Field 22 in UnisettingRequest = OffPeakCharging (field 23 in Response)
 
 
-def _build_field23_bytes(
+def _build_off_peak_sub_bytes(
     enabled: bool, begin_hour: int, begin_minute: int, end_hour: int, end_minute: int
 ) -> bytes:
-    """Build the OffPeakCharging sub-message bytes for DPS 176 field 23."""
+    """Build the OffPeakCharging sub-message bytes for DPS 176 field 22."""
     enable_inner = _encode_proto_varint_field(1, 1 if enabled else 0)
     begin_inner = (
         _encode_proto_varint_field(1, begin_hour)
@@ -430,11 +430,11 @@ def build_set_off_peak_charging_command(
     other UnisettingRequest field (e.g. children_lock) risks overwriting device
     state with stale coordinator values, so we keep this minimal.
     """
-    field23_bytes = _encode_proto_ldelim(
-        _OFF_PEAK_FIELD_NUM,
-        _build_field23_bytes(enabled, begin_hour, begin_minute, end_hour, end_minute),
+    off_peak_bytes = _encode_proto_ldelim(
+        _OFF_PEAK_REQUEST_FIELD_NUM,
+        _build_off_peak_sub_bytes(enabled, begin_hour, begin_minute, end_hour, end_minute),
     )
-    prefixed = encode_varint(len(field23_bytes)) + field23_bytes
+    prefixed = encode_varint(len(off_peak_bytes)) + off_peak_bytes
     value = base64.b64encode(prefixed).decode()
     _LOGGER.debug("Off-peak command DPS 176 field 22: %s", value)
     return {DPS_MAP["UNSETTING"]: value}

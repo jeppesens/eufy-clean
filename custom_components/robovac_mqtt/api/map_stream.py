@@ -181,6 +181,8 @@ def render_map_png(
     4. Encode to PNG bytes via img.save().
     """
     width, height = map_data.width, map_data.height
+    if width * height > 4000 * 4000:
+        raise ValueError(f"Map dimensions {width}x{height} exceed safety limit (max 4000x4000)")
     res = map_data.resolution or 5
     room_px = map_data.room_pixels
 
@@ -501,18 +503,6 @@ def try_decode_as_dynamic_data(hex_data: str) -> tuple[int, int, int] | None:
         pose = dyn.cur_pose
         if pose.x != 0 or pose.y != 0:
             return pose.x, pose.y, pose.theta
-    except Exception:
-        pass
-    return None
-
-
-def try_decode_as_metadata(hex_data: str) -> Any | None:
-    """Decode channel as Metadata proto. Returns ChanIds if map_data channel present."""
-    try:
-        proto_bytes = _hex_to_proto_bytes(hex_data)
-        meta = stream_pb2.Metadata().FromString(proto_bytes)
-        if meta.chan_ids.map_data:
-            return meta.chan_ids
     except Exception:
         pass
     return None

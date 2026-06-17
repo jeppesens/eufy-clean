@@ -3,16 +3,16 @@
 Full-featured Home Assistant custom component for Eufy robot vacuums. Controls cleaning scenes, individual rooms, dock station, and streams a live floor map — all over MQTT with no cloud polling.
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/smcneece/eufy-clean)](https://github.com/smcneece/eufy-clean/releases)
-[![GitHub commit activity](https://img.shields.io/github/commit-activity/y/smcneece/eufy-clean.svg)](https://github.com/smcneece/eufy-clean/commits/main)
-[![GitHub](https://img.shields.io/github/license/smcneece/eufy-clean)](LICENSE)
-[![Maintainer](https://img.shields.io/badge/maintainer-%40smcneece-blue.svg)](https://github.com/smcneece)
-[![Validate with hassfest](https://github.com/smcneece/eufy-clean/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/smcneece/eufy-clean/actions/workflows/hassfest.yaml)
-[![HACS Validation](https://github.com/smcneece/eufy-clean/actions/workflows/hacs_validation.yaml/badge.svg)](https://github.com/smcneece/eufy-clean/actions/workflows/hacs_validation.yaml)
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/jeppesens/eufy-clean)](https://github.com/jeppesens/eufy-clean/releases)
+[![GitHub commit activity](https://img.shields.io/github/commit-activity/y/jeppesens/eufy-clean.svg)](https://github.com/jeppesens/eufy-clean/commits/main)
+[![GitHub](https://img.shields.io/github/license/jeppesens/eufy-clean)](LICENSE)
+[![Maintainer](https://img.shields.io/badge/maintainer-%40jeppesens-blue.svg)](https://github.com/jeppesens)
+[![Validate with hassfest](https://github.com/jeppesens/eufy-clean/actions/workflows/hassfest.yaml/badge.svg)](https://github.com/jeppesens/eufy-clean/actions/workflows/hassfest.yaml)
+[![HACS Validation](https://github.com/jeppesens/eufy-clean/actions/workflows/hacs_validation.yaml/badge.svg)](https://github.com/jeppesens/eufy-clean/actions/workflows/hacs_validation.yaml)
 
 > ⭐ **Help others find this integration!** If it's working well for you, please star this repository.
 >
-> [![GitHub stars](https://img.shields.io/github/stars/smcneece/eufy-clean?style=social)](https://github.com/smcneece/eufy-clean/stargazers) [![GitHub forks](https://img.shields.io/github/forks/smcneece/eufy-clean?style=social)](https://github.com/smcneece/eufy-clean/network/members)
+> [![GitHub stars](https://img.shields.io/github/stars/jeppesens/eufy-clean?style=social)](https://github.com/jeppesens/eufy-clean/stargazers) [![GitHub forks](https://img.shields.io/github/forks/jeppesens/eufy-clean?style=social)](https://github.com/jeppesens/eufy-clean/network/members)
 
 ---
 
@@ -22,7 +22,7 @@ Full-featured Home Assistant custom component for Eufy robot vacuums. Controls c
 - Personal project maintained for Home Assistant users. Contributions welcome!
 
 > [!NOTE]
-> This is a maintained fork of [jeppesens/eufy-clean](https://github.com/jeppesens/eufy-clean), itself forked from [martijnpoppen/eufy-clean](https://github.com/martijnpoppen/eufy-clean). It adds significant new features including a live floor map camera, error notifications, off-peak charging, and more.
+> This integration is a fork of [martijnpoppen/eufy-clean](https://github.com/martijnpoppen/eufy-clean) with significant new features added, including a live floor map camera, error notifications, off-peak charging, and more.
 
 ---
 
@@ -130,7 +130,7 @@ Room segments with guaranteed unique names (duplicates auto-suffixed, e.g. `Kitc
 
 ## Installation
 
-[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=smcneece&repository=eufy-clean&category=integration)
+[![Open your Home Assistant instance and open a repository inside the Home Assistant Community Store.](https://my.home-assistant.io/badges/hacs_repository.svg)](https://my.home-assistant.io/redirect/hacs_repository/?owner=jeppesens&repository=eufy-clean&category=integration)
 
 1. Click the button above → **Open Link** → **Add** in HACS
 2. Click **Download** (bottom right) → **Download** on the version prompt
@@ -257,7 +257,7 @@ mypy custom_components/robovac_mqtt/
 
 ## Support
 
-- **Issues:** [GitHub Issues](https://github.com/smcneece/eufy-clean/issues)
+- **Issues:** [GitHub Issues](https://github.com/jeppesens/eufy-clean/issues)
 - **Changelog:** [CHANGELOG.md](CHANGELOG.md)
 
 ---
@@ -265,13 +265,13 @@ mypy custom_components/robovac_mqtt/
 ## Credits & Attribution
 
 - **Original Integration:** [@martijnpoppen](https://github.com/martijnpoppen) — created the foundation
-- **Maintained Fork:** [@jeppesens](https://github.com/jeppesens) — ongoing maintenance and improvements
-- **Enhanced Fork:** [@smcneece](https://github.com/smcneece) — live map camera, error notifications, off-peak charging, and additional sensors
+- **Maintainer:** [@jeppesens](https://github.com/jeppesens) — ongoing maintenance and improvements
+- **Contributor:** [@smcneece](https://github.com/smcneece) — live map camera, error notifications, off-peak charging, and additional sensors
 
-## Contributors (upstream)
+## Codeowners
 
-- **[@jeppesens](https://github.com/jeppesens)** — codeowners, active maintainer
-- **[@m11tch](https://github.com/m11tch)** — codeowners
+- **[@jeppesens](https://github.com/jeppesens)** — active maintainer
+- **[@m11tch](https://github.com/m11tch)** — codeowner
 
 ---
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
 import logging
@@ -13,6 +14,7 @@ from homeassistant.components.persistent_notification import (
 from homeassistant.components.persistent_notification import (
     async_dismiss as pn_async_dismiss,
 )
+from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
@@ -63,10 +65,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         hass: HomeAssistant,
         eufy_login: EufyLogin,
         device_info: dict[str, Any],
-        entry_id: str = "",
+        config_entry: ConfigEntry | None = None,
     ) -> None:
         """Initialize coordinator."""
-        self.entry_id = entry_id
+        self.entry_id = config_entry.entry_id if config_entry else ""
         self.device_id = device_info["deviceId"]
         self.device_model = device_info["deviceModel"]
         # DPS protocol ("novel" protobuf / "scalar" Tuya-int / "legacy"),
@@ -81,6 +83,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{self.device_name}",
+            config_entry=config_entry,
         )
 
         self.client: EufyCleanClient | None = None
@@ -102,6 +105,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._dock_arrival_time: float | None = None
         self._last_robot_render: float = 0.0
         self.map_image: bytes | None = None
+        self._render_task: asyncio.Task | None = None
+        self._last_notified_error_code: int = 0
+        self._last_map_save: float = 0.0
 
         if dps := device_info.get("dps"):
             self.data, _ = update_state(self.data, dps)
@@ -390,7 +396,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         return None
 
     def _rerender_map(self) -> None:
-        """Re-render the PNG from current map data and robot position."""
+        """Schedule an async map re-render, cancelling any in-flight render."""
+        if self._map_data is None:
+            return
+        if self._render_task and not self._render_task.done():
+            self._render_task.cancel()
+        self._render_task = self.hass.async_create_task(self._async_rerender_map())
+
+    async def _async_rerender_map(self) -> None:
+        """Re-render the PNG in a thread executor so PIL does not block the event loop."""
         if self._map_data is None:
             return
         # When docked/idle, show robot at the known dock pixel rather than last pose.
@@ -403,15 +417,27 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         opts = entry.options if entry else {}
         max_px = int(opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
         robot_style = opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
-        png = render_map_png(
-            self._map_data,
-            robot_pixel=robot_px,
-            robot_trail=self._robot_trail or None,
-            dock_pixel=self._dock_pixel,
-            robot_status=self._get_robot_status(),
-            max_px=max_px,
-            robot_style=robot_style,
-        )
+        # Snapshot mutable state before entering the thread.
+        map_data = self._map_data
+        robot_trail = list(self._robot_trail) if self._robot_trail else None
+        dock_pixel = self._dock_pixel
+        robot_status = self._get_robot_status()
+
+        def _render() -> bytes:
+            return render_map_png(
+                map_data,
+                robot_pixel=robot_px,
+                robot_trail=robot_trail,
+                dock_pixel=dock_pixel,
+                robot_status=robot_status,
+                max_px=max_px,
+                robot_style=robot_style,
+            )
+
+        try:
+            png = await self.hass.async_add_executor_job(_render)
+        except asyncio.CancelledError:
+            return
         self.map_image = png
         _LOGGER.debug("Map image updated (%d bytes PNG) for %s", len(png), self.device_name)
         self.hass.async_create_task(self._async_save_map_image())
@@ -456,18 +482,21 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 title=title,
                 notification_id=f"{DOMAIN}_{self.device_id}_error",
             )
-        mobile_svc = opts.get(CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE).strip()
-        if mobile_svc:
-            self.hass.async_create_task(
-                self.hass.services.async_call(
-                    "notify", mobile_svc,
-                    {"title": title, "message": msg},
-                    blocking=False,
+        if code != self._last_notified_error_code:
+            self._last_notified_error_code = code
+            mobile_svc = opts.get(CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE).strip()
+            if mobile_svc:
+                self.hass.async_create_task(
+                    self.hass.services.async_call(
+                        "notify", mobile_svc,
+                        {"title": title, "message": msg},
+                        blocking=False,
+                    )
                 )
-            )
 
     def _clear_error_notification(self) -> None:
         """Dismiss the persistent error notification when error clears."""
+        self._last_notified_error_code = 0
         pn_async_dismiss(self.hass, notification_id=f"{DOMAIN}_{self.device_id}_error")
 
     def async_shutdown_timers(self) -> None:
@@ -478,6 +507,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         if self._segment_update_cancel:
             self._segment_update_cancel()
             self._segment_update_cancel = None
+        self._clear_error_notification()
 
     @callback
     def set_active_cleaning_targets(
@@ -590,9 +620,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     _LOGGER.warning("Failed to restore map data for %s: %s", self.device_name, exc)
 
     async def _async_save_map_image(self) -> None:
-        """Persist the current map image, trail, and raw map data to storage."""
+        """Persist the current map image, trail, and raw map data to storage (debounced)."""
         if self.map_image is None:
             return
+        now = time.monotonic()
+        if now - self._last_map_save < 30:
+            return
+        self._last_map_save = now
         data = await self._store.async_load() or {}
         data["map_image_png"] = base64.b64encode(self.map_image).decode()
         data["robot_trail"] = list(self._robot_trail)

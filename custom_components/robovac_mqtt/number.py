@@ -157,6 +157,10 @@ class VolumeNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
         self._attr_device_info = coordinator.device_info
 
     @property
+    def available(self) -> bool:
+        return super().available and "volume" in self.coordinator.data.received_fields
+
+    @property
     def native_value(self) -> float | None:
         """Return the current volume percentage."""
         return self.coordinator.data.volume

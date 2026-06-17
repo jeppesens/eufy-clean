@@ -48,7 +48,7 @@ from .parser_scalar import process_scalar_dps
 
 _LOGGER = logging.getLogger(__name__)
 
-_OFF_PEAK_FIELD_NUM = 23  # UnisettingResponse field 23 = OffPeakCharging (undocumented)
+_OFF_PEAK_RESPONSE_FIELD_NUM = 23  # UnisettingResponse field 23 = OffPeakCharging (undocumented)
 
 
 def _extract_off_peak_charging(raw_b64: str) -> dict[str, int | bool] | None:
@@ -58,9 +58,10 @@ def _extract_off_peak_charging(raw_b64: str) -> dict[str, int | bool] | None:
     Structure: {enable: Switch, begin: TimePoint{hour,minute}, end: TimePoint{hour,minute}}
     """
     raw = base64.b64decode(raw_b64)
-    # Strip varint length prefix if present
-    if raw and raw[0] == len(raw) - 1:
-        raw = raw[1:]
+    if not raw:
+        return None
+    _, raw_start = decode_varint(raw, 0)
+    raw = raw[raw_start:]
 
     i = 0
     while i < len(raw):
@@ -73,7 +74,7 @@ def _extract_off_peak_charging(raw_b64: str) -> dict[str, int | bool] | None:
             length, i = decode_varint(raw, i)
             data = raw[i : i + length]
             i += length
-            if field_num == _OFF_PEAK_FIELD_NUM:
+            if field_num == _OFF_PEAK_RESPONSE_FIELD_NUM:
                 return _decode_off_peak_sub(data)
         elif wire_type == 5:
             i += 4
@@ -123,6 +124,12 @@ def _decode_off_peak_sub(data: bytes) -> dict[str, int | bool]:
                             result[f"{prefix}_minute"] = v
         elif wire_type == 0:
             _, i = decode_varint(data, i)
+        elif wire_type == 5:
+            i += 4
+        elif wire_type == 1:
+            i += 8
+        else:
+            break
     return result
 
 

@@ -64,7 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             device_id,
         )
 
-        coordinator = EufyCleanCoordinator(hass, eufy_login, device_info, entry_id=entry.entry_id)
+        coordinator = EufyCleanCoordinator(hass, eufy_login, device_info, config_entry=entry)
         try:
             await coordinator.initialize()
 
