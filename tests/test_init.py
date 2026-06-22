@@ -8,6 +8,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.robovac_mqtt import _async_register_frontend_card
 from custom_components.robovac_mqtt.const import DOMAIN
 
 
@@ -82,3 +83,37 @@ async def test_load_unload_entry(hass: HomeAssistant):
         assert (
             config_entry.state == ConfigEntryState.NOT_LOADED
         ), f"Entry state {config_entry.state}, expected {ConfigEntryState.NOT_LOADED}"
+
+
+async def test_bundled_zone_clean_card_registered(hass: HomeAssistant):
+    """The bundled zone-clean Lovelace card is served + registered exactly once."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={
+            CONF_USERNAME: "test_user",
+            CONF_PASSWORD: "test_password",
+        },
+        entry_id="card_entry_id",
+    )
+    config_entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.add_extra_js_url"
+    ) as mock_add_js:
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock()
+        mock_login.mqtt_devices = []  # card registration is independent of devices
+
+        result = await hass.config_entries.async_setup(config_entry.entry_id)
+        assert result is True, f"Async setup failed, result: {result}"
+        await hass.async_block_till_done()
+
+        # Registered once, with a cache-busted URL pointing at the bundled file.
+        assert hass.data[DOMAIN]["card_registered"] is True
+        mock_add_js.assert_called_once()
+        registered_url = mock_add_js.call_args.args[1]
+        assert registered_url.startswith("/robovac_mqtt/zone-clean-card.js?v=")
+
+        # Idempotent: the once-guard holds, so a second pass does nothing.
+        await _async_register_frontend_card(hass)
+        mock_add_js.assert_called_once()

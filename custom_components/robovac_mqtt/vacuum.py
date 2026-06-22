@@ -367,6 +367,42 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         # 1. Start Clean with GENERAL Mode
         await self._async_send_room_clean(room_ids, map_id)
 
+    async def _async_handle_zone_clean(self, params: dict[str, Any]) -> None:
+        """Handle a zone_clean command.
+
+        ``params['zones']`` is a list of normalized rectangles ``(x0, y0, x1, y1)``
+        in fractions (0-1) of the rendered map image.  They are converted to
+        world-cm quadrilaterals against the current map and dispatched as a
+        select-zones clean (mirrors ``_async_handle_room_clean``).
+        """
+        rects = params.get("zones") or params.get("rects")
+        if not rects or not isinstance(rects, list):
+            _LOGGER.warning("zone_clean called without a 'zones' list of rectangles")
+            return
+
+        quads_cm = self.coordinator.normalized_rects_to_quads_cm(rects)
+        if not quads_cm:
+            _LOGGER.warning(
+                "zone_clean: no map available yet (run a clean once so the map "
+                "populates) or all rectangles were invalid — nothing sent"
+            )
+            return
+
+        map_id = params.get("map_id") or self.coordinator.data.map_id or 1
+        clean_times = int(params.get("clean_times", 1))
+
+        command = build_command(
+            "zone_clean",
+            zones_cm=quads_cm,
+            map_id=map_id,
+            clean_times=clean_times,
+        )
+        if not command:
+            return
+
+        self.coordinator.set_active_cleaning_targets(zone_count=len(quads_cm))
+        await self.coordinator.async_send_command(command)
+
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
         """Clean specific segments with current custom parameters."""
         room_ids = [
@@ -544,6 +580,10 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         if command == "room_clean" and isinstance(params, dict):
             await self._async_handle_room_clean(params)
+            return
+
+        if command == "zone_clean" and isinstance(params, dict):
+            await self._async_handle_zone_clean(params)
             return
 
         # Handle Apple Home app_segment_clean command

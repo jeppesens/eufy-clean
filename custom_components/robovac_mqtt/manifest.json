@@ -6,7 +6,9 @@
     "@m11tch"
   ],
   "config_flow": true,
-  "dependencies": [],
+  "dependencies": [
+    "http"
+  ],
   "documentation": "https://github.com/jeppesens/eufy-clean",
   "integration_type": "device",
   "iot_class": "cloud_push",

@@ -210,6 +210,51 @@ data:
         clean_mode: "vacuum"
 ```
 
+### Zone Cleaning
+
+Clean one or more free-form rectangles instead of whole rooms. Each zone is given as
+normalized coordinates `[x0, y0, x1, y1]` — fractions (`0`–`1`) of the rendered map
+image, with `(0, 0)` at the **top-left** and `(1, 1)` at the **bottom-right** of the map
+camera image. They are converted to the robot's world frame against the current map, so the
+map must have been received at least once (run a clean or dock first).
+
+```yaml
+action: vacuum.send_command
+target:
+  entity_id: vacuum.eufy_omni_c28
+data:
+  command: zone_clean
+  params:
+    zones:
+      - [0.05, 0.70, 0.35, 0.95]   # bottom-left corner of the map
+      - [0.40, 0.40, 0.60, 0.60]   # a box in the centre
+    clean_times: 1
+```
+
+`map_id` is taken from the current map automatically; pass it explicitly to override. The
+robot uses its current cleaning mode (vacuum / mop) and fan settings for the zone run.
+
+#### Drawing zones — bundled card
+
+Hand-writing normalized coordinates is fiddly, so the integration **bundles a small
+Lovelace card** that lets you drag the boxes on the live map instead. It ships inside the
+integration and is **auto-registered on setup** — there's no `www/` copy and no Lovelace
+*Resources* entry to add. Just drop it on a dashboard:
+
+```yaml
+type: custom:zone-clean-card
+vacuum: vacuum.eufy_omni_c28
+camera: camera.eufy_omni_c28_map
+# title: Zone Clean      # optional
+# selects:               # optional — defaults to auto-discovering the vacuum's selects
+#   - select.eufy_omni_c28_cleaning_mode
+#   - select.eufy_omni_c28_clean_speed
+```
+
+Draw up to 10 boxes, set suction/mode via the surfaced `select` entities, and hit **Clean**
+— it fires the `zone_clean` send_command shown above. The map only renders after the robot
+has cleaned once (or you've edited the map in the app).
+
 ### Map and Room IDs
 - **Active Map sensor** — `sensor.<device>_active_map` shows the current map ID (needed for service calls)
 - **Room IDs** — available in the vacuum entity's `rooms` / `segments` state attributes; inspect via **Developer Tools → States**

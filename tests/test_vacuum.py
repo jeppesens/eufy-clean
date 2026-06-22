@@ -118,6 +118,56 @@ async def test_vacuum_commands(mock_coordinator, mock_config_entry):
 
 
 @pytest.mark.asyncio
+async def test_zone_clean_dispatch(mock_coordinator, mock_config_entry):
+    """zone_clean converts normalized rects, marks zone targets, and dispatches."""
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    quads = [[(1, 2), (3, 2), (3, 4), (1, 4)]]
+    mock_coordinator.normalized_rects_to_quads_cm = MagicMock(return_value=quads)
+    mock_coordinator.set_active_cleaning_targets = MagicMock()
+    mock_coordinator.data.map_id = 3
+
+    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
+        mock_build.return_value = {"152": "encoded"}
+        await entity.async_send_command(
+            "zone_clean", {"zones": [[0.1, 0.2, 0.3, 0.4]]}
+        )
+
+    mock_coordinator.normalized_rects_to_quads_cm.assert_called_once_with(
+        [[0.1, 0.2, 0.3, 0.4]]
+    )
+    mock_build.assert_called_once_with(
+        "zone_clean", zones_cm=quads, map_id=3, clean_times=1
+    )
+    mock_coordinator.set_active_cleaning_targets.assert_called_once_with(zone_count=1)
+    mock_coordinator.async_send_command.assert_called_with({"152": "encoded"})
+
+
+@pytest.mark.asyncio
+async def test_zone_clean_no_rects_noop(mock_coordinator, mock_config_entry):
+    """zone_clean with an empty 'zones' list dispatches nothing."""
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.normalized_rects_to_quads_cm = MagicMock(return_value=[])
+
+    await entity.async_send_command("zone_clean", {"zones": []})
+
+    mock_coordinator.async_send_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_zone_clean_no_map_noop(mock_coordinator, mock_config_entry):
+    """zone_clean before the map has loaded (helper returns []) dispatches nothing."""
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.normalized_rects_to_quads_cm = MagicMock(return_value=[])
+
+    await entity.async_send_command(
+        "zone_clean", {"zones": [[0.1, 0.2, 0.3, 0.4]]}
+    )
+
+    mock_coordinator.normalized_rects_to_quads_cm.assert_called_once()
+    mock_coordinator.async_send_command.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_set_fan_speed(mock_coordinator, mock_config_entry):
     """Test setting fan speed."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)

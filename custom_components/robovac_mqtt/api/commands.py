@@ -20,8 +20,13 @@ from ..const import (
     VOICE_CATALOG,
 )
 from ..proto.cloud.clean_param_pb2 import CleanParam, CleanParamRequest, Fan
+from ..proto.cloud.common_pb2 import Point, Quadrangle
 from ..proto.cloud.consumable_pb2 import ConsumableRequest
-from ..proto.cloud.control_pb2 import ModeCtrlRequest, SelectRoomsClean
+from ..proto.cloud.control_pb2 import (
+    ModeCtrlRequest,
+    SelectRoomsClean,
+    SelectZonesClean,
+)
 from ..proto.cloud.map_edit_pb2 import MapEditRequest
 from ..proto.cloud.station_pb2 import StationRequest
 from ..proto.cloud.undisturbed_pb2 import UndisturbedRequest
@@ -147,6 +152,54 @@ def build_room_clean_command(
                 ModeCtrlRequest.Method, int(EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN)
             ),
             select_rooms_clean=rooms_clean,
+        )
+    )
+    return {DPS_MAP["PLAY_PAUSE"]: value}
+
+
+def build_zone_clean_command(
+    zones_cm: list[list[tuple[int, int]]],
+    map_id: int = 3,
+    clean_times: int = 1,
+) -> dict[str, str]:
+    """Build command to clean one or more free-form zones (select-zones clean).
+
+    *zones_cm* is a list of quadrilaterals; each quad is a list of four
+    ``(x, y)`` corner points in centimetres (the device's world frame, where
+    1 unit = 1 cm = metres * 100), ordered around the rectangle.  Callers
+    convert from screen/normalized coordinates before reaching this builder
+    (see ``EufyCleanCoordinator.normalized_rects_to_quads_cm``).
+
+    Dispatch is identical to ``build_room_clean_command`` — a ``ModeCtrlRequest``
+    with method ``START_SELECT_ZONES_CLEAN`` carried on DPS 152.
+    """
+    proto_zones: list[SelectZonesClean.Zone] = []
+    for quad in zones_cm:
+        if len(quad) != 4:
+            _LOGGER.warning(
+                "Zone needs exactly 4 corner points, got %d — skipped", len(quad)
+            )
+            continue
+        pts = [Point(x=int(round(px)), y=int(round(py))) for px, py in quad]
+        proto_zones.append(
+            SelectZonesClean.Zone(
+                quadrangle=Quadrangle(p0=pts[0], p1=pts[1], p2=pts[2], p3=pts[3]),
+                clean_times=max(1, int(clean_times)),
+            )
+        )
+
+    if not proto_zones:
+        return {}
+
+    value = encode_message(
+        ModeCtrlRequest(
+            method=cast(
+                ModeCtrlRequest.Method, int(EUFY_CLEAN_CONTROL.START_SELECT_ZONES_CLEAN)
+            ),
+            select_zones_clean=SelectZonesClean(
+                zones=proto_zones,
+                map_id=int(map_id),
+            ),
         )
     )
     return {DPS_MAP["PLAY_PAUSE"]: value}
@@ -557,6 +610,12 @@ def build_command(
             kwargs.get("room_ids", []),
             kwargs.get("map_id", 3),
             kwargs.get("mode", "GENERAL"),
+        )
+    if cmd == "zone_clean":
+        return build_zone_clean_command(
+            kwargs.get("zones_cm", []),
+            kwargs.get("map_id", 3),
+            int(kwargs.get("clean_times", 1)),
         )
     if cmd == "set_room_custom":
         return build_set_room_custom_command(

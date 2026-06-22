@@ -3,11 +3,15 @@ from __future__ import annotations
 import logging
 import random
 import string
+from pathlib import Path
 
+from homeassistant.components.frontend import add_extra_js_url
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
+from homeassistant.loader import async_get_integration
 
 from .api.cloud import EufyLogin
 from .const import DOMAIN
@@ -26,10 +30,57 @@ PLATFORMS: list[Platform] = [
 ]
 _LOGGER = logging.getLogger(__name__)
 
+_FRONTEND_DIR = Path(__file__).parent / "frontend"
+_CARD_FILENAME = "zone-clean-card.js"
+_CARD_URL_PATH = f"/{DOMAIN}/{_CARD_FILENAME}"
+
+
+async def _async_register_frontend_card(hass: HomeAssistant) -> None:
+    """Serve and register the bundled zone-clean Lovelace card (once).
+
+    Shipping the card inside the integration keeps it in lock-step with the
+    ``zone_clean`` send_command handler — a single install delivers both, with no
+    manual ``www/`` copy or Lovelace resource entry for the user.
+    """
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    if domain_data.get("card_registered"):
+        return
+
+    integration = await async_get_integration(hass, DOMAIN)
+    # ?v=<version> busts the browser cache whenever the integration updates.
+    card_url = f"{_CARD_URL_PATH}?v={integration.version}"
+
+    # The card is a best-effort enhancement. In a normal install the frontend is
+    # already set up by the time this entry loads, but we don't declare it as a
+    # hard dependency: a not-yet-ready (or headless) frontend must never fail the
+    # vacuum integration's setup. add_extra_js_url needs the frontend in place.
+    try:
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    _CARD_URL_PATH,
+                    str(_FRONTEND_DIR / _CARD_FILENAME),
+                    cache_headers=False,
+                )
+            ]
+        )
+        add_extra_js_url(hass, card_url)
+    except Exception:  # frontend not ready; skip the optional card, keep the entry
+        _LOGGER.warning(
+            "Could not register the bundled zone-clean card; skipping", exc_info=True
+        )
+        return
+
+    domain_data["card_registered"] = True
+    _LOGGER.debug("Registered bundled zone-clean card at %s", card_url)
+
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
     entry.async_on_unload(entry.add_update_listener(update_listener))
+
+    # Serve + register the bundled zone-clean Lovelace card (once across entries).
+    await _async_register_frontend_card(hass)
 
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]

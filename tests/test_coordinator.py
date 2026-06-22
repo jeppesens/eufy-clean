@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
+from custom_components.robovac_mqtt.api.map_stream import MapData
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
 
@@ -47,6 +48,70 @@ def test_coordinator_init(mock_hass, mock_login):
         # Verify initial DPS processing
         mock_update.assert_called_once()
         assert coordinator.data.battery_level == 100
+
+
+def _coordinator_with_map(mock_hass, mock_login, map_data):
+    """Build a coordinator and pin its decoded map data (skips MQTT)."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+        "dps": {},
+    }
+    with patch(
+        "custom_components.robovac_mqtt.coordinator.update_state"
+    ) as mock_update:
+        mock_update.return_value = (VacuumState(), {})
+        coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator._map_data = map_data  # pylint: disable=protected-access
+    return coordinator
+
+
+def test_normalized_rects_to_quads_cm_no_map(mock_hass, mock_login):
+    """With no map decoded yet, the helper returns [] so callers no-op."""
+    coordinator = _coordinator_with_map(mock_hass, mock_login, None)
+    assert not coordinator.normalized_rects_to_quads_cm([(0.0, 0.0, 1.0, 1.0)])
+
+
+def test_normalized_rects_to_quads_cm_orientation(mock_hass, mock_login):
+    """A normalized rect maps to a world-cm rectangle with the Y-flip baked in."""
+    md = MapData(
+        raw_pixels=b"",
+        width=400,
+        height=300,
+        origin_x=-1500,
+        origin_y=-1000,
+        resolution=5,
+    )
+    coordinator = _coordinator_with_map(mock_hass, mock_login, md)
+
+    quads = coordinator.normalized_rects_to_quads_cm([(0.0, 0.0, 1.0, 1.0)])
+    assert len(quads) == 1
+    tl, tr, br, bl = quads[0]
+
+    # Axis-aligned rectangle.
+    assert tl[0] == bl[0] and tr[0] == br[0]
+    assert tl[1] == tr[1] and bl[1] == br[1]
+    # X grows left->right across the image.
+    assert tl[0] < tr[0]
+    # World Y DECREASES top->bottom of the image (render Y-flip).
+    assert tl[1] > bl[1]
+    # Exact spot-check of the unambiguous top-left corner
+    # (nx=0 -> origin_x; ny=0 -> origin_y + (height-1)*res).
+    assert tl == (-1500, -1000 + (300 - 1) * 5)
+
+
+def test_normalized_rects_to_quads_cm_skips_malformed(mock_hass, mock_login):
+    """A rect that isn't four numbers is skipped; valid ones still convert."""
+    md = MapData(
+        raw_pixels=b"", width=100, height=100, origin_x=0, origin_y=0, resolution=10
+    )
+    coordinator = _coordinator_with_map(mock_hass, mock_login, md)
+
+    quads = coordinator.normalized_rects_to_quads_cm(
+        [(0.0, 0.0, 0.5), (0.0, 0.0, 0.5, 0.5)]  # first has only 3 values
+    )
+    assert len(quads) == 1
 
 
 @pytest.mark.asyncio
