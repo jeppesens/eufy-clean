@@ -1,12 +1,19 @@
 # pylint: disable=redefined-outer-name
 from unittest.mock import AsyncMock, patch
 
+import homeassistant.helpers.config_validation as cv
 import pytest
+import voluptuous_serialize
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.robovac_mqtt.const import DOMAIN
+from custom_components.robovac_mqtt.const import (
+    CONF_MAP_MAX_PX,
+    CONF_NOTIFY_MOBILE_SERVICE,
+    DOMAIN,
+)
 
 
 @pytest.fixture
@@ -75,13 +82,6 @@ async def test_options_flow_blank_mobile_service(hass: HomeAssistant):
     An unselected SelectSelector dropdown submits ``None``; this must not
     raise "expected str" validation errors when only the map size changes.
     """
-    from pytest_homeassistant_custom_component.common import MockConfigEntry
-
-    from custom_components.robovac_mqtt.const import (
-        CONF_MAP_MAX_PX,
-        CONF_NOTIFY_MOBILE_SERVICE,
-    )
-
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test Vac",
@@ -96,9 +96,6 @@ async def test_options_flow_blank_mobile_service(hass: HomeAssistant):
 
     # The HTTP layer serializes the form schema for the frontend; a function
     # (e.g. a coercion lambda) in the schema makes that raise -> 500 on load.
-    import voluptuous_serialize
-    import homeassistant.helpers.config_validation as cv
-
     voluptuous_serialize.convert(
         result["data_schema"], custom_serializer=cv.custom_serializer
     )

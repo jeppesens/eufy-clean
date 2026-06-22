@@ -6,11 +6,11 @@ import string
 from typing import Any
 
 import homeassistant.helpers.config_validation as cv
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers import selector
-import voluptuous as vol
 from voluptuous import Required, Schema
 
 from .api.cloud import EufyLogin
