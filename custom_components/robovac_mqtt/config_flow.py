@@ -6,6 +6,7 @@ import string
 from typing import Any
 
 import homeassistant.helpers.config_validation as cv
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
@@ -151,6 +152,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> ConfigFlowResult:
         """Manage the options."""
         if user_input is not None:
+            # An unselected mobile-service dropdown submits None; store "" so
+            # downstream consumers can rely on a plain string.
+            if user_input.get(CONF_NOTIFY_MOBILE_SERVICE) is None:
+                user_input[CONF_NOTIFY_MOBILE_SERVICE] = ""
             return self.async_create_entry(title="", data=user_input)
 
         opts = self._config_entry.options
@@ -192,11 +197,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     )
                 ),
                 Required(CONF_NOTIFY_DESKTOP, default=current_notify_desktop): selector.BooleanSelector(),
-                Required(CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=mobile_options,
-                        custom_value=True,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
+                # vol.Maybe lets an unselected dropdown (which submits None)
+                # pass validation; the step normalises None back to "".
+                # A bare coercion function here would break schema
+                # serialization for the frontend (HTTP 500 on form load).
+                Required(CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service): vol.Maybe(
+                    selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=mobile_options,
+                            custom_value=True,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
                     )
                 ),
             }
