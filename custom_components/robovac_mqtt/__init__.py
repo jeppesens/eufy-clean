@@ -50,16 +50,27 @@ async def _async_register_frontend_card(hass: HomeAssistant) -> None:
     # ?v=<version> busts the browser cache whenever the integration updates.
     card_url = f"{_CARD_URL_PATH}?v={integration.version}"
 
-    await hass.http.async_register_static_paths(
-        [
-            StaticPathConfig(
-                _CARD_URL_PATH,
-                str(_FRONTEND_DIR / _CARD_FILENAME),
-                cache_headers=False,
-            )
-        ]
-    )
-    add_extra_js_url(hass, card_url)
+    # The card is a best-effort enhancement. In a normal install the frontend is
+    # already set up by the time this entry loads, but we don't declare it as a
+    # hard dependency: a not-yet-ready (or headless) frontend must never fail the
+    # vacuum integration's setup. add_extra_js_url needs the frontend in place.
+    try:
+        await hass.http.async_register_static_paths(
+            [
+                StaticPathConfig(
+                    _CARD_URL_PATH,
+                    str(_FRONTEND_DIR / _CARD_FILENAME),
+                    cache_headers=False,
+                )
+            ]
+        )
+        add_extra_js_url(hass, card_url)
+    except Exception:  # frontend not ready; skip the optional card, keep the entry
+        _LOGGER.warning(
+            "Could not register the bundled zone-clean card; skipping", exc_info=True
+        )
+        return
+
     domain_data["card_registered"] = True
     _LOGGER.debug("Registered bundled zone-clean card at %s", card_url)
 
