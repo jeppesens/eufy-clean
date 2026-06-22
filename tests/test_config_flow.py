@@ -94,6 +94,15 @@ async def test_options_flow_blank_mobile_service(hass: HomeAssistant):
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] == data_entry_flow.FlowResultType.FORM
 
+    # The HTTP layer serializes the form schema for the frontend; a function
+    # (e.g. a coercion lambda) in the schema makes that raise -> 500 on load.
+    import voluptuous_serialize
+    import homeassistant.helpers.config_validation as cv
+
+    voluptuous_serialize.convert(
+        result["data_schema"], custom_serializer=cv.custom_serializer
+    )
+
     result2 = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_MAP_MAX_PX: "1024", CONF_NOTIFY_MOBILE_SERVICE: None},
