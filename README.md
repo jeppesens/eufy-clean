@@ -234,6 +234,27 @@ data:
 `map_id` is taken from the current map automatically; pass it explicitly to override. The
 robot uses its current cleaning mode (vacuum / mop) and fan settings for the zone run.
 
+#### Drawing zones — bundled card
+
+Hand-writing normalized coordinates is fiddly, so the integration **bundles a small
+Lovelace card** that lets you drag the boxes on the live map instead. It ships inside the
+integration and is **auto-registered on setup** — there's no `www/` copy and no Lovelace
+*Resources* entry to add. Just drop it on a dashboard:
+
+```yaml
+type: custom:zone-clean-card
+vacuum: vacuum.eufy_omni_c28
+camera: camera.eufy_omni_c28_map
+# title: Zone Clean      # optional
+# selects:               # optional — defaults to auto-discovering the vacuum's selects
+#   - select.eufy_omni_c28_cleaning_mode
+#   - select.eufy_omni_c28_clean_speed
+```
+
+Draw up to 10 boxes, set suction/mode via the surfaced `select` entities, and hit **Clean**
+— it fires the `zone_clean` send_command shown above. The map only renders after the robot
+has cleaned once (or you've edited the map in the app).
+
 ### Map and Room IDs
 - **Active Map sensor** — `sensor.<device>_active_map` shows the current map ID (needed for service calls)
 - **Room IDs** — available in the vacuum entity's `rooms` / `segments` state attributes; inspect via **Developer Tools → States**
