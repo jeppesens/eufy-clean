@@ -11,8 +11,14 @@ from custom_components.robovac_mqtt.api.parser import (
     _process_cleaning_parameters,
     update_state,
 )
-from custom_components.robovac_mqtt.const import WORK_MODE_NAMES
+from custom_components.robovac_mqtt.const import DPS_MAP, WORK_MODE_NAMES
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.proto.cloud.app_device_info_pb2 import DeviceInfo
+from custom_components.robovac_mqtt.proto.cloud.clean_statistics_pb2 import (
+    CleanStatistics,
+)
+from custom_components.robovac_mqtt.proto.cloud.language_pb2 import LanguageResponse
+from custom_components.robovac_mqtt.utils import encode_message
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -647,3 +653,73 @@ def test_novel_state_ignores_scalar_dps():
 
 
 # Protocol classification (checkApiType) is tested in tests/test_cloud.py.
+
+
+def test_novel_volume_dps():
+    """DPS 161 (VOLUME) writes volume into VacuumState and marks 'volume' received."""
+    state = VacuumState()
+    new_state, _ = update_state(state, {DPS_MAP["VOLUME"]: 75})
+    assert new_state.volume == 75
+    assert "volume" in new_state.received_fields
+
+
+def test_novel_volume_clamped():
+    """DPS 161 volume is clamped to 0-100."""
+    state = VacuumState()
+    high, _ = update_state(state, {DPS_MAP["VOLUME"]: 150})
+    assert high.volume == 100
+    low, _ = update_state(state, {DPS_MAP["VOLUME"]: -5})
+    assert low.volume == 0
+
+
+def test_novel_voice_language_dps():
+    """DPS 162 (VOICE_LANGUAGE) writes voice_set_id and marks 'voice' received."""
+    lang = LanguageResponse(current_id=1203)
+    encoded = encode_message(lang)
+    state = VacuumState()
+    new_state, _ = update_state(state, {DPS_MAP["VOICE_LANGUAGE"]: encoded})
+    assert new_state.voice_set_id == 1203
+    assert "voice" in new_state.received_fields
+
+
+def test_novel_voice_language_zero_id_ignored():
+    """DPS 162 with current_id=0 does not overwrite voice_set_id."""
+    lang = LanguageResponse(current_id=0)
+    encoded = encode_message(lang)
+    state = VacuumState(voice_set_id=1201)
+    new_state, _ = update_state(state, {DPS_MAP["VOICE_LANGUAGE"]: encoded})
+    assert new_state.voice_set_id == 1201
+    assert "voice" not in new_state.received_fields
+
+
+def test_novel_device_info_product_name():
+    """DPS 169 (MAP_MANAGE) writes product_name from DeviceInfo proto."""
+    info = DeviceInfo(product_name="eufy Omni C28")
+    encoded = encode_message(info)
+    state = VacuumState()
+    new_state, _ = update_state(state, {DPS_MAP["MAP_MANAGE"]: encoded})
+    assert new_state.product_name == "eufy Omni C28"
+
+
+def test_novel_device_info_dock_firmware():
+    """DPS 169 (MAP_MANAGE) writes dock_firmware_version from DeviceInfo.station.software."""
+    info = DeviceInfo(station=DeviceInfo.Station(software="2.3.7"))
+    encoded = encode_message(info)
+    state = VacuumState()
+    new_state, _ = update_state(state, {DPS_MAP["MAP_MANAGE"]: encoded})
+    assert new_state.dock_firmware_version == "2.3.7"
+    assert "dock_firmware_version" in new_state.received_fields
+
+
+def test_cleaning_stats_user_total():
+    """CleanStatistics.user_total populates total_cleaning_* fields and marks 'cleaning_totals'."""
+    stats = CleanStatistics(
+        user_total=CleanStatistics.Total(clean_area=300, clean_duration=18000, clean_count=42)
+    )
+    encoded = encode_message(stats)
+    state = VacuumState()
+    new_state, _ = update_state(state, {DPS_MAP["CLEANING_STATISTICS"]: encoded})
+    assert new_state.total_cleaning_area == 300
+    assert new_state.total_cleaning_time == 18000
+    assert new_state.total_cleaning_count == 42
+    assert "cleaning_totals" in new_state.received_fields

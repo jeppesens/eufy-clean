@@ -56,6 +56,9 @@ class VacuumState:
     # Cleaning Stats
     cleaning_time: int = 0  # seconds
     cleaning_area: int = 0  # m2
+    total_cleaning_area: int = 0  # m2, user total (resets on user change)
+    total_cleaning_time: int = 0  # seconds, user total
+    total_cleaning_count: int = 0  # number of cleans, user total
 
     # Advanced Status
     task_status: str = "idle"
@@ -97,9 +100,12 @@ class VacuumState:
     corner_cleaning: str = "Normal"  # Mop corner cleaning from DPS 154
     smart_mode: bool = False  # Smart mode switch from DPS 154
 
+    # Voice language (DPS 162 LanguageResponse, novel-protocol)
+    voice_set_id: int = 1201  # current voice pack set_id (default = English Female)
+
     # scalar-protocol fields (e.g. T2210/G50)
     boost_iq: bool = False  # BoostIQ auto-carpet-boost (scalar-protocol DPS 118)
-    volume: int = 0  # Voice volume 0-100% (scalar-protocol DPS 111, 0-10 *10)
+    volume: int = 0  # Voice volume 0-100% (novel: DPS 161; scalar: DPS 111 0-10 *10)
     cleaning_pattern: str = (
         "Arranged"  # Path pattern Arranged/Random (scalar-protocol DPS 154)
     )
@@ -115,11 +121,18 @@ class VacuumState:
     dnd_start_minute: int = 0  # Do Not Disturb start minute
     dnd_end_hour: int = 8  # Do Not Disturb end hour
     dnd_end_minute: int = 0  # Do Not Disturb end minute
+    off_peak_enabled: bool = False  # Off-peak charging switch (field 23)
+    off_peak_start_hour: int = 21  # Off-peak charging start hour
+    off_peak_start_minute: int = 0  # Off-peak charging start minute
+    off_peak_end_hour: int = 7  # Off-peak charging end hour
+    off_peak_end_minute: int = 0  # Off-peak charging end minute
 
     # Device network info (from DPS 169, DeviceInfo proto)
     device_mac: str = ""  # Device MAC address
     wifi_ssid: str = ""  # Connected WiFi network name
     wifi_ip: str = ""  # Device IP address
+    dock_firmware_version: str = ""  # Dock station firmware version
+    product_name: str = ""  # Human-readable product name (e.g. "eufy Omni C28")
 
     # Robot telemetry (from DPS 179, no known proto definition)
     robot_position_x: int = 0  # Raw map X coordinate (firmware-internal grid)

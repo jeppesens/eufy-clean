@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 import logging
 from typing import Any, cast
@@ -16,6 +17,7 @@ from ..const import (
     SCALAR_DPS,
     SCALAR_WORK_MODE_GO_HOME,
     SCALAR_WORK_MODE_START,
+    VOICE_CATALOG,
 )
 from ..proto.cloud.clean_param_pb2 import CleanParam, CleanParamRequest, Fan
 from ..proto.cloud.consumable_pb2 import ConsumableRequest
@@ -24,7 +26,7 @@ from ..proto.cloud.map_edit_pb2 import MapEditRequest
 from ..proto.cloud.station_pb2 import StationRequest
 from ..proto.cloud.undisturbed_pb2 import UndisturbedRequest
 from ..proto.cloud.unisetting_pb2 import UnisettingRequest
-from ..utils import encode, encode_message
+from ..utils import encode, encode_message, encode_varint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -35,15 +37,14 @@ def _normalize_clean_mode(clean_mode: str) -> str:
 
 
 def build_set_cleaning_mode_command(clean_mode: str) -> dict[str, str]:
-    """Build command to set global cleaning mode."""
+    """Build command to set cleaning mode for both auto and room/area cleans."""
     clean_type_val = CLEAN_TYPE_MAP.get(_normalize_clean_mode(clean_mode))
     if clean_type_val is None:
         _LOGGER.warning("Invalid clean_mode '%s' ignored", clean_mode)
         return {}
 
-    req = CleanParamRequest(
-        clean_param=CleanParam(clean_type={"value": clean_type_val}),
-    )
+    param = CleanParam(clean_type={"value": clean_type_val})
+    req = CleanParamRequest(clean_param=param, area_clean_param=param)
     value = encode_message(req)
     return {DPS_MAP["CLEANING_PARAMETERS"]: value}
 
@@ -87,28 +88,26 @@ def build_set_clean_speed_command(clean_speed: str) -> dict[str, int]:
 
 
 def build_set_water_level_command(water_level: str) -> dict[str, str]:
-    """Build command to set global mop water level."""
+    """Build command to set mop water level for both auto and room/area cleans."""
     level_val = MOP_LEVEL_MAP.get(water_level.lower())
     if level_val is None:
         _LOGGER.warning("Invalid water_level '%s' ignored", water_level)
         return {}
-    req = CleanParamRequest(
-        clean_param=CleanParam(mop_mode={"level": level_val}),
-    )
+    param = CleanParam(mop_mode={"level": level_val})
+    req = CleanParamRequest(clean_param=param, area_clean_param=param)
     value = encode_message(req)
     return {DPS_MAP["CLEANING_PARAMETERS"]: value}
 
 
 def build_set_cleaning_intensity_command(cleaning_intensity: str) -> dict[str, str]:
-    """Build command to set global cleaning intensity."""
+    """Build command to set cleaning intensity for both auto and room/area cleans."""
     extent_val = CLEAN_EXTENT_MAP.get(cleaning_intensity.lower())
     if extent_val is None:
         _LOGGER.warning("Invalid cleaning_intensity '%s' ignored", cleaning_intensity)
         return {}
 
-    req = CleanParamRequest(
-        clean_param=CleanParam(clean_extent={"value": extent_val}),
-    )
+    param = CleanParam(clean_extent={"value": extent_val})
+    req = CleanParamRequest(clean_param=param, area_clean_param=param)
     value = encode_message(req)
     return {DPS_MAP["CLEANING_PARAMETERS"]: value}
 
@@ -317,6 +316,20 @@ def build_set_volume_command(volume_pct: int) -> dict[str, Any]:
     return {SCALAR_DPS["VOLUME"]: step}
 
 
+def build_set_volume_novel_command(volume_pct: int) -> dict[str, Any]:
+    """novel-protocol: set voice volume (DPS 161, plain int 0-100)."""
+    return {DPS_MAP["VOLUME"]: max(0, min(100, volume_pct))}
+
+
+def build_set_voice_command(set_id: int) -> dict[str, Any]:
+    """novel-protocol: set voice language (DPS 162, raw LanguageRequest payload)."""
+    entry = VOICE_CATALOG.get(set_id)
+    if not entry:
+        _LOGGER.warning("Unknown voice set_id %d — command ignored", set_id)
+        return {}
+    return {DPS_MAP["VOICE_LANGUAGE"]: entry[1]}
+
+
 def build_set_auto_return_command(active: bool) -> dict[str, Any]:
     """scalar-protocol: toggle "Auto-Return Cleaning" (DPS 135)."""
     return {SCALAR_DPS["AUTO_RETURN"]: int(bool(active))}
@@ -366,6 +379,65 @@ def build_scalar_undisturbed_command(
         "end_t": f"{end_hour:02d}{end_minute:02d}",
     }
     return {SCALAR_DPS["DND"]: json.dumps(payload)}
+
+
+def _encode_proto_ldelim(field_num: int, data: bytes) -> bytes:
+    """Encode a protobuf length-delimited field."""
+    tag = (field_num << 3) | 2
+    return encode_varint(tag) + encode_varint(len(data)) + data
+
+
+def _encode_proto_varint_field(field_num: int, value: int) -> bytes:
+    """Encode a protobuf varint field, omitting zero (proto3 default)."""
+    if value == 0:
+        return b""
+    return encode_varint((field_num << 3) | 0) + encode_varint(value)
+
+
+_OFF_PEAK_REQUEST_FIELD_NUM = 22  # Field 22 in UnisettingRequest = OffPeakCharging (field 23 in Response)
+
+
+def _build_off_peak_sub_bytes(
+    enabled: bool, begin_hour: int, begin_minute: int, end_hour: int, end_minute: int
+) -> bytes:
+    """Build the OffPeakCharging sub-message bytes for DPS 176 field 22."""
+    enable_inner = _encode_proto_varint_field(1, 1 if enabled else 0)
+    begin_inner = (
+        _encode_proto_varint_field(1, begin_hour)
+        + _encode_proto_varint_field(2, begin_minute)
+    )
+    end_inner = (
+        _encode_proto_varint_field(1, end_hour)
+        + _encode_proto_varint_field(2, end_minute)
+    )
+    return (
+        _encode_proto_ldelim(1, enable_inner)
+        + _encode_proto_ldelim(2, begin_inner)
+        + _encode_proto_ldelim(3, end_inner)
+    )
+
+
+def build_set_off_peak_charging_command(
+    enabled: bool,
+    begin_hour: int,
+    begin_minute: int,
+    end_hour: int,
+    end_minute: int,
+) -> dict[str, str]:
+    """Build command to set off-peak charging schedule (DPS 176 field 23).
+
+    Sends only field 23 — the off-peak charging sub-message.  Including any
+    other UnisettingRequest field (e.g. children_lock) risks overwriting device
+    state with stale coordinator values, so we keep this minimal.
+    """
+    off_peak_bytes = _encode_proto_ldelim(
+        _OFF_PEAK_REQUEST_FIELD_NUM,
+        _build_off_peak_sub_bytes(enabled, begin_hour, begin_minute, end_hour, end_minute),
+    )
+    prefixed = encode_varint(len(off_peak_bytes)) + off_peak_bytes
+    value = base64.b64encode(prefixed).decode()
+    _LOGGER.debug("Off-peak command DPS 176 field 22: %s", value)
+    return {DPS_MAP["UNSETTING"]: value}
 
 
 def build_set_child_lock_command(active: bool) -> dict[str, str]:
@@ -511,6 +583,14 @@ def build_command(
             int(kwargs.get("end_hour", 8)),
             int(kwargs.get("end_minute", 0)),
         )
+    if cmd == "set_off_peak_charging":
+        return build_set_off_peak_charging_command(
+            bool(kwargs.get("active", True)),
+            int(kwargs.get("begin_hour", 21)),
+            int(kwargs.get("begin_minute", 0)),
+            int(kwargs.get("end_hour", 7)),
+            int(kwargs.get("end_minute", 0)),
+        )
 
     # scalar commands
     if cmd == "set_boost_iq":
@@ -518,7 +598,11 @@ def build_command(
     if cmd == "set_cleaning_pattern":
         return build_set_cleaning_pattern_command(kwargs.get("pattern", ""))
     if cmd == "set_volume":
-        return build_set_volume_command(int(kwargs.get("volume", 0)))
+        if is_scalar:
+            return build_set_volume_command(int(kwargs.get("volume", 0)))
+        return build_set_volume_novel_command(int(kwargs.get("volume", 0)))
+    if cmd == "set_voice":
+        return build_set_voice_command(int(kwargs.get("set_id", 1201)))
     if cmd == "set_auto_return":
         return build_set_auto_return_command(bool(kwargs.get("active", True)))
     if cmd == "set_activity_log":

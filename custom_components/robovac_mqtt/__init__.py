@@ -22,6 +22,7 @@ PLATFORMS: list[Platform] = [
     Platform.NUMBER,
     Platform.BINARY_SENSOR,
     Platform.TIME,
+    Platform.CAMERA,
 ]
 _LOGGER = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             device_id,
         )
 
-        coordinator = EufyCleanCoordinator(hass, eufy_login, device_info)
+        coordinator = EufyCleanCoordinator(hass, eufy_login, device_info, config_entry=entry)
         try:
             await coordinator.initialize()
 

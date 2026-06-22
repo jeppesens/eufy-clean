@@ -31,7 +31,14 @@ from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
 _LOGGER = logging.getLogger(__name__)
 
 
-def _active_rooms_value(state: VacuumState) -> str | None:
+def _active_rooms_available(state: VacuumState) -> bool:
+    """Return whether the active cleaning target sensor has meaningful data."""
+    return bool(
+        state.active_room_names or state.current_scene_name or state.active_zone_count
+    )
+
+
+def _active_rooms_value(state: VacuumState) -> str:
     """Return a display label for the current active cleaning target."""
     if state.active_room_names:
         return state.active_room_names
@@ -40,17 +47,7 @@ def _active_rooms_value(state: VacuumState) -> str | None:
     if state.active_zone_count:
         suffix = "" if state.active_zone_count == 1 else "s"
         return f"{state.active_zone_count} zone{suffix}"
-    return None
-
-
-def _active_rooms_available(state: VacuumState) -> bool:
-    """Return whether any active cleaning target is currently known."""
-    return bool(
-        state.active_room_ids
-        or state.current_scene_id
-        or state.current_scene_name
-        or state.active_zone_count
-    )
+    return "None"
 
 
 async def async_setup_entry(
@@ -137,6 +134,45 @@ async def async_setup_entry(
                 availability_fn=lambda s: "cleaning_stats" in s.received_fields,
                 suggested_display_precision=0,
             ),
+            # Total Cleaning Area
+            RoboVacSensor(
+                coordinator,
+                "total_cleaning_area",
+                "Total Cleaning Area",
+                lambda s: s.total_cleaning_area,
+                device_class=SensorDeviceClass.AREA,
+                unit=UnitOfArea.SQUARE_METERS,
+                state_class=SensorStateClass.TOTAL,
+                icon="mdi:floor-plan",
+                availability_fn=lambda s: "cleaning_totals" in s.received_fields,
+                suggested_display_precision=0,
+            ),
+            # Total Cleaning Time
+            RoboVacSensor(
+                coordinator,
+                "total_cleaning_time",
+                "Total Cleaning Time",
+                lambda s: s.total_cleaning_time,
+                device_class=SensorDeviceClass.DURATION,
+                unit="s",
+                state_class=SensorStateClass.TOTAL,
+                icon="mdi:clock-outline",
+                availability_fn=lambda s: "cleaning_totals" in s.received_fields,
+                suggested_unit_of_measurement="h",
+                suggested_display_precision=1,
+            ),
+            # Total Cleaning Count
+            RoboVacSensor(
+                coordinator,
+                "total_cleaning_count",
+                "Total Cleaning Count",
+                lambda s: s.total_cleaning_count,
+                device_class=None,
+                unit=None,
+                state_class=SensorStateClass.TOTAL,
+                icon="mdi:counter",
+                availability_fn=lambda s: "cleaning_totals" in s.received_fields,
+            ),
             # Station / map sensors — scalar (Tuya) vacuum-only devices like
             # the G50 have no station and no maps.
             # Water level sensor (Station Clean Water)
@@ -189,7 +225,6 @@ async def async_setup_entry(
                 state_class=None,
                 icon="mdi:floor-plan",
                 category=EntityCategory.DIAGNOSTIC,
-                availability_fn=_active_rooms_available,
                 extra_state_attributes_fn=lambda s: {
                     "room_ids": s.active_room_ids,
                     "scene_id": s.current_scene_id,
@@ -237,6 +272,17 @@ async def async_setup_entry(
                 category=EntityCategory.DIAGNOSTIC,
                 availability_fn=lambda s: "wifi_ip" in s.received_fields,
                 enabled_default=False,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            # Dock firmware version (from DPS 169 DeviceInfo.station.software)
+            RoboVacSensor(
+                coordinator,
+                "dock_firmware_version",
+                "Dock Firmware Version",
+                lambda s: s.dock_firmware_version or None,
+                icon="mdi:chip",
+                category=EntityCategory.DIAGNOSTIC,
+                availability_fn=lambda s: "dock_firmware_version" in s.received_fields,
                 supported_api_types=(API_TYPE_NOVEL,),
             ),
             # Robot Position - raw (from DPS 179 telemetry, diagnostic)

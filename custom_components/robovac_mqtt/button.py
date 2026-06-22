@@ -92,6 +92,10 @@ async def async_setup_entry(
         _LOGGER.debug("Adding buttons for %s", coordinator.device_name)
 
         buttons = [
+            # Vacuum control buttons — mirrors the Eufy app's main screen controls.
+            RoboVacButton(coordinator, "Start Cleaning", "_start_cleaning", "start_auto"),
+            RoboVacButton(coordinator, "Pause", "_pause", "pause"),
+            RoboVacButton(coordinator, "Return to Base", "_return_to_base", "return_to_base"),
             # Station buttons (wash/dry/dust) — scalar (Tuya) devices like the
             # G50 are vacuum-only and have no station.
             RoboVacButton(

@@ -1,4 +1,7 @@
 [flake8]
 max-line-length = 88
-extend-ignore = E203, E501
+extend-ignore = E203, E501, W503
 exclude = .git,__pycache__,docs/source/conf.py,old,build,dist,custom_components/robovac_mqtt/proto/
+per-file-ignores =
+    # Pixel-painting renderer uses compact semicolon and tuple notation intentionally
+    custom_components/robovac_mqtt/api/map_stream.py: E231,E261,E221,E226,E701,E702
