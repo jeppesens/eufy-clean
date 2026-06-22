@@ -67,3 +67,37 @@ async def test_config_flow_entry_data_contains_vacs(
     assert CONF_USERNAME in entry_data
     assert CONF_PASSWORD in entry_data
     assert "vacs" in entry_data
+
+
+async def test_options_flow_blank_mobile_service(hass: HomeAssistant):
+    """Options can be saved when the mobile notify service is left blank.
+
+    An unselected SelectSelector dropdown submits ``None``; this must not
+    raise "expected str" validation errors when only the map size changes.
+    """
+    from pytest_homeassistant_custom_component.common import MockConfigEntry
+
+    from custom_components.robovac_mqtt.const import (
+        CONF_MAP_MAX_PX,
+        CONF_NOTIFY_MOBILE_SERVICE,
+    )
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {CONF_MAP_MAX_PX: "1024", CONF_NOTIFY_MOBILE_SERVICE: None},
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert result2["data"][CONF_NOTIFY_MOBILE_SERVICE] == ""
+    assert result2["data"][CONF_MAP_MAX_PX] == "1024"

@@ -10,6 +10,7 @@ from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers import selector
+import voluptuous as vol
 from voluptuous import Required, Schema
 
 from .api.cloud import EufyLogin
@@ -192,12 +193,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     )
                 ),
                 Required(CONF_NOTIFY_DESKTOP, default=current_notify_desktop): selector.BooleanSelector(),
-                Required(CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=mobile_options,
-                        custom_value=True,
-                        mode=selector.SelectSelectorMode.DROPDOWN,
-                    )
+                # An unselected dropdown submits None; coerce to "" so the
+                # SelectSelector (which expects a str) accepts a blank choice.
+                Required(CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service): vol.All(
+                    lambda v: v or "",
+                    selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=mobile_options,
+                            custom_value=True,
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
                 ),
             }
         )
