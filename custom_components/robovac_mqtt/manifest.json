@@ -16,5 +16,5 @@
   "requirements": [
     "Pillow>=10.0.0"
   ],
-  "version": "1.11.0"
+  "version": "1.11.2"
 }
