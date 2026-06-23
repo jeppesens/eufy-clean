@@ -31,16 +31,18 @@ PLATFORMS: list[Platform] = [
 _LOGGER = logging.getLogger(__name__)
 
 _FRONTEND_DIR = Path(__file__).parent / "frontend"
-_CARD_FILENAME = "zone-clean-card.js"
+# Unified room + zone card. Defines both `eufy-clean-card` and the backward-compat
+# `zone-clean-card` alias, so older dashboards keep working after the rename.
+_CARD_FILENAME = "eufy-clean-card.js"
 _CARD_URL_PATH = f"/{DOMAIN}/{_CARD_FILENAME}"
 
 
 async def _async_register_frontend_card(hass: HomeAssistant) -> None:
-    """Serve and register the bundled zone-clean Lovelace card (once).
+    """Serve and register the bundled Eufy Clean Lovelace card (once).
 
     Shipping the card inside the integration keeps it in lock-step with the
-    ``zone_clean`` send_command handler — a single install delivers both, with no
-    manual ``www/`` copy or Lovelace resource entry for the user.
+    ``room_clean`` / ``zone_clean`` send_command handlers — a single install
+    delivers both, with no manual ``www/`` copy or Lovelace resource entry.
     """
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get("card_registered"):
@@ -67,12 +69,12 @@ async def _async_register_frontend_card(hass: HomeAssistant) -> None:
         add_extra_js_url(hass, card_url)
     except Exception:  # frontend not ready; skip the optional card, keep the entry
         _LOGGER.warning(
-            "Could not register the bundled zone-clean card; skipping", exc_info=True
+            "Could not register the bundled Eufy Clean card; skipping", exc_info=True
         )
         return
 
     domain_data["card_registered"] = True
-    _LOGGER.debug("Registered bundled zone-clean card at %s", card_url)
+    _LOGGER.debug("Registered bundled Eufy Clean card at %s", card_url)
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

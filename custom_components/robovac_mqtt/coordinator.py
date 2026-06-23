@@ -426,6 +426,21 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             )
         return quads
 
+    def room_id_at_normalized(self, nx: float, ny: float) -> tuple[int, str | None]:
+        """Resolve the (room id, name) under a normalized point on the rendered map.
+
+        ``(nx, ny)`` are fractions (0-1) of the rendered map image — the same
+        coordinates the bundled card taps with. Returns ``(0, None)`` when no map
+        has been decoded yet or the point falls outside any room.
+        """
+        md = self._map_data
+        if md is None:
+            return 0, None
+        rid = md.room_id_at_normalized(nx, ny)
+        if rid <= 0:
+            return 0, None
+        return rid, md.room_names.get(rid)
+
     def _get_robot_status(self) -> str | None:
         """Return a status badge string for the current dock/activity state."""
         dock = self.data.dock_status

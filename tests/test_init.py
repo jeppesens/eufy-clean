@@ -85,8 +85,8 @@ async def test_load_unload_entry(hass: HomeAssistant):
         ), f"Entry state {config_entry.state}, expected {ConfigEntryState.NOT_LOADED}"
 
 
-async def test_bundled_zone_clean_card_registered(hass: HomeAssistant):
-    """The bundled zone-clean Lovelace card is served + registered exactly once."""
+async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
+    """The bundled Eufy Clean Lovelace card is served + registered exactly once."""
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -112,7 +112,7 @@ async def test_bundled_zone_clean_card_registered(hass: HomeAssistant):
         assert hass.data[DOMAIN]["card_registered"] is True
         mock_add_js.assert_called_once()
         registered_url = mock_add_js.call_args.args[1]
-        assert registered_url.startswith("/robovac_mqtt/zone-clean-card.js?v=")
+        assert registered_url.startswith("/robovac_mqtt/eufy-clean-card.js?v=")
 
         # Idempotent: the once-guard holds, so a second pass does nothing.
         await _async_register_frontend_card(hass)

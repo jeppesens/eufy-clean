@@ -4,13 +4,20 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import voluptuous as vol
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
     VacuumActivity,
     VacuumEntityFeature,
 )
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import (
+    HomeAssistant,
+    ServiceResponse,
+    SupportsResponse,
+    callback,
+)
+from homeassistant.helpers import entity_platform
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.issue_registry import (
@@ -127,6 +134,20 @@ async def async_setup_entry(
         entities.append(RoboVacMQTTEntity(coordinator, config_entry))
 
     async_add_entities(entities)
+
+    # Response service used by the bundled card to resolve a tapped map point to a
+    # room id (tap-a-room-on-the-map selection). Registered once per platform setup;
+    # async_register_entity_service de-dupes across config entries.
+    platform = entity_platform.async_get_current_platform()
+    platform.async_register_entity_service(
+        "room_at_point",
+        {
+            vol.Required("x"): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+            vol.Required("y"): vol.All(vol.Coerce(float), vol.Range(min=0, max=1)),
+        },
+        "async_room_at_point",
+        supports_response=SupportsResponse.ONLY,
+    )
 
 
 class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEntity):
@@ -415,6 +436,16 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         # Use the same room_clean handling logic that supports custom parameters
         params = {"room_ids": room_ids}
         await self._async_handle_room_clean(params)
+
+    async def async_room_at_point(self, x: float, y: float) -> ServiceResponse:
+        """Resolve which room sits under a normalized (0-1) point on the rendered map.
+
+        Backs the bundled card's tap-a-room-on-the-map selection. ``x``/``y`` are
+        fractions of the rendered map image (top-left origin). Returns
+        ``{"room_id": int, "room_name": str}``; ``room_id`` 0 means "no room there".
+        """
+        room_id, room_name = self.coordinator.room_id_at_normalized(x, y)
+        return {"room_id": room_id, "room_name": room_name or ""}
 
     @property
     def supported_features(self) -> VacuumEntityFeature:
