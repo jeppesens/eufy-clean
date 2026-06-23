@@ -60,9 +60,18 @@ const EDGE_OPTS = [["Default", ""], ["On", "on"], ["Off", "off"]]; // on→true,
 const PASSES_OPTS = [1, 2, 3];
 const DEFAULT_FANS = ["Quiet", "Standard", "Turbo", "Max", "Boost_IQ"];
 
+// Escape dynamic text before interpolating it into an innerHTML template. Select options
+// are user/cloud-authored — room names (Clean Room), scene names (Scene/Task), and
+// fan_speed_list — decoded from MQTT, so unescaped they're a stored DOM-XSS vector.
+const esc = (s) =>
+  String(s).replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c])
+  );
+
 const optionsHtml = (pairs, sel) =>
   pairs
-    .map(([label, value]) => `<option value="${value}"${value === sel ? " selected" : ""}>${label}</option>`)
+    .map(([label, value]) => `<option value="${esc(value)}"${value === sel ? " selected" : ""}>${esc(label)}</option>`)
     .join("");
 
 class EufyCleanCard extends HTMLElement {
@@ -448,7 +457,7 @@ class EufyCleanCard extends HTMLElement {
       // select option values, so they're a safe separator.
       const sig = opts.join("\n");
       if (sig !== this._optSig[eid]) {
-        refs.sel.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join("");
+        refs.sel.innerHTML = opts.map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
         this._optSig[eid] = sig;
       }
       if (this.shadowRoot.activeElement !== refs.sel) refs.sel.value = st.state;
@@ -874,7 +883,7 @@ class EufyCleanCardEditor extends HTMLElement {
     if (!this._hass || !this._config) return;
     const opt = (list, sel) =>
       ['<option value="">— choose —</option>']
-        .concat(list.map((e) => `<option value="${e}"${e === sel ? " selected" : ""}>${e}</option>`))
+        .concat(list.map((e) => `<option value="${esc(e)}"${e === sel ? " selected" : ""}>${esc(e)}</option>`))
         .join("");
     const modeOpt = (sel) =>
       [["rooms", "Rooms"], ["zones", "Zones"]]
