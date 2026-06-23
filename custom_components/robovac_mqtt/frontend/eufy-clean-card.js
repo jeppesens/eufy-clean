@@ -443,7 +443,10 @@ class EufyCleanCard extends HTMLElement {
       refs.field.style.display = "";
       refs.label.textContent = (st.attributes && st.attributes.friendly_name) || eid;
       const opts = (st.attributes && st.attributes.options) || [];
-      const sig = opts.join("");
+      // Delimiter-joined (not "") so ["ab","c"] and ["a","bc"] don't collapse to the
+      // same signature and skip a real <option> rebuild. Newlines never occur in HA
+      // select option values, so they're a safe separator.
+      const sig = opts.join("\n");
       if (sig !== this._optSig[eid]) {
         refs.sel.innerHTML = opts.map((o) => `<option value="${o}">${o}</option>`).join("");
         this._optSig[eid] = sig;
