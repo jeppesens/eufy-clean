@@ -12,6 +12,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import device_registry as dr
 from homeassistant.loader import async_get_integration
+from homeassistant.setup import async_when_setup
 
 from .api.cloud import EufyLogin
 from .const import DOMAIN
@@ -52,10 +53,11 @@ async def _async_register_frontend_card(hass: HomeAssistant) -> None:
     # ?v=<version> busts the browser cache whenever the integration updates.
     card_url = f"{_CARD_URL_PATH}?v={integration.version}"
 
-    # The card is a best-effort enhancement. In a normal install the frontend is
-    # already set up by the time this entry loads, but we don't declare it as a
-    # hard dependency: a not-yet-ready (or headless) frontend must never fail the
-    # vacuum integration's setup. add_extra_js_url needs the frontend in place.
+    # Runs from async_when_setup(hass, "frontend", ...), so frontend is set up and
+    # add_extra_js_url's hass.data is in place. We still don't declare a hard
+    # `frontend` dependency (headless installs must load without it); the try/except
+    # stays as a belt-and-suspenders guard so an optional card can never fail the
+    # vacuum integration's setup.
     try:
         await hass.http.async_register_static_paths(
             [
@@ -77,12 +79,24 @@ async def _async_register_frontend_card(hass: HomeAssistant) -> None:
     _LOGGER.debug("Registered bundled Eufy Clean card at %s", card_url)
 
 
+async def _register_card_when_frontend_ready(
+    hass: HomeAssistant, _component: str
+) -> None:
+    """``async_when_setup`` callback — register the card now that frontend is up."""
+    await _async_register_frontend_card(hass)
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
     entry.async_on_unload(entry.add_update_listener(update_listener))
 
-    # Serve + register the bundled zone-clean Lovelace card (once across entries).
-    await _async_register_frontend_card(hass)
+    # Register the bundled card once `frontend` is set up. async_when_setup fires
+    # immediately if it already is, else when it finishes — so the card registers
+    # regardless of integration load order. Calling _async_register_frontend_card
+    # directly here silently no-ops when this entry loads before frontend (the
+    # add_extra_js_url hass.data isn't there yet), which is why the card was missing
+    # on some installs (issue #140).
+    async_when_setup(hass, "frontend", _register_card_when_frontend_ready)
 
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]

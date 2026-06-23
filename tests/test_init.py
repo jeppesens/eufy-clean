@@ -8,7 +8,6 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.robovac_mqtt import _async_register_frontend_card
 from custom_components.robovac_mqtt.const import DOMAIN
 
 
@@ -86,7 +85,7 @@ async def test_load_unload_entry(hass: HomeAssistant):
 
 
 async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
-    """The bundled Eufy Clean Lovelace card is served + registered exactly once."""
+    """The bundled card registers once `frontend` is set up (load-order safe)."""
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -97,9 +96,16 @@ async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
     )
     config_entry.add_to_hass(hass)
 
+    when_setup_calls: list = []
+
+    def fake_when_setup(_hass, component, callback):
+        when_setup_calls.append((component, callback))
+
     with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
         "custom_components.robovac_mqtt.add_extra_js_url"
-    ) as mock_add_js:
+    ) as mock_add_js, patch(
+        "custom_components.robovac_mqtt.async_when_setup", side_effect=fake_when_setup
+    ):
         mock_login = mock_login_cls.return_value
         mock_login.init = AsyncMock()
         mock_login.mqtt_devices = []  # card registration is independent of devices
@@ -108,12 +114,21 @@ async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
         assert result is True, f"Async setup failed, result: {result}"
         await hass.async_block_till_done()
 
-        # Registered once, with a cache-busted URL pointing at the bundled file.
+        # Registration is DEFERRED to the frontend component, not done inline — this
+        # is what prevents the load-order race (entry set up before frontend) that
+        # left the card unregistered on some installs (#140).
+        assert len(when_setup_calls) == 1
+        component, register_cb = when_setup_calls[0]
+        assert component == "frontend"
+        mock_add_js.assert_not_called()  # nothing registered until frontend is up
+
+        # Frontend becomes ready -> the card registers once, with a cache-bust URL.
+        await register_cb(hass, "frontend")
         assert hass.data[DOMAIN]["card_registered"] is True
         mock_add_js.assert_called_once()
         registered_url = mock_add_js.call_args.args[1]
         assert registered_url.startswith("/robovac_mqtt/eufy-clean-card.js?v=")
 
-        # Idempotent: the once-guard holds, so a second pass does nothing.
-        await _async_register_frontend_card(hass)
+        # Idempotent: a second frontend-ready callback does nothing.
+        await register_cb(hass, "frontend")
         mock_add_js.assert_called_once()
