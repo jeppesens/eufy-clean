@@ -7,7 +7,8 @@
  *           settings (suction, water, mode, intensity, passes, edge-mop), hit Clean.
  *           Per-room settings are held in the card (no helper entities) and embedded
  *           in the command. Map taps are resolved to a room server-side via the
- *           integration's `vacuum.room_at_point` response service.
+ *           integration's `robovac_mqtt.room_at_point` response service (an entity
+ *           service — registered under the integration domain, not `vacuum`).
  *
  *   ZONES — rubber-band up to 10 free-form boxes on the live map and clean those.
  *
