@@ -1,0 +1,33 @@
+room_at_point:
+  name: Room at point
+  description: >-
+    Resolve which mapped room sits under a normalized point on the rendered map
+    image. Returns { room_id, room_name } — room_id 0 means no room there. Used by
+    the bundled Eufy Clean card for tap-a-room-on-the-map selection.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    x:
+      name: X
+      description: Horizontal position as a fraction (0-1) of the rendered map image, from the left edge.
+      required: true
+      example: 0.42
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: any
+          mode: box
+    y:
+      name: Y
+      description: Vertical position as a fraction (0-1) of the rendered map image, from the top edge.
+      required: true
+      example: 0.61
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: any
+          mode: box

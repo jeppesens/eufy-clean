@@ -110,6 +110,37 @@ class MapData:
     forbidden_zones: list[list[tuple[int, int]]] = field(default_factory=list)
     ban_mop_zones: list[list[tuple[int, int]]] = field(default_factory=list)
 
+    def room_id_at_normalized(self, nx: float, ny: float) -> int:
+        """Return the room id under a normalized point on the *rendered* map image.
+
+        ``(nx, ny)`` are fractions (0-1) of the rendered PNG, top-left origin (the
+        HA camera-image convention — the same space the zone card draws in). This
+        is the exact inverse of ``render_map_png``'s room-mask lookup: map the point
+        back to a source grid pixel (undoing the baked-in Y-flip, exactly as
+        ``normalized_rects_to_quads_cm`` does), then index ``room_pixels`` with the
+        same outline origin offset the renderer uses. Returns 0 when there is no
+        room mask, the point is outside any room, or no map has been decoded yet.
+        """
+        if not self.room_pixels or not self.room_outline_width or not self.room_outline_height:
+            return 0
+        nx = min(max(float(nx), 0.0), 1.0)
+        ny = min(max(float(ny), 0.0), 1.0)
+        res = self.resolution or 5
+        w, h = self.width, self.height
+        # normalized (rendered, top-left) -> source grid pixel; the render Y-flips,
+        # so the displayed top edge is the source bottom row.
+        px = min(max(round(nx * w), 0), max(w - 1, 0))
+        py = min(max(round((h - 1) - ny * h), 0), max(h - 1, 0))
+        # the room mask has its own origin; this offset matches render_map_png's _ro_dx/_ro_dy.
+        ro_dx = round((self.origin_x - self.room_outline_origin_x) / res)
+        ro_dy = round((self.origin_y - self.room_outline_origin_y) / res)
+        rx, ry = px - ro_dx, py - ro_dy
+        if 0 <= rx < self.room_outline_width and 0 <= ry < self.room_outline_height:
+            idx = ry * self.room_outline_width + rx
+            if 0 <= idx < len(self.room_pixels):
+                return self.room_pixels[idx] >> 2  # low 2 bits are sub-type, not id
+        return 0
+
 
 # ---------------------------------------------------------------------------
 # Low-level helpers (LZ4)
