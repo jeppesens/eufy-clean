@@ -14,6 +14,7 @@ from custom_components.robovac_mqtt.sensor import (
     RoboVacSensor,
     _active_rooms_available,
     _active_rooms_value,
+    async_setup_entry,
 )
 
 
@@ -149,8 +150,6 @@ def test_active_rooms_uses_zone_count_when_present(mock_coordinator):
 @pytest.mark.asyncio
 async def test_legacy_coordinator_excludes_novel_sensors():
     """Legacy devices should only get universal sensors (battery, error, task, work mode)."""
-    from custom_components.robovac_mqtt.sensor import async_setup_entry
-
     coordinator = MagicMock()
     coordinator.device_id = "legacy_dev"
     coordinator.device_name = "Legacy Vac"
@@ -192,8 +191,6 @@ async def test_legacy_coordinator_excludes_novel_sensors():
 @pytest.mark.asyncio
 async def test_novel_coordinator_creates_all_sensors():
     """Novel + MQTT devices should get all sensors including accessories."""
-    from custom_components.robovac_mqtt.sensor import async_setup_entry
-
     coordinator = MagicMock()
     coordinator.device_id = "novel_dev"
     coordinator.device_name = "Novel Vac"
@@ -248,8 +245,6 @@ async def test_novel_coordinator_creates_all_sensors():
 @pytest.mark.asyncio
 async def test_novel_cloud_or_local_skips_p2p_only_sensors():
     """Novel devices on Tuya transports (no P2P) should skip active_map sensor."""
-    from custom_components.robovac_mqtt.sensor import async_setup_entry
-
     for transport in ("cloud", "local"):
         coordinator = MagicMock()
         coordinator.device_id = f"novel_{transport}"

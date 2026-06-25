@@ -192,11 +192,19 @@ class LocalTuyaClient:
                         None, self._receive_with_timeout
                     )
                 if payload is None:
+                    # No data this cycle. Yield to the event loop so a
+                    # rapidly-returning receive() (a misbehaving device, or a
+                    # test's instant mock) can't starve other tasks in a tight
+                    # busy-loop. In production receive() blocks, so this is a
+                    # no-op on the hot path.
+                    await asyncio.sleep(0)
                     continue
                 # tinytuya may return error strings on socket failures
                 if isinstance(payload, dict) and "Error" in payload:
                     err_msg = payload.get("Error")
                     if "timeout" in str(err_msg).lower():
+                        # Benign idle timeout — yield (see above) and keep going.
+                        await asyncio.sleep(0)
                         continue
                     _LOGGER.debug(
                         "Local Tuya %s: device error '%s'; reconnecting in %.0fs",

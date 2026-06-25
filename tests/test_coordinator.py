@@ -2,9 +2,11 @@
 
 # pylint: disable=redefined-outer-name
 
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.robovac_mqtt.api.map_stream import MapData
@@ -263,8 +265,6 @@ def test_async_shutdown_timers_noop_when_no_timers(mock_hass, mock_login):
 @pytest.mark.asyncio
 async def test_async_send_command_no_client_raises(mock_hass, mock_login):
     """Test that sending command with no client raises HomeAssistantError."""
-    from homeassistant.exceptions import HomeAssistantError
-
     device_info = {
         "deviceId": "test_id",
         "deviceModel": "T2118",
@@ -296,8 +296,6 @@ async def test_async_send_command_empty_dict_ignored(mock_hass, mock_login):
 @pytest.mark.asyncio
 async def test_async_send_command_wraps_exception_in_ha_error(mock_hass, mock_login):
     """Test that generic exceptions from MQTT send are wrapped in HomeAssistantError."""
-    from homeassistant.exceptions import HomeAssistantError
-
     device_info = {
         "deviceId": "test_id",
         "deviceModel": "T2118",
@@ -361,7 +359,7 @@ def test_parse_dps_legacy(mock_hass, mock_login):
     }
     coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
 
-    new_state, changes = coordinator._parse_dps({"104": 42})
+    new_state, _ = coordinator._parse_dps({"104": 42})
     assert new_state.battery_level == 42
 
 
@@ -376,7 +374,7 @@ def test_parse_dps_novel(mock_hass, mock_login):
     coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
 
     # DPS 163 is novel battery level (plain int)
-    new_state, changes = coordinator._parse_dps({"163": 75})
+    new_state, _ = coordinator._parse_dps({"163": 75})
     assert new_state.battery_level == 75
 
 
@@ -550,8 +548,6 @@ async def test_cloud_poll_raises_after_threshold(mock_hass, mock_login):
 @pytest.mark.asyncio
 async def test_cloud_poll_backoff_caps_at_max(mock_hass, mock_login):
     """Backoff interval should not exceed 5 minutes."""
-    from datetime import timedelta
-
     mock_login.getCloudDevice = AsyncMock(return_value=None)
     coordinator = _make_cloud_coordinator(mock_hass, mock_login)
 

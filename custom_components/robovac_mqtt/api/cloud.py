@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
@@ -212,8 +213,7 @@ class EufyLogin:
         """Tuya cloud may return dps as a JSON string OR a dict — normalise."""
         if isinstance(value, str):
             try:
-                import json as _json  # local import to avoid module-top dep
-                parsed = _json.loads(value)
+                parsed = json.loads(value)
                 return parsed if isinstance(parsed, dict) else {}
             except Exception:  # noqa: BLE001
                 return {}

@@ -3,11 +3,13 @@
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.robovac_mqtt.api.cloud import EufyLoginError
 from custom_components.robovac_mqtt.const import DOMAIN
 
 
@@ -231,8 +233,6 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
 
 async def test_setup_auth_failure_raises_config_entry_auth_failed(hass: HomeAssistant):
     """Login failure with EufyLoginError should result in SETUP_ERROR (auth failed)."""
-    from custom_components.robovac_mqtt.api.cloud import EufyLoginError
-
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_USERNAME: "bad_user", CONF_PASSWORD: "bad_pass"},
@@ -252,8 +252,6 @@ async def test_setup_auth_failure_raises_config_entry_auth_failed(hass: HomeAssi
 
 async def test_setup_network_failure_raises_config_entry_not_ready(hass: HomeAssistant):
     """Network errors should result in SETUP_RETRY (not ready)."""
-    import aiohttp
-
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_USERNAME: "user", CONF_PASSWORD: "pass"},

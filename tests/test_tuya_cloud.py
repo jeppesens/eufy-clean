@@ -115,10 +115,8 @@ def test_client_device_id_format():
 
 def test_client_requires_region_and_websession():
     """TuyaCloudClient requires both region and websession."""
-    import pytest as _pytest
-
-    with _pytest.raises(TypeError):
-        TuyaCloudClient()
+    with pytest.raises(TypeError):
+        TuyaCloudClient()  # pylint: disable=no-value-for-parameter
 
 
 # ── Password encryption ────────────────────────────────────────────

@@ -1,5 +1,7 @@
 """Unit tests for api/legacy_commands.py: legacy command building."""
 
+import logging
+
 import pytest
 
 from custom_components.robovac_mqtt.api.legacy_commands import build_legacy_command
@@ -105,8 +107,6 @@ def test_edge_clean():
 
 def test_room_clean_with_room_ids_logs_warning(caplog):
     """room_clean should warn when room_ids are passed (unsupported on legacy)."""
-    import logging
-
     with caplog.at_level(logging.WARNING):
         result = build_legacy_command("room_clean", room_ids=[1, 2, 3])
 
@@ -117,8 +117,6 @@ def test_room_clean_with_room_ids_logs_warning(caplog):
 
 def test_room_clean_without_room_ids_no_warning(caplog):
     """room_clean without room_ids should not warn."""
-    import logging
-
     with caplog.at_level(logging.WARNING):
         result = build_legacy_command("room_clean")
 

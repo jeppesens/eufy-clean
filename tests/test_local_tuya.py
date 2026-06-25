@@ -8,6 +8,7 @@ verify the wrapping/dispatch behaviour in isolation.
 
 import asyncio
 import json
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -163,7 +164,10 @@ _REAL_SLEEP = asyncio.sleep
 
 def _make_sleep_recorder(sleeps: list[float]):
     async def fake_sleep(delay):
-        sleeps.append(delay)
+        # Record real backoff sleeps only; a 0-delay is a cooperative yield
+        # the listen loop uses to avoid busy-spinning, not a reconnect backoff.
+        if delay:
+            sleeps.append(delay)
         # Yield so the loop's executor work and other tasks make progress.
         await _REAL_SLEEP(0)
 
@@ -178,20 +182,38 @@ async def _drive_until(done: asyncio.Event, client: LocalTuyaClient) -> None:
         await client.disconnect()
 
 
+def _scripted_receive(packets: list, done: asyncio.Event):
+    """Build a fake ``tinytuya.Device.receive`` for the listen loop.
+
+    Critically, this runs in the executor thread (the loop calls receive via
+    run_in_executor), so it must behave like a real blocking socket: it sleeps
+    a hair each call so ``await run_in_executor`` genuinely suspends and the
+    event loop can make progress (a real receive() blocks on the socket timeout;
+    an instant mock would busy-spin and, on Python 3.14, starve the loop). When
+    the script is exhausted it signals ``done`` **thread-safely** — an
+    asyncio.Event must not be set from off the loop thread — then returns None.
+    """
+    loop = asyncio.get_running_loop()
+    it = iter(packets)
+
+    def fake_receive():
+        time.sleep(0.005)
+        try:
+            return next(it)
+        except StopIteration:
+            loop.call_soon_threadsafe(done.set)
+            return None
+
+    return fake_receive
+
+
 @pytest.mark.asyncio
 async def test_listener_ignores_timeout_error(patch_tinytuya, fake_dev):
     """An {"Error": "timeout"} packet is benign: continue, no reconnect."""
     done = asyncio.Event()
-    pushes = iter([{"Error": "timeout while waiting"}])
-
-    def fake_receive():
-        try:
-            return next(pushes)
-        except StopIteration:
-            done.set()
-            return None
-
-    fake_dev.receive.side_effect = fake_receive
+    fake_dev.receive.side_effect = _scripted_receive(
+        [{"Error": "timeout while waiting"}], done
+    )
     client = LocalTuyaClient(
         device_id="dev1", local_key="k" * 16, host="1.2.3.4"
     )
@@ -208,26 +230,16 @@ async def test_listener_ignores_timeout_error(patch_tinytuya, fake_dev):
     # connect() builds the device once; a timeout error must NOT reopen it
     # and must NOT sleep for a reconnect backoff.
     assert patch_tinytuya.Device.call_count == 1
-    assert sleeps == []
+    assert not sleeps
 
 
 @pytest.mark.asyncio
 async def test_listener_reconnects_on_error_with_backoff(patch_tinytuya, fake_dev):
     """A real error dict triggers _open_device + exponential backoff sleeps."""
     done = asyncio.Event()
-    pushes = iter([
-        {"Error": "device offline"},
-        {"Error": "device offline"},
-    ])
-
-    def fake_receive():
-        try:
-            return next(pushes)
-        except StopIteration:
-            done.set()
-            return None
-
-    fake_dev.receive.side_effect = fake_receive
+    fake_dev.receive.side_effect = _scripted_receive(
+        [{"Error": "device offline"}, {"Error": "device offline"}], done
+    )
     client = LocalTuyaClient(
         device_id="dev1", local_key="k" * 16, host="1.2.3.4"
     )
@@ -255,15 +267,17 @@ async def test_listener_reconnects_on_exception_and_resets_backoff(
 ):
     """receive() raising triggers reconnect; a later good packet resets backoff."""
     done = asyncio.Event()
+    loop = asyncio.get_running_loop()
     calls = {"n": 0}
 
     def fake_receive():
+        time.sleep(0.005)  # behave like a blocking socket so the loop paces
         calls["n"] += 1
         if calls["n"] == 1:
             raise OSError("connection reset")
         if calls["n"] == 2:
             return {"dps": {"167": "AA=="}}
-        done.set()
+        loop.call_soon_threadsafe(done.set)  # signal off the executor thread
         return None
 
     fake_dev.receive.side_effect = fake_receive
@@ -300,16 +314,9 @@ async def test_listener_reconnects_on_exception_and_resets_backoff(
 async def test_reconnect_refetches_status(patch_tinytuya, fake_dev):
     """After a reconnect the client re-runs status() (N3) so state isn't stale."""
     done = asyncio.Event()
-    pushes = iter([{"Error": "device offline"}])
-
-    def fake_receive():
-        try:
-            return next(pushes)
-        except StopIteration:
-            done.set()
-            return None
-
-    fake_dev.receive.side_effect = fake_receive
+    fake_dev.receive.side_effect = _scripted_receive(
+        [{"Error": "device offline"}], done
+    )
     # status() returns the initial fetch then a post-reconnect snapshot.
     fake_dev.status.side_effect = [
         {"dps": {"104": 87}},
@@ -355,7 +362,7 @@ async def test_reconnect_refetches_status(patch_tinytuya, fake_dev):
         [1, 2, 3],
     ],
 )
-def test_dispatch_ignores_non_dps_payloads(payload):
+def test_dispatch_ignores_non_dps_payloads(payload, patch_tinytuya):
     """_dispatch must not fire the callback for empty/garbage payloads."""
     client = LocalTuyaClient(
         device_id="dev1", local_key="k" * 16, host="1.2.3.4"
@@ -363,10 +370,10 @@ def test_dispatch_ignores_non_dps_payloads(payload):
     fired: list[bytes] = []
     client.set_on_message(fired.append)
     client._dispatch(payload)
-    assert fired == []
+    assert not fired
 
 
-def test_dispatch_without_callback_is_noop():
+def test_dispatch_without_callback_is_noop(patch_tinytuya):
     """_dispatch with a valid payload but no callback registered is a no-op."""
     client = LocalTuyaClient(
         device_id="dev1", local_key="k" * 16, host="1.2.3.4"

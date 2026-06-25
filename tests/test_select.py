@@ -2,7 +2,7 @@
 
 # pylint: disable=redefined-outer-name
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.const import EntityCategory
@@ -18,6 +18,7 @@ from custom_components.robovac_mqtt.select import (
     SceneSelectEntity,
     SuctionLevelSelectEntity,
     WaterLevelSelectEntity,
+    async_setup_entry,
 )
 
 
@@ -360,10 +361,6 @@ def test_suction_level_available_with_fan_speed(mock_coordinator):
 async def test_legacy_coordinator_excludes_novel_only_selects():
     """Legacy (Tuya Cloud) devices must not get novel-only selects whose
     commands silently no-op — only the universal SuctionLevel select."""
-    from unittest.mock import patch
-
-    from custom_components.robovac_mqtt.select import async_setup_entry
-
     coordinator = MagicMock(spec=EufyCleanCoordinator)
     coordinator.device_id = "legacy_dev"
     coordinator.device_name = "Legacy Vac"

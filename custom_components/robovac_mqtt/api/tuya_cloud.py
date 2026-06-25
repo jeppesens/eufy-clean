@@ -20,6 +20,8 @@ import uuid
 from typing import Any
 
 import aiohttp
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from ..const import (
     TUYA_API_ET_VERSION,
@@ -284,9 +286,6 @@ def _encrypt_password(uid: str, public_key_n: str, exponent: int) -> str:
     2. MD5 the uppercase hex of the encrypted uid
     3. RSA encrypt that MD5 with the server's public key
     """
-    from cryptography.hazmat.backends import default_backend
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
-
     # AES-128-CBC encrypt uid
     padded_len = 16 * math.ceil(len(uid) / 16)
     padded_uid = uid.rjust(padded_len, "0")

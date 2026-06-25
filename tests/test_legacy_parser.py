@@ -116,7 +116,7 @@ def test_battery_level_invalid():
 def test_clean_speed():
     """Clean speed is stored as-is."""
     state = VacuumState()
-    new_state, changes = update_state_legacy(state, {"102": "Turbo"})
+    new_state, _ = update_state_legacy(state, {"102": "Turbo"})
 
     assert new_state.fan_speed == "Turbo"
     assert "fan_speed" in new_state.received_fields
@@ -137,7 +137,7 @@ def test_clean_speed_all_values(speed):
 def test_error_code_known():
     """Known error codes map to error messages."""
     state = VacuumState()
-    new_state, changes = update_state_legacy(state, {"106": 1})
+    new_state, _ = update_state_legacy(state, {"106": 1})
 
     assert new_state.error_code == 1
     assert "CRASH BUFFER STUCK" in new_state.error_message.upper()
@@ -164,7 +164,7 @@ def test_error_code_unknown():
 def test_error_code_invalid():
     """Non-numeric error code should not crash."""
     state = VacuumState()
-    new_state, changes = update_state_legacy(state, {"106": "bad"})
+    _, changes = update_state_legacy(state, {"106": "bad"})
 
     assert "error_code" not in changes
 
@@ -205,7 +205,7 @@ def test_find_robot_false():
 def test_work_mode_mapping(mode_str, expected_display):
     """Work mode strings map to display names."""
     state = VacuumState()
-    new_state, changes = update_state_legacy(state, {"5": mode_str})
+    new_state, _ = update_state_legacy(state, {"5": mode_str})
 
     assert new_state.work_mode == expected_display
     assert "work_mode" in new_state.received_fields
@@ -236,7 +236,7 @@ def test_play_pause_tracked():
 def test_multiple_dps_combined():
     """Multiple DPS keys in a single update are all processed."""
     state = VacuumState()
-    new_state, changes = update_state_legacy(
+    new_state, _ = update_state_legacy(
         state,
         {
             "15": "Running",
@@ -265,9 +265,8 @@ def test_raw_dps_stored():
 def test_unknown_dps_keys_ignored():
     """DPS keys not in legacy map should not crash."""
     state = VacuumState()
-    new_state, changes = update_state_legacy(state, {"999": "whatever"})
+    new_state, _ = update_state_legacy(state, {"999": "whatever"})
 
-    # Only raw_dps and received_fields should be in changes
     assert new_state.activity == "idle"  # unchanged
 
 

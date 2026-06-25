@@ -14,6 +14,8 @@ from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from voluptuous import In
+from voluptuous import Optional as VOptional
 from voluptuous import Required, Schema
 
 from .api.cloud import EufyLogin
@@ -312,9 +314,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         been popped) so they aren't lost, and ``errors`` flags the offending
         per-device host fields.
         """
-        from voluptuous import In
-        from voluptuous import Optional as VOptional
-
         submitted = user_input or {}
         opts = self._config_entry.options
         current_max_px = str(

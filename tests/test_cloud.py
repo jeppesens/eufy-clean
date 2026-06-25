@@ -5,7 +5,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from custom_components.robovac_mqtt.api.cloud import EufyLogin
+from custom_components.robovac_mqtt.api import cloud as cloud_mod
+from custom_components.robovac_mqtt.api.cloud import EufyLogin, EufyLoginError
+from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
 
 
 def _make_login(
@@ -273,8 +275,6 @@ async def test_tuya_login_eu_fails_us_succeeds():
     login = _make_login()
     login._eufy_user_id = "test_user_123"
 
-    from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
-
     call_count = 0
 
     def make_client(region, **kwargs):
@@ -464,8 +464,6 @@ async def test_get_cloud_device_no_tuya_client():
 @pytest.mark.asyncio
 async def test_get_cloud_device_relogins_on_failure():
     """getCloudDevice should re-login and retry on TuyaCloudError."""
-    from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
-
     login = _make_login()
     login._eufy_user_id = "test_user"
     mock_tuya = MagicMock()
@@ -490,8 +488,6 @@ async def test_get_cloud_device_relogins_on_failure():
 @pytest.mark.asyncio
 async def test_get_cloud_device_relogin_also_fails():
     """getCloudDevice returns None when re-login also fails."""
-    from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
-
     login = _make_login()
     login._eufy_user_id = "test_user"
     mock_tuya = MagicMock()
@@ -513,8 +509,6 @@ async def test_get_cloud_device_relogin_also_fails():
 @pytest.mark.asyncio
 async def test_send_cloud_command_relogins_on_failure():
     """sendCloudCommand should re-login and retry on TuyaCloudError."""
-    from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
-
     login = _make_login()
     login._eufy_user_id = "test_user"
     mock_tuya = MagicMock()
@@ -535,9 +529,6 @@ async def test_send_cloud_command_relogins_on_failure():
 @pytest.mark.asyncio
 async def test_send_cloud_command_relogin_also_fails():
     """sendCloudCommand raises EufyLoginError when re-login also fails."""
-    from custom_components.robovac_mqtt.api.cloud import EufyLoginError
-    from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
-
     login = _make_login()
     login._eufy_user_id = "test_user"
     mock_tuya = MagicMock()
@@ -591,8 +582,6 @@ async def test_get_devices_constructs_from_cloud_when_aiot_empty():
 
 def test_find_model_tuya_fallback_by_product_id(monkeypatch):
     """A Tuya device whose devId isn't in the v2 list resolves via productId."""
-    from custom_components.robovac_mqtt.api import cloud as cloud_mod
-
     monkeypatch.setattr(cloud_mod, "TUYA_PRODUCT_MODELS", {"prod_s1pro": "T2080A"})
     login = _make_login(eufy_api_devices=[])
 
