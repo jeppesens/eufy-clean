@@ -174,8 +174,8 @@ class EufyHTTPClient:
                 "os-version": "Android",
                 "model-type": "PHONE",
                 "app-name": "eufy_home",
-                "x-auth-token": self.user_info["user_center_token"],  # type: ignore
-                "gtoken": self.user_info["gtoken"],  # type: ignore
+                "x-auth-token": self.user_info["user_center_token"],
+                "gtoken": self.user_info["gtoken"],
                 "content-type": "application/json; charset=UTF-8",
             },
             json={"attribute": 3},
@@ -285,8 +285,8 @@ class EufyHTTPClient:
                 "os-version": "Android",
                 "model-type": "PHONE",
                 "app-name": "eufy_home",
-                "x-auth-token": self.user_info["user_center_token"],  # type: ignore
-                "gtoken": self.user_info["gtoken"],  # type: ignore
+                "x-auth-token": self.user_info["user_center_token"],
+                "gtoken": self.user_info["gtoken"],
             },
         ) as response:
             if response.status == 200:

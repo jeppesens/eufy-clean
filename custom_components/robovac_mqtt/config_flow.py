@@ -53,7 +53,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
     @staticmethod
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> "OptionsFlowHandler":
+    ) -> OptionsFlowHandler:
         """Return the options flow (global settings + per-device local-Tuya)."""
         return OptionsFlowHandler(config_entry)
 
@@ -217,9 +217,6 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         overrides. Per-device fields use the dynamic keys ``{dev_id}__host`` /
         ``{dev_id}__version`` / ``{dev_id}__rooms``.
         """
-        from voluptuous import In
-        from voluptuous import Optional as VOptional
-
         # Pull the live device list from running coordinators so the form
         # lists exactly the devices the user can target.
         runtime = self.hass.data.get(DOMAIN, {}).get(

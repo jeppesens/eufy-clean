@@ -147,7 +147,7 @@ class TuyaCloudClient:
 
         self.sid = login_result["sid"]
         _LOGGER.debug("Tuya login successful, sid obtained for region %s", self.region)
-        return self.sid
+        return login_result["sid"]
 
     async def request(
         self,
@@ -284,8 +284,8 @@ def _encrypt_password(uid: str, public_key_n: str, exponent: int) -> str:
     2. MD5 the uppercase hex of the encrypted uid
     3. RSA encrypt that MD5 with the server's public key
     """
-    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
     from cryptography.hazmat.backends import default_backend
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
     # AES-128-CBC encrypt uid
     padded_len = 16 * math.ceil(len(uid) / 16)
@@ -320,7 +320,7 @@ def _encrypt_password(uid: str, public_key_n: str, exponent: int) -> str:
     else:
         # Decimal key: use bit length of n to determine byte size
         key_size = (n.bit_length() + 7) // 8
-    
+
     return c.to_bytes(key_size, "big").hex()
 
 

@@ -4,7 +4,6 @@ import pytest
 
 from custom_components.robovac_mqtt.api.legacy_commands import build_legacy_command
 
-
 # ── Basic commands ──────────────────────────────────────────────────
 
 

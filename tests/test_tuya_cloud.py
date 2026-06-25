@@ -1,6 +1,5 @@
 """Unit tests for api/tuya_cloud.py: Tuya Cloud API client."""
 
-import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -13,7 +12,6 @@ from custom_components.robovac_mqtt.api.tuya_cloud import (
     _md5,
     _mobile_hash,
 )
-
 
 # ── Helper utilities ────────────────────────────────────────────────
 
@@ -440,7 +438,7 @@ def test_sign_matches_upstream_js(case):
         f"Python={py_signature}, JS={case['signature']}"
     )
     assert py_sign_string_signature == case["signature"], (
-        f"Sign string HMAC mismatch — the sign string itself may differ"
+        "Sign string HMAC mismatch — the sign string itself may differ"
     )
 
 

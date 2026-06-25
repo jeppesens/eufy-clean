@@ -494,8 +494,6 @@ async def test_cloud_poll_failure_increments_counter(mock_hass, mock_login):
 @pytest.mark.asyncio
 async def test_cloud_poll_success_resets_counter(mock_hass, mock_login):
     """Successful poll should reset failure counter and restore interval."""
-    from datetime import timedelta
-
     mock_login.getCloudDevice = AsyncMock(return_value=None)
     coordinator = _make_cloud_coordinator(mock_hass, mock_login)
     base_interval = coordinator.update_interval

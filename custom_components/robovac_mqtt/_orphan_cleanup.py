@@ -26,7 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 def prune_orphan_entities(
     hass: HomeAssistant,
     config_entry_id: str,
-    coordinators: list["EufyCleanCoordinator"],
+    coordinators: list[EufyCleanCoordinator],
     added_unique_ids: set[str],
     platform: str,
 ) -> int:

@@ -5,7 +5,6 @@ import pytest
 from custom_components.robovac_mqtt.api.legacy_parser import update_state_legacy
 from custom_components.robovac_mqtt.models import VacuumState
 
-
 # ── Work Status (DPS 15) ───────────────────────────────────────────
 
 

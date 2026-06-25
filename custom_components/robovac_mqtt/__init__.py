@@ -6,7 +6,6 @@ import string
 from pathlib import Path
 
 import aiohttp
-
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry

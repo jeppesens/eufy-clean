@@ -19,7 +19,6 @@ from custom_components.robovac_mqtt.config_flow import (
 )
 from custom_components.robovac_mqtt.select import RoomSelectEntity
 
-
 # ── _parse_rooms_text ────────────────────────────────────────────────
 
 

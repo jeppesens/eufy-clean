@@ -27,7 +27,7 @@ from typing import Any
 try:
     import tinytuya
 except ImportError:  # pragma: no cover - tinytuya is declared in manifest.json
-    tinytuya = None  # type: ignore[assignment]
+    tinytuya = None
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -87,7 +87,7 @@ class LocalTuyaClient:
         # before the gratuitous-update stream takes over.
         try:
             async with self._dev_lock:
-                initial = await self._loop.run_in_executor(None, self._dev.status)
+                initial = await self._loop.run_in_executor(None, self._dev.status)  # type: ignore[union-attr]
             self._dispatch(initial)
         except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
             _LOGGER.debug(
@@ -139,7 +139,7 @@ class LocalTuyaClient:
         if self._dev:
             async with self._dev_lock:
                 try:
-                    await self._loop.run_in_executor(None, self._dev.close)
+                    await self._loop.run_in_executor(None, self._dev.close)  # type: ignore[union-attr]
                 except Exception:  # noqa: BLE001 - close is best-effort
                     pass
                 self._dev = None
@@ -188,7 +188,7 @@ class LocalTuyaClient:
                 # Hold the lock for one bounded receive() cycle then release it
                 # between cycles so send_command() can acquire it promptly.
                 async with self._dev_lock:
-                    payload = await self._loop.run_in_executor(
+                    payload = await self._loop.run_in_executor(  # type: ignore[union-attr]
                         None, self._receive_with_timeout
                     )
                 if payload is None:
@@ -205,7 +205,7 @@ class LocalTuyaClient:
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX)
                     async with self._dev_lock:
-                        await self._loop.run_in_executor(None, self._open_device)
+                        await self._loop.run_in_executor(None, self._open_device)  # type: ignore[union-attr]
                     await self._refetch_status()
                     continue
 
@@ -222,7 +222,7 @@ class LocalTuyaClient:
                 backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX)
                 try:
                     async with self._dev_lock:
-                        await self._loop.run_in_executor(None, self._open_device)
+                        await self._loop.run_in_executor(None, self._open_device)  # type: ignore[union-attr]
                 except Exception as reopen_err:  # noqa: BLE001
                     _LOGGER.debug(
                         "Local Tuya %s: reconnect failed: %s",
@@ -236,7 +236,7 @@ class LocalTuyaClient:
         next push (mirrors connect()'s initial fetch)."""
         try:
             async with self._dev_lock:
-                status = await self._loop.run_in_executor(None, self._dev.status)
+                status = await self._loop.run_in_executor(None, self._dev.status)  # type: ignore[union-attr]
             self._dispatch(status)
         except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
             _LOGGER.debug(
