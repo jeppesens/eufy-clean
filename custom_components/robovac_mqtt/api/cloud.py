@@ -105,6 +105,19 @@ class EufyLogin:
         self.eufy_api_devices = await self.eufyApi.get_cloud_device_list()
         _LOGGER.debug("Eufy API returned %d devices from cloud list", len(self.eufy_api_devices))
         devices = await self.eufyApi.get_device_list()
+        # Unified-app (v2) accounts often return an empty AIOT device list even
+        # though the cloud device list has entries. Reconstruct minimal AIOT
+        # entries from the cloud list so findModel (via aiot/v2 metadata) and
+        # MQTT setup still work.
+        if not devices and self.eufy_api_devices:
+            _LOGGER.info(
+                "AIOT device list empty — constructing device entries from cloud device list"
+            )
+            devices = [
+                {"device_sn": d["id"], "dps": {}}
+                for d in self.eufy_api_devices
+                if d.get("id")
+            ]
         devices = [
             {
                 **self.findModel(device.get("device_sn", ""), aiot_device=device),

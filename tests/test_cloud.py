@@ -553,3 +553,34 @@ async def test_send_cloud_command_relogin_also_fails():
     ):
         with pytest.raises(EufyLoginError, match="Failed to send cloud command"):
             await login.sendCloudCommand("dev_123", {"2": True})
+
+
+# ── AIOT-empty device reconstruction (PR #122 unified-app login) ─────
+
+
+@pytest.mark.asyncio
+async def test_get_devices_constructs_from_cloud_when_aiot_empty():
+    """Unified-app (v2) accounts return an empty AIOT device list; getDevices
+    must reconstruct entries from the cloud device list so MQTT setup still
+    discovers the device (regression guard for PR #122)."""
+    login = _make_login()
+    login.eufyApi.get_cloud_device_list = AsyncMock(
+        return_value=[
+            {
+                "id": "cloud_only_dev",
+                "product": {"product_code": "T2080A", "name": "S1 Pro"},
+                "alias_name": "S1 Pro",
+                "device_model": "T2080A",
+            }
+        ]
+    )
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+
+    await login.getDevices()
+
+    assert len(login.mqtt_devices) == 1
+    dev = login.mqtt_devices[0]
+    assert dev["deviceId"] == "cloud_only_dev"
+    assert dev["deviceModel"] == "T2080A"
+    # Reconstructed entries carry an empty dps -> classified legacy.
+    assert dev["apiType"] == "legacy"

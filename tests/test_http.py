@@ -118,3 +118,113 @@ def test_request_timeout_is_configured():
     """_REQUEST_TIMEOUT should exist and have a 30-second total."""
     assert _REQUEST_TIMEOUT is not None
     assert _REQUEST_TIMEOUT.total == 30
+
+
+# --- v2/v1 login fallback (PR #122) ---
+
+
+def _mock_websession_sequence(*responses: AsyncMock) -> MagicMock:
+    """websession whose successive post/get calls yield *responses* in order."""
+
+    def _ctx(resp: AsyncMock) -> MagicMock:
+        c = MagicMock()
+        c.__aenter__ = AsyncMock(return_value=resp)
+        c.__aexit__ = AsyncMock(return_value=False)
+        return c
+
+    mock_session = MagicMock()
+    mock_session.post.side_effect = [_ctx(r) for r in responses]
+    mock_session.get.side_effect = [_ctx(r) for r in responses]
+    return mock_session
+
+
+def _login_response(status: int, token: str | None = None) -> AsyncMock:
+    r = AsyncMock()
+    r.status = status
+    r.json = AsyncMock(
+        return_value={"access_token": token, "user_id": "u1"} if token else None
+    )
+    r.text = AsyncMock(return_value="error body")
+    return r
+
+
+@pytest.mark.asyncio
+async def test_eufy_login_succeeds_via_v2():
+    """v2 (unified Eufy app) login is tried first; success short-circuits v1."""
+    mock_session = _mock_websession_sequence(_login_response(200, "tok_v2"))
+    client = _make_client(websession=mock_session)
+
+    result = await client.eufy_login()
+
+    assert result is not None
+    assert result["access_token"] == "tok_v2"
+    assert mock_session.post.call_count == 1
+    first_url = mock_session.post.call_args_list[0][0][0]
+    assert "v2/email/login" in first_url
+
+
+@pytest.mark.asyncio
+async def test_eufy_login_falls_back_to_v1():
+    """When v2 fails, v1 (legacy Eufy Clean app) is attempted and returned."""
+    mock_session = _mock_websession_sequence(
+        _login_response(401),            # v2 fails
+        _login_response(200, "tok_v1"),  # v1 succeeds
+    )
+    client = _make_client(websession=mock_session)
+
+    result = await client.eufy_login()
+
+    assert result is not None
+    assert result["access_token"] == "tok_v1"
+    assert mock_session.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_eufy_login_all_attempts_fail():
+    """Returns None when both v2 and v1 fail."""
+    mock_session = _mock_websession_sequence(
+        _login_response(401), _login_response(403)
+    )
+    client = _make_client(websession=mock_session)
+
+    result = await client.eufy_login()
+
+    assert result is None
+    assert mock_session.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_device_list_falls_back_to_home_api():
+    """When the legacy device endpoint is empty, the home-api fallback is used."""
+    legacy = AsyncMock()
+    legacy.status = 200
+    legacy.json = AsyncMock(return_value={"devices": []})
+    home = AsyncMock()
+    home.status = 200
+    home.json = AsyncMock(return_value={"devices": [{"id": "home_dev"}]})
+
+    mock_session = _mock_websession_sequence(legacy, home)
+    client = _make_client(websession=mock_session)
+    client.session = {"access_token": "tok"}
+
+    result = await client.get_cloud_device_list()
+
+    assert result == [{"id": "home_dev"}]
+    assert mock_session.get.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_device_list_legacy_short_circuits():
+    """When the legacy endpoint returns devices, the home-api fallback is skipped."""
+    legacy = AsyncMock()
+    legacy.status = 200
+    legacy.json = AsyncMock(return_value={"devices": [{"id": "legacy_dev"}]})
+
+    mock_session = _mock_websession_sequence(legacy, AsyncMock())
+    client = _make_client(websession=mock_session)
+    client.session = {"access_token": "tok"}
+
+    result = await client.get_cloud_device_list()
+
+    assert result == [{"id": "legacy_dev"}]
+    assert mock_session.get.call_count == 1
