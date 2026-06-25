@@ -1,6 +1,7 @@
 build
 out
 venv
+.venv
 .python-version
 .kiro
 .git
