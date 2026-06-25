@@ -10,15 +10,18 @@ from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
+
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -174,10 +177,12 @@ class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
 
     async def _set_state(self, state: bool) -> None:
         """Send command to update config."""
+        if not self.coordinator.data.dock_auto_cfg:
+            raise HomeAssistantError("Dock configuration not yet received from device")
         cfg = copy.deepcopy(self.coordinator.data.dock_auto_cfg)
         self._setter(cfg, state)
 
-        command = build_command("set_auto_cfg", cfg=cfg)
+        command = self.coordinator.build_device_command("set_auto_cfg", cfg=cfg)
         await self.coordinator.async_send_command(command)
 
 
@@ -200,16 +205,12 @@ class FindRobotSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntit
 
     async def async_turn_on(self, **kwargs: Any) -> None:
         """Turn the switch on."""
-        command = build_command(
-            "find_robot", api_type=self.coordinator.data.api_type, active=True
-        )
+        command = self.coordinator.build_device_command("find_robot", active=True)
         await self.coordinator.async_send_command(command)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
         """Turn the switch off."""
-        command = build_command(
-            "find_robot", api_type=self.coordinator.data.api_type, active=False
-        )
+        command = self.coordinator.build_device_command("find_robot", active=False)
         await self.coordinator.async_send_command(command)
 
 
@@ -248,9 +249,8 @@ class ChildLockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntit
 
     async def _set_state(self, state: bool) -> None:
         """Send child lock command and optimistically update state."""
-        command = build_command(
+        command = self.coordinator.build_device_command(
             "set_child_lock",
-            api_type=self.coordinator.data.api_type,
             active=state,
         )
         await self.coordinator.async_send_command(command)
@@ -306,9 +306,8 @@ class DoNotDisturbSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEn
         """Send DND command and optimistically update state."""
         schedule = _current_dnd_schedule(self.coordinator)
         schedule["active"] = state
-        command = build_command(
+        command = self.coordinator.build_device_command(
             "set_do_not_disturb",
-            api_type=self.coordinator.data.api_type,
             **schedule,
         )
         await self.coordinator.async_send_command(command)
@@ -366,7 +365,9 @@ class OffPeakChargingSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], Switc
         """Send off-peak charging command and optimistically update state."""
         schedule = _current_off_peak_schedule(self.coordinator)
         schedule["active"] = state
-        command = build_command("set_off_peak_charging", **schedule)
+        command = self.coordinator.build_device_command(
+            "set_off_peak_charging", **schedule
+        )
         await self.coordinator.async_send_command(command)
         self.coordinator.async_set_updated_data(
             replace(self.coordinator.data, off_peak_enabled=state)
@@ -412,7 +413,7 @@ class BoostIQSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity)
 
     async def _set_state(self, state: bool) -> None:
         """Send BoostIQ command and optimistically update state."""
-        command = build_command("set_boost_iq", active=state)
+        command = self.coordinator.build_device_command("set_boost_iq", active=state)
         await self.coordinator.async_send_command(command)
         self.coordinator.async_set_updated_data(
             replace(self.coordinator.data, boost_iq=state)
@@ -456,7 +457,7 @@ class _ScalarToggleSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchE
 
     async def _set_state(self, state: bool) -> None:
         await self.coordinator.async_send_command(
-            build_command(self._command_name, active=state)
+            self.coordinator.build_device_command(self._command_name, active=state)
         )
         self.coordinator.async_set_updated_data(
             replace(self.coordinator.data, **{self._state_field: state})

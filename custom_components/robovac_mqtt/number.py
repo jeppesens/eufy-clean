@@ -10,15 +10,18 @@ from homeassistant.components.number import NumberEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import PERCENTAGE, EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 from .entity import API_TYPE_NOVEL, filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
+
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -34,6 +37,11 @@ async def async_setup_entry(
 
     for coordinator in coordinators:
         _LOGGER.debug("Adding number entities for %s", coordinator.device_name)
+
+        # Dock number entities require protobuf DPS (novel/scalar); legacy
+        # (Tuya Cloud plain-value) devices have no station support.
+        if coordinator.api_type == "legacy":
+            continue
 
         entities.extend(
             filter_supported_entities(
@@ -131,10 +139,12 @@ class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
 
     async def async_set_native_value(self, value: float) -> None:
         """Set the value."""
+        if not self.coordinator.data.dock_auto_cfg:
+            raise HomeAssistantError("Dock configuration not yet received from device")
         cfg = copy.deepcopy(self.coordinator.data.dock_auto_cfg)
         self._setter(cfg, value)
 
-        command = build_command("set_auto_cfg", cfg=cfg)
+        command = self.coordinator.build_device_command("set_auto_cfg", cfg=cfg)
         await self.coordinator.async_send_command(command)
 
 
@@ -168,7 +178,7 @@ class VolumeNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Set the volume (percentage, rounded to nearest 10%)."""
         pct = max(0, min(100, round(value / 10) * 10))
-        command = build_command("set_volume", api_type=self.coordinator.data.api_type, volume=pct)
+        command = self.coordinator.build_device_command("set_volume", volume=pct)
         await self.coordinator.async_send_command(command)
         self.coordinator.async_set_updated_data(
             replace(self.coordinator.data, volume=pct)

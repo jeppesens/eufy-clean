@@ -11,14 +11,19 @@ from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers import selector
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from voluptuous import Required, Schema
 
 from .api.cloud import EufyLogin
 from .const import (
+    CONF_LOCAL_DEVICES,
+    CONF_LOCAL_HOST,
+    CONF_LOCAL_VERSION,
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_DESKTOP,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROBOT_STYLE,
+    CONF_ROOM_NAMES,
     DEFAULT_MAP_MAX_PX,
     DEFAULT_NOTIFY_DESKTOP,
     DEFAULT_NOTIFY_MOBILE_SERVICE,
@@ -46,7 +51,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
     @staticmethod
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
-    ) -> config_entries.OptionsFlow:
+    ) -> "OptionsFlowHandler":
+        """Return the options flow (global settings + per-device local-Tuya)."""
         return OptionsFlowHandler(config_entry)
 
     async def async_step_user(
@@ -117,17 +123,62 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             step_id="reconfigure", data_schema=schema, errors=errors
         )
 
-    @staticmethod
-    async def _login_and_get_title(username: str, password: str) -> tuple[str, dict[str, str]]:
-        """Login and return (title, errors). Title is device name(s) or username fallback."""
+    async def async_step_reauth(
+        self, entry_data: dict[str, Any]
+    ) -> ConfigFlowResult:
+        """Handle reauthentication when credentials expire."""
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Handle reauth confirmation step."""
+        entry = self._get_reauth_entry()
+        username = entry.data[CONF_USERNAME]
+
+        if user_input is None:
+            schema = Schema({Required(CONF_PASSWORD): cv.string})
+            return self.async_show_form(
+                step_id="reauth_confirm",
+                data_schema=schema,
+                description_placeholders={"username": username},
+            )
+
+        _title, errors = await self._login_and_get_title(
+            username, user_input[CONF_PASSWORD]
+        )
+
+        if not errors:
+            return self.async_update_reload_and_abort(
+                entry,
+                data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]},
+            )
+
+        schema = Schema({Required(CONF_PASSWORD): cv.string})
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders={"username": username},
+        )
+
+    async def _login_and_get_title(
+        self, username: str, password: str
+    ) -> tuple[str, dict[str, str]]:
+        """Login and return (title, errors).
+
+        Title is the discovered device name(s) (MQTT + Tuya Cloud), falling
+        back to the username when no devices are found.
+        """
         errors: dict[str, str] = {}
         title = username
         try:
             openudid = "".join(random.choices(string.hexdigits, k=32))
             _LOGGER.info("Trying to login with username: %s", username)
-            eufy_login = EufyLogin(username, password, openudid)
+            session = async_get_clientsession(self.hass)
+            eufy_login = EufyLogin(username, password, openudid, websession=session)
             await eufy_login.init()
-            devices = eufy_login.mqtt_devices
+            devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
             if devices:
                 title = ", ".join(
                     d.get("deviceName") or "Eufy Robot" for d in devices
@@ -142,27 +193,98 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):
-    """Handle options for Eufy Robovac."""
+    """Eufy Robovac options: global settings + per-device local-Tuya overrides.
+
+    Global settings cover map rendering, robot style and notifications. The
+    per-device section lets a user opt a Tuya Cloud device into direct local
+    push by entering its LAN address (the local key is auto-supplied by the
+    Tuya Cloud login), plus manual room id->name overrides.
+    """
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
+        # HA 2025+ deprecates assigning to self.config_entry; use a private ref.
         self._config_entry = config_entry
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Manage the options."""
+        """Manage integration options.
+
+        Combines global settings (map rendering, robot style, notifications)
+        with per-device local-Tuya promotion and manual room id->name
+        overrides. Per-device fields use the dynamic keys ``{dev_id}__host`` /
+        ``{dev_id}__version`` / ``{dev_id}__rooms``.
+        """
+        from voluptuous import In
+        from voluptuous import Optional as VOptional
+
+        # Pull the live device list from running coordinators so the form
+        # lists exactly the devices the user can target.
+        runtime = self.hass.data.get(DOMAIN, {}).get(
+            self._config_entry.entry_id, {}
+        )
+        coordinators = runtime.get("coordinators", []) if runtime else []
+        eligible = [
+            (c.device_id, c.device_name, c.device_model, c)
+            for c in coordinators
+            if getattr(c, "_local_key", None)  # devices Tuya gave us a key for
+            or self._config_entry.options.get(CONF_LOCAL_DEVICES, {}).get(
+                c.device_id
+            )
+        ]
+        # Coordinators without a local key still benefit from the room
+        # override field, so include them too.
+        seen = {dev_id for dev_id, *_ in eligible}
+        for c in coordinators:
+            if c.device_id not in seen:
+                eligible.append((c.device_id, c.device_name, c.device_model, c))
+
+        existing: dict[str, dict] = self._config_entry.options.get(
+            CONF_LOCAL_DEVICES, {}
+        )
+
         if user_input is not None:
+            # Split the submitted values: per-device keys -> CONF_LOCAL_DEVICES,
+            # everything else -> global settings.
+            new_overrides: dict[str, dict] = {}
+            for dev_id, _name, _model, coord in eligible:
+                host = (user_input.pop(f"{dev_id}__host", "") or "").strip()
+                version = user_input.pop(f"{dev_id}__version", 3.3)
+                rooms_raw = user_input.pop(f"{dev_id}__rooms", "") or ""
+                rooms_parsed = _parse_rooms_text(rooms_raw)
+                # Only persist a per-device entry if the user supplied
+                # something meaningful — saves churn in the storage file.
+                if not host and not rooms_parsed:
+                    continue
+                entry: dict[str, Any] = {}
+                if host and getattr(coord, "_local_key", None):
+                    entry[CONF_LOCAL_HOST] = host
+                    entry[CONF_LOCAL_VERSION] = float(version or 3.3)
+                if rooms_parsed:
+                    entry[CONF_ROOM_NAMES] = rooms_parsed
+                new_overrides[dev_id] = entry
+
             # An unselected mobile-service dropdown submits None; store "" so
             # downstream consumers can rely on a plain string.
             if user_input.get(CONF_NOTIFY_MOBILE_SERVICE) is None:
                 user_input[CONF_NOTIFY_MOBILE_SERVICE] = ""
-            return self.async_create_entry(title="", data=user_input)
+
+            return self.async_create_entry(
+                title="",
+                data={
+                    **self._config_entry.options,
+                    **user_input,
+                    CONF_LOCAL_DEVICES: new_overrides,
+                },
+            )
 
         opts = self._config_entry.options
         current_max_px = str(opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
         current_robot_style = opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
         current_notify_desktop = opts.get(CONF_NOTIFY_DESKTOP, DEFAULT_NOTIFY_DESKTOP)
-        current_notify_mobile_service = opts.get(CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE)
+        current_notify_mobile_service = opts.get(
+            CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE
+        )
 
         # Discover available mobile app notify services
         all_notify = self.hass.services.async_services().get("notify", {})
@@ -170,46 +292,110 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             svc for svc in all_notify if svc.startswith("mobile_app_")
         )
         mobile_options = [
-            selector.SelectOptionDict(value=svc, label=svc.replace("mobile_app_", "").replace("_", " ").title())
+            selector.SelectOptionDict(
+                value=svc,
+                label=svc.replace("mobile_app_", "").replace("_", " ").title(),
+            )
             for svc in mobile_services
         ]
 
-        schema = Schema(
-            {
-                Required(CONF_MAP_MAX_PX, default=current_max_px): selector.SelectSelector(
+        # Global settings first, then any per-device local-Tuya / room fields.
+        schema_dict: dict = {
+            Required(CONF_MAP_MAX_PX, default=current_max_px): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value="256", label="256 px (low)"),
+                        selector.SelectOptionDict(value="512", label="512 px (default)"),
+                        selector.SelectOptionDict(value="1024", label="1024 px (high)"),
+                        selector.SelectOptionDict(value="2048", label="2048 px (ultra)"),
+                    ],
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+            Required(CONF_ROBOT_STYLE, default=current_robot_style): selector.SelectSelector(
+                selector.SelectSelectorConfig(
+                    options=[
+                        selector.SelectOptionDict(value="googly", label="Googly Eyes"),
+                        selector.SelectOptionDict(value="dot", label="Dot"),
+                    ],
+                    mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+            Required(
+                CONF_NOTIFY_DESKTOP, default=current_notify_desktop
+            ): selector.BooleanSelector(),
+            # vol.Maybe lets an unselected dropdown (which submits None) pass
+            # validation; the step normalises None back to "". A bare coercion
+            # here would break schema serialization for the frontend.
+            Required(
+                CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service
+            ): vol.Maybe(
+                selector.SelectSelector(
                     selector.SelectSelectorConfig(
-                        options=[
-                            selector.SelectOptionDict(value="256", label="256 px (low)"),
-                            selector.SelectOptionDict(value="512", label="512 px (default)"),
-                            selector.SelectOptionDict(value="1024", label="1024 px (high)"),
-                            selector.SelectOptionDict(value="2048", label="2048 px (ultra)"),
-                        ],
-                        mode=selector.SelectSelectorMode.LIST,
+                        options=mobile_options,
+                        custom_value=True,
+                        mode=selector.SelectSelectorMode.DROPDOWN,
                     )
-                ),
-                Required(CONF_ROBOT_STYLE, default=current_robot_style): selector.SelectSelector(
-                    selector.SelectSelectorConfig(
-                        options=[
-                            selector.SelectOptionDict(value="googly", label="Googly Eyes"),
-                            selector.SelectOptionDict(value="dot", label="Dot"),
-                        ],
-                        mode=selector.SelectSelectorMode.LIST,
+                )
+            ),
+        }
+
+        for dev_id, name, model, coord in eligible:
+            current = existing.get(dev_id, {})
+            label = f"{name} ({model}) — {dev_id[:8]}"
+            # Only offer host/version on devices we actually have a local key for.
+            if getattr(coord, "_local_key", None):
+                schema_dict[
+                    VOptional(
+                        f"{dev_id}__host",
+                        default=current.get(CONF_LOCAL_HOST, ""),
+                        description={"suggested_value": label},
                     )
-                ),
-                Required(CONF_NOTIFY_DESKTOP, default=current_notify_desktop): selector.BooleanSelector(),
-                # vol.Maybe lets an unselected dropdown (which submits None)
-                # pass validation; the step normalises None back to "".
-                # A bare coercion function here would break schema
-                # serialization for the frontend (HTTP 500 on form load).
-                Required(CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service): vol.Maybe(
-                    selector.SelectSelector(
-                        selector.SelectSelectorConfig(
-                            options=mobile_options,
-                            custom_value=True,
-                            mode=selector.SelectSelectorMode.DROPDOWN,
-                        )
+                ] = cv.string
+                schema_dict[
+                    VOptional(
+                        f"{dev_id}__version",
+                        default=current.get(CONF_LOCAL_VERSION, 3.3),
                     )
-                ),
-            }
-        )
-        return self.async_show_form(step_id="init", data_schema=schema)
+                ] = In([3.1, 3.3, 3.4, 3.5])
+            schema_dict[
+                VOptional(
+                    f"{dev_id}__rooms",
+                    default=_format_rooms_text(current.get(CONF_ROOM_NAMES) or {}),
+                )
+            ] = cv.string
+
+        return self.async_show_form(step_id="init", data_schema=Schema(schema_dict))
+
+
+def _parse_rooms_text(text: str) -> dict[int, str]:
+    """Parse a user-entered "id: name" multi-line string into a dict.
+
+    Lines starting with ``#`` are treated as comments. Whitespace and
+    duplicate IDs are tolerated; the LAST occurrence of an ID wins. Lines
+    that don't fit ``<int>: <text>`` are silently ignored — we'd rather
+    accept loose input than reject the whole form.
+    """
+    rooms: dict[int, str] = {}
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if ":" not in line:
+            continue
+        id_part, _, name_part = line.partition(":")
+        try:
+            room_id = int(id_part.strip())
+        except ValueError:
+            continue
+        name = name_part.strip()
+        if name:
+            rooms[room_id] = name
+    return rooms
+
+
+def _format_rooms_text(rooms: dict[int, str]) -> str:
+    """Render the saved override dict back as the textarea default."""
+    if not rooms:
+        return ""
+    return "\n".join(f"{rid}: {name}" for rid, name in sorted(rooms.items()))

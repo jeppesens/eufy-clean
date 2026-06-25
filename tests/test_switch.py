@@ -1,5 +1,6 @@
 """Unit tests for the FindRobot switch entity."""
 
+import unittest.mock
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -28,9 +29,13 @@ def mock_coordinator() -> MagicMock:
     coordinator.device_id = "test_device"
     coordinator.device_name = "Test Vac"
     coordinator.device_model = "T2118"
+    coordinator.api_type = "novel"
     coordinator.data = VacuumState()
     coordinator.async_send_command = AsyncMock()
     coordinator.async_set_updated_data = MagicMock()
+    coordinator.build_device_command = MagicMock(
+        return_value={DPS_MAP["GO_HOME"]: "cmd"}
+    )
     coordinator.device_info = {}
     coordinator.last_update_success = True
     return coordinator
@@ -69,9 +74,8 @@ async def test_find_robot_turn_on_off(hass: HomeAssistant, mock_coordinator):
     entity.hass = hass
 
     await entity.async_turn_off()
-    mock_coordinator.async_send_command.assert_called_with(
-        {DPS_MAP["FIND_ROBOT"]: False}
-    )
+    mock_coordinator.build_device_command.assert_called_with("find_robot", active=False)
+    mock_coordinator.async_send_command.assert_called()
 
 
 async def test_child_lock_switch_turn_on_off(hass: HomeAssistant, mock_coordinator):
@@ -90,14 +94,16 @@ async def test_child_lock_switch_turn_on_off(hass: HomeAssistant, mock_coordinat
 
     await entity.async_turn_on()
     mock_coordinator.async_send_command.assert_called()
-    sent_command = mock_coordinator.async_send_command.call_args_list[-1][0][0]
-    assert DPS_MAP["UNSETTING"] in sent_command
+    mock_coordinator.build_device_command.assert_called_with(
+        "set_child_lock", active=True
+    )
     updated_state = mock_coordinator.async_set_updated_data.call_args_list[-1][0][0]
     assert updated_state.child_lock is True
 
     await entity.async_turn_off()
-    sent_command = mock_coordinator.async_send_command.call_args_list[-1][0][0]
-    assert DPS_MAP["UNSETTING"] in sent_command
+    mock_coordinator.build_device_command.assert_called_with(
+        "set_child_lock", active=False
+    )
     updated_state = mock_coordinator.async_set_updated_data.call_args_list[-1][0][0]
     assert updated_state.child_lock is False
 
@@ -132,8 +138,9 @@ async def test_do_not_disturb_switch_turn_on_off(hass: HomeAssistant, mock_coord
     }
 
     await entity.async_turn_on()
-    sent_command = mock_coordinator.async_send_command.call_args_list[-1][0][0]
-    assert DPS_MAP["UNDISTURBED"] in sent_command
+    last_call = mock_coordinator.build_device_command.call_args_list[-1]
+    assert last_call[0][0] == "set_do_not_disturb"
+    assert last_call[1]["active"] is True
     updated_state = mock_coordinator.async_set_updated_data.call_args_list[-1][0][0]
     assert updated_state.dnd_enabled is True
 
@@ -168,11 +175,10 @@ async def test_dock_switches(hass: HomeAssistant, mock_coordinator):
 
     # Test Turn On
     await auto_empty.async_turn_on()
-    # Expected config update in command
-    # Check that command included the updated config
-    mock_coordinator.async_send_command.assert_called()
-    call_args = mock_coordinator.async_send_command.call_args[0][0]
-    assert DPS_MAP["GO_HOME"] in call_args
+    mock_coordinator.build_device_command.assert_called_with("set_auto_cfg", cfg=unittest.mock.ANY)
+    # Verify the mutated cfg was passed through to send_command
+    built_cmd = mock_coordinator.build_device_command.return_value
+    mock_coordinator.async_send_command.assert_called_with(built_cmd)
 
     # Test Turn Off
     await auto_empty.async_turn_off()

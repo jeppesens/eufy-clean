@@ -20,6 +20,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from ._orphan_cleanup import prune_orphan_entities
 from .const import (
     ACCESSORY_MAX_LIFE,
     DOMAIN,
@@ -29,6 +30,9 @@ from .coordinator import EufyCleanCoordinator, VacuumState
 from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
+
+
+PARALLEL_UPDATES = 0
 
 
 def _active_rooms_available(state: VacuumState) -> bool:
@@ -105,6 +109,16 @@ async def async_setup_entry(
                 category=EntityCategory.DIAGNOSTIC,
                 supported_api_types=(API_TYPE_NOVEL,),
             ),
+        ]
+
+        # Novel/scalar sensors: these rely on DPS keys (154, 165, 167, 168,
+        # 173, ...) that legacy (plain Tuya Cloud) devices don't support, so
+        # they are skipped entirely for legacy devices. Per-protocol gating
+        # (scalar vs novel) is handled by filter_supported_entities via each
+        # sensor's supported_api_types. The "active_map" sensor additionally
+        # requires the MQTT/P2P transport (Tuya Cloud / local-Tuya don't carry
+        # MultiMapsManageResponse) and is appended separately below.
+        novel_sensors: list[SensorEntity] = [
             # Cleaning Time Sensor
             RoboVacSensor(
                 coordinator,
@@ -198,20 +212,6 @@ async def async_setup_entry(
                 state_class=None,
                 category=EntityCategory.DIAGNOSTIC,
                 availability_fn=lambda s: "dock_status" in s.received_fields,
-                supported_api_types=(API_TYPE_NOVEL,),
-            ),
-            # Active map ID sensor
-            RoboVacSensor(
-                coordinator,
-                "active_map",
-                "Active Map",
-                lambda s: s.map_id,
-                device_class=None,
-                unit=None,
-                state_class=None,
-                icon="mdi:map-marker-path",
-                category=EntityCategory.DIAGNOSTIC,
-                availability_fn=lambda s: "map_id" in s.received_fields,
                 supported_api_types=(API_TYPE_NOVEL,),
             ),
             # Active cleaning target sensor
@@ -387,7 +387,7 @@ async def async_setup_entry(
                     return a in SCALAR_ACCESSORY_MAX_LIFE
                 return True
 
-            sensors.append(
+            novel_sensors.append(
                 RoboVacSensor(
                     coordinator,
                     attr.replace("_usage", "_remaining"),
@@ -404,7 +404,45 @@ async def async_setup_entry(
                 )
             )
 
+        # Active map ID sensor — only populated by the MQTT/P2P transport.
+        # Tuya Cloud / local-Tuya don't carry MultiMapsManageResponse so the
+        # ID never arrives; skip the entity to avoid permanent `unavailable`.
+        if coordinator.connection_type == "mqtt":
+            novel_sensors.append(
+                RoboVacSensor(
+                    coordinator,
+                    "active_map",
+                    "Active Map",
+                    lambda s: s.map_id,
+                    device_class=None,
+                    unit=None,
+                    state_class=None,
+                    icon="mdi:map-marker-path",
+                    category=EntityCategory.DIAGNOSTIC,
+                    availability_fn=lambda s: "map_id" in s.received_fields,
+                    supported_api_types=(API_TYPE_NOVEL,),
+                )
+            )
+
+        # Legacy (plain Tuya Cloud) devices only support the universal sensors;
+        # the novel/scalar DPS keys those sensors rely on are unavailable, so
+        # only merge them for non-legacy devices.
+        if coordinator.api_type != "legacy":
+            sensors += novel_sensors
+
+        # Apply protocol gating (scalar vs novel) before adding entities.
         entities.extend(filter_supported_entities(coordinator, sensors))
+
+    # Prune registry orphans (e.g., active_map entity registered by an old
+    # build but no longer created on the Tuya transport, or novel sensors no
+    # longer created for legacy devices).
+    prune_orphan_entities(
+        hass,
+        config_entry.entry_id,
+        coordinators,
+        added_unique_ids={e.unique_id for e in entities if e.unique_id},
+        platform="sensor",
+    )
 
     async_add_entities(entities)
 

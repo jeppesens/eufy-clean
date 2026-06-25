@@ -141,3 +141,150 @@ def test_active_rooms_uses_zone_count_when_present(mock_coordinator):
 
     assert _active_rooms_available(mock_coordinator.data) is True
     assert _active_rooms_value(mock_coordinator.data) == "2 zones"
+
+
+# ── Legacy device sensor filtering ────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_legacy_coordinator_excludes_novel_sensors():
+    """Legacy devices should only get universal sensors (battery, error, task, work mode)."""
+    from custom_components.robovac_mqtt.sensor import async_setup_entry
+
+    coordinator = MagicMock()
+    coordinator.device_id = "legacy_dev"
+    coordinator.device_name = "Legacy Vac"
+    coordinator.device_model = "T2210"
+    coordinator.api_type = "legacy"
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry"
+    hass.data = {"robovac_mqtt": {"test_entry": {"coordinators": [coordinator]}}}
+
+    added_entities = []
+
+    await async_setup_entry(hass, config_entry, added_entities.extend)
+
+    # Should have exactly 4 universal sensors: Battery, Error Message, Task Status, Work Mode
+    entity_ids = [e.unique_id for e in added_entities]
+    assert len(added_entities) == 4
+    assert "legacy_dev_battery" in entity_ids
+    assert "legacy_dev_error_message" in entity_ids
+    assert "legacy_dev_task_status" in entity_ids
+    assert "legacy_dev_work_mode" in entity_ids
+
+    # Novel-only sensors should NOT be present
+    for suffix in [
+        "cleaning_time",
+        "cleaning_area",
+        "water_level",
+        "dock_status",
+        "active_map",
+        "filter_remaining",
+        "main_brush_remaining",
+    ]:
+        assert f"legacy_dev_{suffix}" not in entity_ids
+
+
+@pytest.mark.asyncio
+async def test_novel_coordinator_creates_all_sensors():
+    """Novel + MQTT devices should get all sensors including accessories."""
+    from custom_components.robovac_mqtt.sensor import async_setup_entry
+
+    coordinator = MagicMock()
+    coordinator.device_id = "novel_dev"
+    coordinator.device_name = "Novel Vac"
+    coordinator.device_model = "T2261"
+    coordinator.api_type = "novel"
+    coordinator.connection_type = "mqtt"
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry"
+    hass.data = {"robovac_mqtt": {"test_entry": {"coordinators": [coordinator]}}}
+
+    added_entities = []
+
+    await async_setup_entry(hass, config_entry, added_entities.extend)
+
+    entity_ids = [e.unique_id for e in added_entities]
+
+    # Full novel sensor set (universals + novel-only + device-info + accessories).
+    # Exact count guarded against accidental duplicates from the merge.
+    assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
+    assert len(added_entities) == 25
+
+    # Universal sensors
+    for suffix in ["battery", "error_message", "task_status", "work_mode"]:
+        assert f"novel_dev_{suffix}" in entity_ids
+
+    # Novel-only sensors
+    for suffix in [
+        "cleaning_time",
+        "cleaning_area",
+        "water_level",
+        "dock_status",
+        "active_map",
+    ]:
+        assert f"novel_dev_{suffix}" in entity_ids
+
+    # Accessory sensors
+    for suffix in [
+        "filter_remaining",
+        "main_brush_remaining",
+        "side_brush_remaining",
+        "sensor_remaining",
+        "scrape_remaining",
+        "mop_remaining",
+    ]:
+        assert f"novel_dev_{suffix}" in entity_ids
+
+
+@pytest.mark.asyncio
+async def test_novel_cloud_or_local_skips_p2p_only_sensors():
+    """Novel devices on Tuya transports (no P2P) should skip active_map sensor."""
+    from custom_components.robovac_mqtt.sensor import async_setup_entry
+
+    for transport in ("cloud", "local"):
+        coordinator = MagicMock()
+        coordinator.device_id = f"novel_{transport}"
+        coordinator.device_name = f"Novel Vac ({transport})"
+        coordinator.device_model = "T2080A"
+        coordinator.api_type = "novel"
+        coordinator.connection_type = transport
+        coordinator.data = VacuumState()
+        coordinator.last_update_success = True
+
+        hass = MagicMock()
+        config_entry = MagicMock()
+        config_entry.entry_id = f"entry_{transport}"
+        hass.data = {
+            "robovac_mqtt": {
+                f"entry_{transport}": {"coordinators": [coordinator]}
+            }
+        }
+
+        added_entities = []
+        await async_setup_entry(hass, config_entry, added_entities.extend)
+        entity_ids = [e.unique_id for e in added_entities]
+
+        # Full novel set minus the P2P-only active_map sensor (skipped on
+        # Tuya transports). One fewer than the MQTT novel case.
+        assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
+        assert len(added_entities) == 24, (
+            f"transport={transport}: got {len(added_entities)} entities"
+        )
+        assert f"novel_{transport}_active_map" not in entity_ids
+        # Other novel sensors still present
+        for suffix in [
+            "cleaning_time",
+            "cleaning_area",
+            "water_level",
+            "dock_status",
+        ]:
+            assert f"novel_{transport}_{suffix}" in entity_ids

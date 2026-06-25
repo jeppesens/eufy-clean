@@ -14,10 +14,24 @@
           "username": "Email address",
           "password": "Password"
         }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate",
+        "description": "Re-enter the password for **{username}**.",
+        "data": {
+          "password": "Password"
+        }
       }
     },
     "error": {
-      "no_devices": "No supported devices found on this account. Make sure at least one MQTT-capable Eufy robot vacuum is registered."
+      "no_devices": "No supported devices found on this account. Make sure at least one MQTT-capable Eufy robot vacuum is registered.",
+      "invalid_auth": "Invalid credentials",
+      "unknown": "Unexpected error",
+      "username_mismatch": "Username cannot be changed"
+    },
+    "abort": {
+      "already_configured": "Already configured",
+      "reauth_successful": "Re-authentication successful"
     }
   },
   "options": {
