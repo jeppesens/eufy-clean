@@ -127,3 +127,24 @@ async def test_select_option_unknown_room_logs_and_returns():
     await ent.async_select_option("Nonexistent")
     c.build_device_command.assert_not_called()
     c.async_send_command.assert_not_awaited()
+
+
+def test_options_disambiguates_duplicate_room_names():
+    """Two rooms sharing a name still get distinct labels (via the ID suffix)."""
+    c = _coord(room_overrides={1: "Bedroom", 2: "Bedroom"})
+    ent = RoomSelectEntity(c)
+    # Labels are unique because each carries its room id.
+    assert ent.options == ["None", "Bedroom (ID: 1)", "Bedroom (ID: 2)"]
+    assert len(set(ent.options)) == len(ent.options)
+
+
+@pytest.mark.asyncio
+async def test_select_duplicate_name_resolves_correct_id():
+    """Selecting the second of two same-named rooms cleans the right room id."""
+    c = _coord(room_overrides={1: "Bedroom", 2: "Bedroom"})
+    ent = RoomSelectEntity(c)
+    ent.async_write_ha_state = MagicMock()
+    await ent.async_select_option("Bedroom (ID: 2)")
+    c.build_device_command.assert_called_once_with(
+        "room_clean", room_ids=[2], map_id=3
+    )

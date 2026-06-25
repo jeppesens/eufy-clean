@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import ipaddress
 import logging
 import random
+import re
 import string
 from typing import Any
 
@@ -246,15 +248,29 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if user_input is not None:
             # Split the submitted values: per-device keys -> CONF_LOCAL_DEVICES,
             # everything else -> global settings.
-            new_overrides: dict[str, dict] = {}
+            #
+            # Seed from the stored overrides so a device whose coordinator
+            # failed to init (offline at load, hence absent from `eligible`)
+            # keeps its saved host/version/room override instead of being
+            # silently dropped.
+            new_overrides: dict[str, dict] = {
+                dev_id: dict(entry) for dev_id, entry in existing.items()
+            }
+            errors: dict[str, str] = {}
             for dev_id, _name, _model, coord in eligible:
                 host = (user_input.pop(f"{dev_id}__host", "") or "").strip()
                 version = user_input.pop(f"{dev_id}__version", 3.3)
                 rooms_raw = user_input.pop(f"{dev_id}__rooms", "") or ""
                 rooms_parsed = _parse_rooms_text(rooms_raw)
-                # Only persist a per-device entry if the user supplied
-                # something meaningful — saves churn in the storage file.
+                # Validate a supplied host before saving. Empty host stays on
+                # cloud and is not an error.
+                if host and not _is_valid_host(host):
+                    errors[f"{dev_id}__host"] = "invalid_host"
+                    continue
+                # The user cleared both fields for an eligible device: drop any
+                # stored override for it.
                 if not host and not rooms_parsed:
+                    new_overrides.pop(dev_id, None)
                     continue
                 entry: dict[str, Any] = {}
                 if host and getattr(coord, "_local_key", None):
@@ -263,6 +279,11 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 if rooms_parsed:
                     entry[CONF_ROOM_NAMES] = rooms_parsed
                 new_overrides[dev_id] = entry
+
+            if errors:
+                return self._show_init_form(
+                    eligible, existing, user_input, errors
+                )
 
             # An unselected mobile-service dropdown submits None; store "" so
             # downstream consumers can rely on a plain string.
@@ -278,12 +299,39 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 },
             )
 
+        return self._show_init_form(eligible, existing)
+
+    def _show_init_form(
+        self,
+        eligible: list[tuple],
+        existing: dict[str, dict],
+        user_input: dict[str, Any] | None = None,
+        errors: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
+        """Build and show the combined options form.
+
+        When re-shown after a validation error, ``user_input`` carries the
+        user's submitted global settings (the per-device keys have already
+        been popped) so they aren't lost, and ``errors`` flags the offending
+        per-device host fields.
+        """
+        from voluptuous import In
+        from voluptuous import Optional as VOptional
+
+        submitted = user_input or {}
         opts = self._config_entry.options
-        current_max_px = str(opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
-        current_robot_style = opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
-        current_notify_desktop = opts.get(CONF_NOTIFY_DESKTOP, DEFAULT_NOTIFY_DESKTOP)
-        current_notify_mobile_service = opts.get(
-            CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE
+        current_max_px = str(
+            submitted.get(CONF_MAP_MAX_PX, opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
+        )
+        current_robot_style = submitted.get(
+            CONF_ROBOT_STYLE, opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
+        )
+        current_notify_desktop = submitted.get(
+            CONF_NOTIFY_DESKTOP, opts.get(CONF_NOTIFY_DESKTOP, DEFAULT_NOTIFY_DESKTOP)
+        )
+        current_notify_mobile_service = submitted.get(
+            CONF_NOTIFY_MOBILE_SERVICE,
+            opts.get(CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE),
         )
 
         # Discover available mobile app notify services
@@ -365,7 +413,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 )
             ] = cv.string
 
-        return self.async_show_form(step_id="init", data_schema=Schema(schema_dict))
+        return self.async_show_form(
+            step_id="init", data_schema=Schema(schema_dict), errors=errors or {}
+        )
 
 
 def _parse_rooms_text(text: str) -> dict[int, str]:
@@ -394,8 +444,41 @@ def _parse_rooms_text(text: str) -> dict[int, str]:
     return rooms
 
 
+# A single hostname label: alphanumeric, may contain hyphens internally,
+# 1-63 chars. The full hostname is one or more such labels joined by dots.
+_HOSTNAME_LABEL = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
+
+
+def _is_valid_host(host: str) -> bool:
+    """Return True if ``host`` is a bare IP address or plausible hostname.
+
+    Rejects values carrying a scheme or port (e.g. ``http://x`` or
+    ``1.2.3.4:6668``) since the local-Tuya client expects a bare host. An
+    empty string is *not* validated here (empty = "stay on cloud").
+    """
+    if not host:
+        return False
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        pass
+    # Not an IP — accept a plausible hostname (no scheme, no port, no spaces).
+    if len(host) > 253:
+        return False
+    return all(_HOSTNAME_LABEL.match(label) for label in host.split("."))
+
+
 def _format_rooms_text(rooms: dict[int, str]) -> str:
-    """Render the saved override dict back as the textarea default."""
+    """Render the saved override dict back as the textarea default.
+
+    Room ids are sorted numerically (not lexically) so that e.g. room 10
+    comes after room 9 even when keys arrive as strings (JSON storage
+    stringifies int keys).
+    """
     if not rooms:
         return ""
-    return "\n".join(f"{rid}: {name}" for rid, name in sorted(rooms.items()))
+    return "\n".join(
+        f"{rid}: {name}"
+        for rid, name in sorted(rooms.items(), key=lambda kv: int(kv[0]))
+    )

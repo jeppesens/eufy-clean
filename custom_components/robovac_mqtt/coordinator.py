@@ -82,15 +82,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self.device_id = device_info["deviceId"]
         self.device_model = device_info["deviceModel"]
         # DPS protocol ("novel" protobuf / "scalar" Tuya-int / "legacy"),
-        # classified cloud-side by EufyLogin.checkApiType from the initial snapshot.
-        self.api_type = device_info.get("apiType", "novel")
+        # classified cloud-side by EufyLogin.checkApiType from the initial
+        # snapshot. Determines both the parser and the command builder.
+        self.api_type: str = device_info.get("apiType", "novel")
         self.device_name = device_info["deviceName"]
         self.serial_number = device_info.get("deviceId")  # Usually deviceId is SN
         self.firmware_version = device_info.get("softVersion")
         self.eufy_login = eufy_login
 
-        # API type determines parser/command builder
-        self.api_type: str = device_info.get("apiType", "novel")
         # Connection type determines transport. Three options:
         #   "mqtt"  — Anker AIOT MQTT (push, novel devices on the new Eufy app)
         #   "local" — direct Tuya LAN socket (push, requires local_key + LAN reachability)
@@ -101,8 +100,6 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             self.connection_type: str = device_info["connection_type"]
         elif device_info.get("mqtt", True):
             self.connection_type = "mqtt"
-        elif device_info.get("local_key") and device_info.get("local_host"):
-            self.connection_type = "local"
         else:
             self.connection_type = "cloud"
 
@@ -213,6 +210,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         else:
             await self._initialize_mqtt()
 
+    async def _fall_back_to_cloud(self) -> None:
+        """Switch this coordinator to cloud polling and initialize it."""
+        self.connection_type = "cloud"
+        self.update_interval = _CLOUD_POLL_INTERVAL
+        self._base_poll_interval = _CLOUD_POLL_INTERVAL
+        await self._initialize_cloud()
+
     async def _initialize_local(self) -> None:
         """Initialize a direct local-Tuya socket connection.
 
@@ -226,10 +230,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 "falling back to cloud polling",
                 self.device_name,
             )
-            self.connection_type = "cloud"
-            self.update_interval = _CLOUD_POLL_INTERVAL
-            self._base_poll_interval = _CLOUD_POLL_INTERVAL
-            await self._initialize_cloud()
+            await self._fall_back_to_cloud()
             return
 
         _LOGGER.info(
@@ -251,10 +252,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 self.device_name, e,
             )
             self.client = None
-            self.connection_type = "cloud"
-            self.update_interval = _CLOUD_POLL_INTERVAL
-            self._base_poll_interval = _CLOUD_POLL_INTERVAL
-            await self._initialize_cloud()
+            await self._fall_back_to_cloud()
             return
         await self.async_load_storage()
 

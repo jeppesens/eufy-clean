@@ -164,11 +164,13 @@ Room segments with guaranteed unique names (duplicates auto-suffixed, e.g. `Kitc
 
 ### Optional: Local Tuya transport (push, no 30 s polling)
 
-For devices reached over the **Tuya Cloud** path (legacy non-MQTT vacuums such
-as the S1 Pro / X8 Pro / RoboVac G-series — anything where the integration
-otherwise polls every 30 s) you can opt-in to a direct **LAN socket** on the
-dock instead. Updates then arrive within seconds of the device emitting them
-and continue to work while Eufy / Tuya cloud is unreachable.
+For devices the Eufy API reports as **non-MQTT** (served over the **Tuya Cloud**
+path and otherwise polled every 30 s) you can opt-in to a direct **LAN socket**
+on the dock instead. Whether a device uses this path is decided per-device at
+runtime from the Eufy API's `mqtt` flag — not by model name — so open
+**Configure** to see which of your devices are eligible. Updates then arrive
+within seconds of the device emitting them and continue to work while the
+Eufy / Tuya cloud is unreachable.
 
 How to enable it:
 
@@ -184,6 +186,13 @@ How to enable it:
 If the local socket fails to open (wrong host, firewall, dock offline) the
 coordinator silently falls back to cloud polling, so the dashboard never goes
 unavailable just because the LAN address has shifted.
+
+> [!WARNING]
+> **Security model.** The local transport is AES-encrypted with your device's
+> **local key** — it is *not* TLS and performs no certificate validation, so it
+> is intended for a **trusted LAN only**. The local key grants full local
+> control of the dock and is a secret: never share it, and never paste
+> integration debug logs that might contain it into public issues.
 
 > [!NOTE]
 > Live map and live X/Y position are **not** available over either Tuya

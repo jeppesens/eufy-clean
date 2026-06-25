@@ -8,7 +8,7 @@ verify the wrapping/dispatch behaviour in isolation.
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -144,3 +144,241 @@ async def test_listener_dispatches_pushed_dps(patch_tinytuya, fake_dev):
     # First push is the initial status() call (DPS 104=87), second is the
     # gratuitous receive() push (DPS 167).
     assert any(d.get("data", {}).get("167") for d in seen)
+
+
+# ---------------------------------------------------------------------------
+# Reconnect / backoff (S2)
+# ---------------------------------------------------------------------------
+#
+# The listen loop runs as a background task and calls ``asyncio.sleep`` for its
+# reconnect backoff. We patch that sleep (so tests don't wait real seconds) with
+# a recorder that still yields control via the *real* sleep — patching the
+# module attribute would otherwise also intercept the loop's own awaits. The
+# test then drives completion off an Event that ``fake_receive`` sets once the
+# scripted packets are exhausted, awaited via ``asyncio.wait_for`` (which does
+# not route through ``asyncio.sleep``, so it is unaffected by the patch).
+
+_REAL_SLEEP = asyncio.sleep
+
+
+def _make_sleep_recorder(sleeps: list[float]):
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+        # Yield so the loop's executor work and other tasks make progress.
+        await _REAL_SLEEP(0)
+
+    return fake_sleep
+
+
+async def _drive_until(done: asyncio.Event, client: LocalTuyaClient) -> None:
+    """Wait for the scripted packets to drain, then tear the client down."""
+    try:
+        await asyncio.wait_for(done.wait(), timeout=2)
+    finally:
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_listener_ignores_timeout_error(patch_tinytuya, fake_dev):
+    """An {"Error": "timeout"} packet is benign: continue, no reconnect."""
+    done = asyncio.Event()
+    pushes = iter([{"Error": "timeout while waiting"}])
+
+    def fake_receive():
+        try:
+            return next(pushes)
+        except StopIteration:
+            done.set()
+            return None
+
+    fake_dev.receive.side_effect = fake_receive
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4"
+    )
+    client.set_on_message(lambda _b: None)
+
+    sleeps: list[float] = []
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya.asyncio.sleep",
+        new=_make_sleep_recorder(sleeps),
+    ):
+        await client.connect()
+        await _drive_until(done, client)
+
+    # connect() builds the device once; a timeout error must NOT reopen it
+    # and must NOT sleep for a reconnect backoff.
+    assert patch_tinytuya.Device.call_count == 1
+    assert sleeps == []
+
+
+@pytest.mark.asyncio
+async def test_listener_reconnects_on_error_with_backoff(patch_tinytuya, fake_dev):
+    """A real error dict triggers _open_device + exponential backoff sleeps."""
+    done = asyncio.Event()
+    pushes = iter([
+        {"Error": "device offline"},
+        {"Error": "device offline"},
+    ])
+
+    def fake_receive():
+        try:
+            return next(pushes)
+        except StopIteration:
+            done.set()
+            return None
+
+    fake_dev.receive.side_effect = fake_receive
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4"
+    )
+    client.set_on_message(lambda _b: None)
+
+    sleeps: list[float] = []
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya.asyncio.sleep",
+        new=_make_sleep_recorder(sleeps),
+    ):
+        await client.connect()
+        await _drive_until(done, client)
+
+    # Two error packets -> two reconnects, each preceded by a backoff sleep
+    # that grows exponentially from the initial value.
+    assert sleeps[0] == 5.0
+    assert sleeps[1] == 10.0
+    # Device reconstructed: 1 (connect) + 2 (reconnects).
+    assert patch_tinytuya.Device.call_count == 3
+
+
+@pytest.mark.asyncio
+async def test_listener_reconnects_on_exception_and_resets_backoff(
+    patch_tinytuya, fake_dev
+):
+    """receive() raising triggers reconnect; a later good packet resets backoff."""
+    done = asyncio.Event()
+    calls = {"n": 0}
+
+    def fake_receive():
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise OSError("connection reset")
+        if calls["n"] == 2:
+            return {"dps": {"167": "AA=="}}
+        done.set()
+        return None
+
+    fake_dev.receive.side_effect = fake_receive
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4"
+    )
+    seen: list[dict] = []
+
+    def on_msg(payload: bytes) -> None:
+        seen.append(json.loads(json.loads(payload.decode())["payload"]))
+
+    client.set_on_message(on_msg)
+
+    sleeps: list[float] = []
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya.asyncio.sleep",
+        new=_make_sleep_recorder(sleeps),
+    ):
+        await client.connect()
+        await _drive_until(done, client)
+
+    # The exception path slept once (initial backoff) then re-opened the device.
+    assert sleeps and sleeps[0] == 5.0
+    # Reconnect re-invoked tinytuya.Device: 1 (connect) + 1 (reopen).
+    assert patch_tinytuya.Device.call_count >= 2
+    # A successful packet after reconnect resets backoff to the initial value,
+    # so no further (growing) sleeps occurred.
+    assert all(s == 5.0 for s in sleeps)
+    # The good packet was dispatched.
+    assert any(d.get("data", {}).get("167") for d in seen)
+
+
+@pytest.mark.asyncio
+async def test_reconnect_refetches_status(patch_tinytuya, fake_dev):
+    """After a reconnect the client re-runs status() (N3) so state isn't stale."""
+    done = asyncio.Event()
+    pushes = iter([{"Error": "device offline"}])
+
+    def fake_receive():
+        try:
+            return next(pushes)
+        except StopIteration:
+            done.set()
+            return None
+
+    fake_dev.receive.side_effect = fake_receive
+    # status() returns the initial fetch then a post-reconnect snapshot.
+    fake_dev.status.side_effect = [
+        {"dps": {"104": 87}},
+        {"dps": {"104": 50}},
+    ]
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4"
+    )
+    seen: list[dict] = []
+
+    def on_msg(payload: bytes) -> None:
+        seen.append(json.loads(json.loads(payload.decode())["payload"]))
+
+    client.set_on_message(on_msg)
+
+    sleeps: list[float] = []
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya.asyncio.sleep",
+        new=_make_sleep_recorder(sleeps),
+    ):
+        await client.connect()
+        await _drive_until(done, client)
+
+    # status() called twice: initial connect + post-reconnect refetch.
+    assert fake_dev.status.call_count == 2
+    # Both snapshots dispatched.
+    assert any(d.get("data", {}).get("104") == 87 for d in seen)
+    assert any(d.get("data", {}).get("104") == 50 for d in seen)
+
+
+# ---------------------------------------------------------------------------
+# _dispatch payload filtering + _dev guard (N4)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {},
+        {"dps": {}},
+        "garbage",
+        None,
+        [1, 2, 3],
+    ],
+)
+def test_dispatch_ignores_non_dps_payloads(payload):
+    """_dispatch must not fire the callback for empty/garbage payloads."""
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4"
+    )
+    fired: list[bytes] = []
+    client.set_on_message(fired.append)
+    client._dispatch(payload)
+    assert fired == []
+
+
+def test_dispatch_without_callback_is_noop():
+    """_dispatch with a valid payload but no callback registered is a no-op."""
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4"
+    )
+    # No set_on_message() call. Should not raise.
+    client._dispatch({"dps": {"104": 87}})
+
+
+def test_receive_with_timeout_guards_none_dev(patch_tinytuya):
+    """_receive_with_timeout returns None when _dev is None (no AttributeError)."""
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4"
+    )
+    assert client._dev is None
+    assert client._receive_with_timeout() is None

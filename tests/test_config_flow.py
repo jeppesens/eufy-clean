@@ -1,5 +1,5 @@
 # pylint: disable=redefined-outer-name
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import homeassistant.helpers.config_validation as cv
 import pytest
@@ -10,8 +10,12 @@ from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.robovac_mqtt.const import (
+    CONF_LOCAL_DEVICES,
+    CONF_LOCAL_HOST,
+    CONF_LOCAL_VERSION,
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_MOBILE_SERVICE,
+    CONF_ROOM_NAMES,
     DOMAIN,
 )
 
@@ -107,6 +111,113 @@ async def test_options_flow_blank_mobile_service(hass: HomeAssistant):
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result2["data"][CONF_NOTIFY_MOBILE_SERVICE] == ""
     assert result2["data"][CONF_MAP_MAX_PX] == "1024"
+
+
+def _fake_coordinator(device_id: str, *, local_key: str | None = None):
+    """Build a minimal coordinator stand-in for the options flow."""
+    coord = MagicMock()
+    coord.device_id = device_id
+    coord.device_name = f"Vac {device_id}"
+    coord.device_model = "T1234"
+    coord._local_key = local_key
+    return coord
+
+
+def _register_coordinators(hass, entry, coordinators):
+    """Wire coordinators into hass.data the way __init__ does at setup."""
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "coordinators": coordinators
+    }
+
+
+async def test_options_flow_preserves_override_for_unloaded_device(
+    hass: HomeAssistant,
+):
+    """B2: a stored override for a device that failed to load (not in the
+    running coordinators) must survive a save instead of being dropped."""
+    stored = {
+        # This device is currently loaded and editable.
+        "loaded_dev": {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: {1: "Lounge"},
+        },
+        # This device was offline at load time -> no coordinator. Its
+        # override must NOT be wiped when the user saves the form.
+        "offline_dev": {
+            CONF_LOCAL_HOST: "192.168.1.99",
+            CONF_LOCAL_VERSION: 3.4,
+            CONF_ROOM_NAMES: {2: "Kitchen"},
+        },
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={CONF_LOCAL_DEVICES: stored},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    # Only the loaded device has a running coordinator.
+    _register_coordinators(
+        hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+
+    # Resubmit the loaded device's host unchanged; touch nothing else.
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_NOTIFY_MOBILE_SERVICE: None,
+            "loaded_dev__host": "192.168.1.50",
+            "loaded_dev__version": 3.3,
+            "loaded_dev__rooms": "1: Lounge",
+        },
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    saved = result2["data"][CONF_LOCAL_DEVICES]
+    # The offline device's override is untouched.
+    assert saved["offline_dev"] == stored["offline_dev"]
+    # The loaded device kept its host/rooms.
+    assert saved["loaded_dev"][CONF_LOCAL_HOST] == "192.168.1.50"
+    assert saved["loaded_dev"][CONF_ROOM_NAMES] == {1: "Lounge"}
+
+
+async def test_options_flow_invalid_host_shows_error_and_does_not_save(
+    hass: HomeAssistant,
+):
+    """N5: a malformed host (scheme/port) must surface an ``invalid_host``
+    error on its field and must not persist."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    _register_coordinators(
+        hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
+    )
+
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == data_entry_flow.FlowResultType.FORM
+
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_NOTIFY_MOBILE_SERVICE: None,
+            "loaded_dev__host": "1.2.3.4:6668",
+            "loaded_dev__version": 3.3,
+            "loaded_dev__rooms": "",
+        },
+    )
+    # Form re-shown with the field-scoped error; nothing saved.
+    assert result2["type"] == data_entry_flow.FlowResultType.FORM
+    assert result2["errors"]["loaded_dev__host"] == "invalid_host"
+    assert entry.options.get(CONF_LOCAL_DEVICES, {}) == {}
 
 
 # ── Reauth flow ───────────────────────────────────────────────────

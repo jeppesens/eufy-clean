@@ -68,6 +68,10 @@ class LocalTuyaClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._listen_task: asyncio.Task | None = None
         self._stop = False
+        # tinytuya's Device (socket/seqno/AES state) is not thread-safe; every
+        # access run in the executor must be serialized through this lock so the
+        # listen loop's receive() never overlaps a send/status/open/close.
+        self._dev_lock = asyncio.Lock()
 
     def set_on_message(self, callback: Callable[[bytes], None]) -> None:
         """Register the callback the coordinator listens on for DPS updates."""
@@ -77,11 +81,13 @@ class LocalTuyaClient:
         """Open the socket and start the background listener."""
         self._loop = asyncio.get_running_loop()
         self._stop = False
-        await self._loop.run_in_executor(None, self._open_device)
+        async with self._dev_lock:
+            await self._loop.run_in_executor(None, self._open_device)
         # Initial status fetch — surfaces current DPS state to the coordinator
         # before the gratuitous-update stream takes over.
         try:
-            initial = await self._loop.run_in_executor(None, self._dev.status)
+            async with self._dev_lock:
+                initial = await self._loop.run_in_executor(None, self._dev.status)
             self._dispatch(initial)
         except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
             _LOGGER.debug(
@@ -92,7 +98,17 @@ class LocalTuyaClient:
         self._listen_task = self._loop.create_task(self._listen_loop())
 
     def _open_device(self) -> None:
-        """Construct the underlying tinytuya.Device (blocking)."""
+        """Construct the underlying tinytuya.Device (blocking).
+
+        Callers must hold ``self._dev_lock`` so the close/reassign below cannot
+        race the listen loop's receive(). Best-effort close any previous Device
+        first to avoid leaking its socket on reconnect.
+        """
+        if self._dev is not None:
+            try:
+                self._dev.close()
+            except Exception:  # noqa: BLE001 - close is best-effort
+                pass
         self._dev = tinytuya.Device(
             self.device_id,
             address=self.host,
@@ -108,6 +124,8 @@ class LocalTuyaClient:
 
     async def disconnect(self) -> None:
         """Cancel the listener task and close the socket."""
+        # Set _stop first so the listen loop exits after its current receive()
+        # cycle instead of starting another.
         self._stop = True
         if self._listen_task:
             self._listen_task.cancel()
@@ -117,11 +135,14 @@ class LocalTuyaClient:
                 pass
             self._listen_task = None
         if self._dev:
-            try:
-                await self._loop.run_in_executor(None, self._dev.close)
-            except Exception:  # noqa: BLE001 - close is best-effort
-                pass
-            self._dev = None
+            # Acquire the lock so close() waits for any in-flight receive()
+            # (bounded by _RECV_TIMEOUT) rather than racing it.
+            async with self._dev_lock:
+                try:
+                    await self._loop.run_in_executor(None, self._dev.close)
+                except Exception:  # noqa: BLE001 - close is best-effort
+                    pass
+                self._dev = None
 
     async def send_command(self, dps: dict[str, Any]) -> None:
         """Send a DPS write to the device.
@@ -142,9 +163,10 @@ class LocalTuyaClient:
         # may be int or string. Returns a dict on success / error info dict on
         # failure; we only care about exceptions.
         try:
-            await self._loop.run_in_executor(
-                None, self._dev.set_multiple_values, dps
-            )
+            async with self._dev_lock:
+                await self._loop.run_in_executor(
+                    None, self._dev.set_multiple_values, dps
+                )
         except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
             raise LocalTuyaError(
                 f"Failed to send local Tuya command to {self.device_id}: {e}"
@@ -155,9 +177,12 @@ class LocalTuyaClient:
         backoff = _RECONNECT_BACKOFF_INITIAL
         while not self._stop:
             try:
-                payload = await self._loop.run_in_executor(
-                    None, self._receive_with_timeout
-                )
+                # Hold the lock for one bounded receive() cycle then release it
+                # between cycles so send_command() can acquire it promptly.
+                async with self._dev_lock:
+                    payload = await self._loop.run_in_executor(
+                        None, self._receive_with_timeout
+                    )
                 if payload is None:
                     continue
                 # tinytuya may return error strings on socket failures
@@ -171,7 +196,9 @@ class LocalTuyaClient:
                     )
                     await asyncio.sleep(backoff)
                     backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX)
-                    await self._loop.run_in_executor(None, self._open_device)
+                    async with self._dev_lock:
+                        await self._loop.run_in_executor(None, self._open_device)
+                    await self._refetch_status()
                     continue
 
                 self._dispatch(payload)
@@ -186,12 +213,29 @@ class LocalTuyaClient:
                 await asyncio.sleep(backoff)
                 backoff = min(backoff * 2, _RECONNECT_BACKOFF_MAX)
                 try:
-                    await self._loop.run_in_executor(None, self._open_device)
+                    async with self._dev_lock:
+                        await self._loop.run_in_executor(None, self._open_device)
                 except Exception as reopen_err:  # noqa: BLE001
                     _LOGGER.debug(
                         "Local Tuya %s: reconnect failed: %s",
                         self.device_id, reopen_err,
                     )
+                else:
+                    await self._refetch_status()
+
+    async def _refetch_status(self) -> None:
+        """Re-fetch status() after a reconnect so state isn't stale until the
+        next push (mirrors connect()'s initial fetch)."""
+        try:
+            async with self._dev_lock:
+                status = await self._loop.run_in_executor(None, self._dev.status)
+            self._dispatch(status)
+        except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
+            _LOGGER.debug(
+                "Local Tuya %s: status re-fetch after reconnect failed (%s); "
+                "will rely on gratuitous updates",
+                self.device_id, e,
+            )
 
     def _receive_with_timeout(self) -> Any:
         """Blocking receive() with a bounded timeout so the loop stays responsive."""

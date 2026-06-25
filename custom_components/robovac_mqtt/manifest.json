@@ -15,12 +15,11 @@
   "issue_tracker": "https://github.com/jeppesens/eufy-clean/issues",
   "loggers": [
     "custom_components.robovac_mqtt",
-    "paho.mqtt",
-    "tinytuya"
+    "paho.mqtt"
   ],
   "requirements": [
     "Pillow>=10.0.0",
-    "tinytuya>=1.18.0"
+    "tinytuya>=1.18.0,<2.0.0"
   ],
   "version": "1.12.0"
 }

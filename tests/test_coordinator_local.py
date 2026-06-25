@@ -10,8 +10,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.robovac_mqtt.api.local_tuya import LocalTuyaError
-from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
-from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.coordinator import (
+    _CLOUD_POLL_INTERVAL,
+    EufyCleanCoordinator,
+)
 
 
 @pytest.fixture
@@ -63,17 +65,6 @@ def test_connection_type_falls_back_to_cloud_without_local_creds(
     assert coordinator.connection_type == "cloud"
 
 
-def test_connection_type_auto_local_when_creds_present(mock_hass, mock_login):
-    """If local_key + local_host are both present (and mqtt:False), prefer local."""
-    info = _device_info(
-        local_key="k" * 16,
-        local_host="192.168.1.50",
-        mqtt=False,
-    )
-    coordinator = EufyCleanCoordinator(mock_hass, mock_login, info)
-    assert coordinator.connection_type == "local"
-
-
 def test_connection_type_defaults_to_mqtt_when_unspecified(
     mock_hass, mock_login
 ):
@@ -108,6 +99,9 @@ async def test_initialize_local_falls_back_on_connect_failure(
 
     assert coordinator.connection_type == "cloud"
     assert coordinator.client is None  # local client should have been cleared
+    # Polling must be re-armed for the cloud fallback to actually poll.
+    assert coordinator._base_poll_interval == _CLOUD_POLL_INTERVAL
+    assert coordinator.update_interval == _CLOUD_POLL_INTERVAL
 
 
 @pytest.mark.asyncio
