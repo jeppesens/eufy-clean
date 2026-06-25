@@ -80,12 +80,10 @@ async def test_config_flow_entry_data_contains_vacs(
     assert "vacs" in entry_data
 
 
-async def test_options_flow_blank_mobile_service(hass: HomeAssistant):
-    """Options can be saved when the mobile notify service is left blank.
-
-    An unselected SelectSelector dropdown submits ``None``; this must not
-    raise "expected str" validation errors when only the map size changes.
-    """
+async def test_options_settings_independent_edit(hass: HomeAssistant):
+    """The options menu's Settings step is independently editable: changing only
+    the map size (and leaving the mobile-notify dropdown blank, which submits
+    None) saves without requiring the other fields to be filled."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test Vac",
@@ -95,7 +93,14 @@ async def test_options_flow_blank_mobile_service(hass: HomeAssistant):
     )
     entry.add_to_hass(hass)
 
+    # The options flow opens on a menu.
     result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == data_entry_flow.FlowResultType.MENU
+
+    # Pick the Settings step.
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "settings"}
+    )
     assert result["type"] == data_entry_flow.FlowResultType.FORM
 
     # The HTTP layer serializes the form schema for the frontend; a function
@@ -104,6 +109,7 @@ async def test_options_flow_blank_mobile_service(hass: HomeAssistant):
         result["data_schema"], custom_serializer=cv.custom_serializer
     )
 
+    # Change only the map size; leave everything else (incl. mobile) untouched.
     result2 = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {CONF_MAP_MAX_PX: "1024", CONF_NOTIFY_MOBILE_SERVICE: None},
@@ -130,20 +136,34 @@ def _register_coordinators(hass, entry, coordinators):
     }
 
 
-async def test_options_flow_preserves_override_for_unloaded_device(
+async def _open_device_step(hass, entry, device_id):
+    """Drive the options menu: init -> devices -> pick device -> per-device form."""
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    assert result["type"] == data_entry_flow.FlowResultType.MENU
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "devices"}
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM  # device picker
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"device": device_id}
+    )
+    assert result["type"] == data_entry_flow.FlowResultType.FORM  # per-device form
+    return result
+
+
+async def test_options_device_preserves_override_for_unloaded_device(
     hass: HomeAssistant,
 ):
-    """B2: a stored override for a device that failed to load (not in the
-    running coordinators) must survive a save instead of being dropped."""
+    """B2: editing one device's override must not wipe a stored override for a
+    device that isn't currently loaded."""
     stored = {
-        # This device is currently loaded and editable.
+        # Currently loaded and editable.
         "loaded_dev": {
             CONF_LOCAL_HOST: "192.168.1.50",
             CONF_LOCAL_VERSION: 3.3,
             CONF_ROOM_NAMES: {1: "Lounge"},
         },
-        # This device was offline at load time -> no coordinator. Its
-        # override must NOT be wiped when the user saves the form.
+        # Offline at load time -> no coordinator. Must survive a save.
         "offline_dev": {
             CONF_LOCAL_HOST: "192.168.1.99",
             CONF_LOCAL_VERSION: 3.4,
@@ -163,17 +183,15 @@ async def test_options_flow_preserves_override_for_unloaded_device(
         hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
     )
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    result = await _open_device_step(hass, entry, "loaded_dev")
 
-    # Resubmit the loaded device's host unchanged; touch nothing else.
+    # Resubmit the loaded device's host/rooms unchanged.
     result2 = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
-            CONF_NOTIFY_MOBILE_SERVICE: None,
-            "loaded_dev__host": "192.168.1.50",
-            "loaded_dev__version": 3.3,
-            "loaded_dev__rooms": "1: Lounge",
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: "1: Lounge",
         },
     )
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
@@ -185,11 +203,9 @@ async def test_options_flow_preserves_override_for_unloaded_device(
     assert saved["loaded_dev"][CONF_ROOM_NAMES] == {1: "Lounge"}
 
 
-async def test_options_flow_invalid_host_shows_error_and_does_not_save(
-    hass: HomeAssistant,
-):
-    """N5: a malformed host (scheme/port) must surface an ``invalid_host``
-    error on its field and must not persist."""
+async def test_options_device_invalid_host_shows_error(hass: HomeAssistant):
+    """N5: a malformed host (scheme/port) surfaces an ``invalid_host`` error on
+    the host field and is not persisted."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test Vac",
@@ -202,21 +218,19 @@ async def test_options_flow_invalid_host_shows_error_and_does_not_save(
         hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
     )
 
-    result = await hass.config_entries.options.async_init(entry.entry_id)
-    assert result["type"] == data_entry_flow.FlowResultType.FORM
+    result = await _open_device_step(hass, entry, "loaded_dev")
 
     result2 = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
-            CONF_NOTIFY_MOBILE_SERVICE: None,
-            "loaded_dev__host": "1.2.3.4:6668",
-            "loaded_dev__version": 3.3,
-            "loaded_dev__rooms": "",
+            CONF_LOCAL_HOST: "1.2.3.4:6668",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: "",
         },
     )
     # Form re-shown with the field-scoped error; nothing saved.
     assert result2["type"] == data_entry_flow.FlowResultType.FORM
-    assert result2["errors"]["loaded_dev__host"] == "invalid_host"
+    assert result2["errors"][CONF_LOCAL_HOST] == "invalid_host"
     assert entry.options.get(CONF_LOCAL_DEVICES, {}) == {}
 
 

@@ -37,7 +37,14 @@
   "options": {
     "step": {
       "init": {
-        "title": "Options",
+        "title": "Eufy Robovac options",
+        "menu_options": {
+          "settings": "Map & notification settings",
+          "devices": "Local-Tuya address & room names"
+        }
+      },
+      "settings": {
+        "title": "Settings",
         "data": {
           "map_max_px": "Map image size (px)",
           "robot_style": "Robot marker style",
@@ -50,7 +57,36 @@
           "notify_desktop": "Show a persistent notification in the Home Assistant UI (the bell icon) when the robot reports an error.",
           "notify_mobile_service": "Select your phone from the list, or type a service name (e.g. mobile_app_my_phone). Leave blank to skip mobile alerts."
         }
+      },
+      "devices": {
+        "title": "Choose a device",
+        "data": {
+          "device": "Device"
+        },
+        "data_description": {
+          "device": "Pick a device to set its local-Tuya address and/or room names."
+        }
+      },
+      "device": {
+        "title": "Configure device",
+        "description": "Configuring **{device}**.",
+        "data": {
+          "host": "Local IP address or hostname",
+          "version": "Tuya protocol version",
+          "rooms": "Room names"
+        },
+        "data_description": {
+          "host": "The dock's LAN address, for direct local push instead of 30 s cloud polling. Leave blank to stay on cloud.",
+          "version": "Tuya protocol version — 3.3 fits most vacuums; try 3.4/3.5 for newer models if 3.3 fails.",
+          "rooms": "Manual 'id: name' lines, one room per line (e.g. '1: Kitchen'). Used when the device's room list isn't delivered automatically."
+        }
       }
+    },
+    "error": {
+      "invalid_host": "Enter a bare IP address or hostname (no http:// prefix or :port)."
+    },
+    "abort": {
+      "no_devices": "No devices are loaded to configure."
     }
   },
   "issues": {
