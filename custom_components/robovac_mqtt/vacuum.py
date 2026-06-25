@@ -637,10 +637,14 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         # Route raw service commands through the device's DPS protocol too, so
         # e.g. vacuum.send_command "pause" emits a scalar write on scalar
         # (Tuya) devices. build_device_command applies the coordinator's
-        # detected api_type itself; an explicit api_type in params still wins.
-        if "api_type" in command_kwargs:
+        # detected api_type itself; an explicit api_type in params overrides it
+        # — but ONLY for novel/scalar devices. A legacy (Tuya Cloud plain-value)
+        # device can't speak protobuf, so it always uses build_device_command
+        # (build_legacy_command) regardless of any api_type override.
+        if "api_type" in command_kwargs and self.coordinator.api_type != "legacy":
             command_dict = build_command(command, **command_kwargs)
         else:
+            command_kwargs.pop("api_type", None)
             command_dict = self.coordinator.build_device_command(
                 command, **command_kwargs
             )

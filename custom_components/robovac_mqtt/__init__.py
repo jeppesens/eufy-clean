@@ -98,7 +98,9 @@ async def _register_card_when_frontend_ready(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
-    entry.async_on_unload(entry.add_update_listener(update_listener))
+    # NOTE: the options update listener is registered later, AFTER the legacy
+    # last_seen_segments cleanup, so the cleanup's async_update_entry() does not
+    # trigger a reload mid-setup. (Registering it here too would double-fire.)
 
     # Register the bundled card once `frontend` is set up. async_when_setup fires
     # immediately if it already is, else when it finishes — so the card registers

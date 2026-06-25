@@ -127,6 +127,23 @@ class LocalTuyaClient:
         # Set _stop first so the listen loop exits after its current receive()
         # cycle instead of starting another.
         self._stop = True
+
+        # Close the device BEFORE cancelling the listener. Acquiring _dev_lock
+        # here blocks until the listen loop's in-flight receive() executor thread
+        # has actually finished (the loop only releases the lock once
+        # run_in_executor resolves), so close() never runs concurrently with
+        # receive() on the same non-thread-safe socket. Cancelling the task first
+        # would instead inject CancelledError, unwind the loop's `async with`
+        # immediately and free the lock while the executor thread keeps running —
+        # letting close() race the still-active receive().
+        if self._dev:
+            async with self._dev_lock:
+                try:
+                    await self._loop.run_in_executor(None, self._dev.close)
+                except Exception:  # noqa: BLE001 - close is best-effort
+                    pass
+                self._dev = None
+
         if self._listen_task:
             self._listen_task.cancel()
             try:
@@ -134,15 +151,6 @@ class LocalTuyaClient:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001
                 pass
             self._listen_task = None
-        if self._dev:
-            # Acquire the lock so close() waits for any in-flight receive()
-            # (bounded by _RECV_TIMEOUT) rather than racing it.
-            async with self._dev_lock:
-                try:
-                    await self._loop.run_in_executor(None, self._dev.close)
-                except Exception:  # noqa: BLE001 - close is best-effort
-                    pass
-                self._dev = None
 
     async def send_command(self, dps: dict[str, Any]) -> None:
         """Send a DPS write to the device.

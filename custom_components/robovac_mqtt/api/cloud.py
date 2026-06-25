@@ -317,10 +317,9 @@ class EufyLogin:
         """Best-effort model code for a Tuya-cloud device whose devId does not
         match any Eufy v2 device id.
 
-        Tries the productId/productKey -> model table first, then a
-        model-looking token embedded in the device name (reusing
-        ``_resolve_model``). Returns "" when no known model can be determined —
-        the caller decides validity.
+        Tries the productId/productKey -> model table first, then an EXACT
+        model code embedded in the device name. Returns "" when no known model
+        can be determined — the caller decides validity.
         """
         product_id = (
             tuya_device.get("productId")
@@ -329,11 +328,13 @@ class EufyLogin:
         )
         if product_id in TUYA_PRODUCT_MODELS:
             return TUYA_PRODUCT_MODELS[product_id]
+        # Only accept a name token that is an EXACT known model code — routing
+        # arbitrary tokens through _resolve_model()'s 5-char truncation would
+        # false-positive (e.g. "T22610" -> "T2261") on user-set device names.
         name = tuya_device.get("name") or ""
         for token in name.replace("-", " ").split():
-            candidate = EufyLogin._resolve_model(token)
-            if candidate in EUFY_CLEAN_DEVICES:
-                return candidate
+            if token in EUFY_CLEAN_DEVICES:
+                return token
         return ""
 
     def findModel(
@@ -365,7 +366,10 @@ class EufyLogin:
         # AIOT device-list response, which carries device_model and
         # device_name directly.
         if aiot_device:
-            model_code = (aiot_device.get("device_model") or "")[:5]
+            # Use the shared resolver (not a raw [:5] slice) so 6-char codes
+            # like T2080A (S1 Pro) aren't truncated to T2080 (S1) and
+            # misidentified.
+            model_code = self._resolve_model(aiot_device.get("device_model") or "")
             return {
                 "deviceId": deviceId,
                 "deviceModel": model_code,

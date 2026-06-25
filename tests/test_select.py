@@ -354,3 +354,44 @@ def test_suction_level_available_with_fan_speed(mock_coordinator):
 
     entity = SuctionLevelSelectEntity(mock_coordinator)
     assert entity.available is True
+
+
+@pytest.mark.asyncio
+async def test_legacy_coordinator_excludes_novel_only_selects():
+    """Legacy (Tuya Cloud) devices must not get novel-only selects whose
+    commands silently no-op — only the universal SuctionLevel select."""
+    from unittest.mock import patch
+
+    from custom_components.robovac_mqtt.select import async_setup_entry
+
+    coordinator = MagicMock(spec=EufyCleanCoordinator)
+    coordinator.device_id = "legacy_dev"
+    coordinator.device_name = "Legacy Vac"
+    coordinator.device_model = "T2210"
+    coordinator.api_type = "legacy"
+    coordinator.connection_type = "cloud"
+    coordinator.room_name_overrides = {}
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "legacy_entry"
+    hass.data = {"robovac_mqtt": {"legacy_entry": {"coordinators": [coordinator]}}}
+
+    added_entities: list = []
+    with patch("custom_components.robovac_mqtt.select.prune_orphan_entities"):
+        await async_setup_entry(hass, config_entry, added_entities.extend)
+
+    classes = {type(e).__name__ for e in added_entities}
+    for novel_only in (
+        "CleaningModeSelectEntity",
+        "WaterLevelSelectEntity",
+        "MopIntensitySelectEntity",
+        "CleaningIntensitySelectEntity",
+        "DockSelectEntity",
+        "VoiceSelectEntity",
+    ):
+        assert novel_only not in classes, f"{novel_only} should be hidden on legacy"
+    # The universal suction-level select stays (set_fan_speed works on legacy).
+    assert "SuctionLevelSelectEntity" in classes

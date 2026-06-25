@@ -667,3 +667,35 @@ async def test_get_cloud_devices_keeps_localkey_device_with_unknown_model():
     assert dev["deviceId"] == "s1pro_dev"
     assert dev["local_key"] == "secret_key"
     assert dev["mqtt"] is False
+
+
+def test_find_model_aiot_fallback_preserves_six_char_code():
+    """AIOT fallback must resolve T2080A (S1 Pro), not truncate it to T2080 (S1)."""
+    login = _make_login(eufy_api_devices=[])
+
+    result = login.findModel(
+        "DEVX",
+        aiot_device={
+            "device_sn": "DEVX",
+            "device_model": "T2080A",
+            "device_name": "S1 Pro",
+        },
+    )
+
+    assert result["deviceModel"] == "T2080A"
+    assert result["invalid"] is False
+
+
+def test_resolve_tuya_model_name_token_requires_exact_match():
+    """A name token sharing only a 5-char prefix must not false-match a model."""
+    login = _make_login(eufy_api_devices=[])
+
+    # 'T22610' starts with the known prefix 'T2261' but is not a real model.
+    result = login.findModel(
+        "tuya_devid",
+        tuya_device={"name": "My T22610 device", "localKey": "k"},
+    )
+
+    # Kept (localKey present) but with NO wrongly-inferred model.
+    assert result["deviceModel"] == ""
+    assert result["invalid"] is False

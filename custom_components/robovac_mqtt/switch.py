@@ -38,39 +38,42 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding switch entities for %s", coordinator.device_name)
 
-        entities.extend(
-            filter_supported_entities(
-                coordinator,
-                [
-                    DockSwitchEntity(
-                        coordinator,
-                        "auto_empty",
-                        "Auto Empty",
-                        lambda cfg: cfg.get("collectdust_v2", {})
-                        .get("sw", {})
-                        .get("value", False),
-                        set_collect_dust,
-                        icon="mdi:delete-restore",
-                    ),
-                    DockSwitchEntity(
-                        coordinator,
-                        "auto_wash",
-                        "Auto Wash",
-                        lambda cfg: cfg.get("wash", {}).get("cfg", "CLOSE")
-                        == "STANDARD",
-                        set_wash_cfg,
-                        icon="mdi:water-sync",
-                    ),
-                    DoNotDisturbSwitchEntity(coordinator),
-                    OffPeakChargingSwitchEntity(coordinator),
-                    ChildLockSwitchEntity(coordinator),
-                    FindRobotSwitchEntity(coordinator),
-                    BoostIQSwitchEntity(coordinator),
-                    AutoReturnSwitchEntity(coordinator),
-                    ActivityLogSwitchEntity(coordinator),
-                ],
-            )
-        )
+        # FindRobot works on every transport (find_robot is a legacy command).
+        # The dock/station/setting switches are novel-only — legacy (Tuya Cloud
+        # plain-value) devices can't drive them and they'd register permanently
+        # unavailable, so skip them for legacy (matching number/button/sensor).
+        if coordinator.api_type == "legacy":
+            candidates = [FindRobotSwitchEntity(coordinator)]
+        else:
+            candidates = [
+                DockSwitchEntity(
+                    coordinator,
+                    "auto_empty",
+                    "Auto Empty",
+                    lambda cfg: cfg.get("collectdust_v2", {})
+                    .get("sw", {})
+                    .get("value", False),
+                    set_collect_dust,
+                    icon="mdi:delete-restore",
+                ),
+                DockSwitchEntity(
+                    coordinator,
+                    "auto_wash",
+                    "Auto Wash",
+                    lambda cfg: cfg.get("wash", {}).get("cfg", "CLOSE")
+                    == "STANDARD",
+                    set_wash_cfg,
+                    icon="mdi:water-sync",
+                ),
+                DoNotDisturbSwitchEntity(coordinator),
+                OffPeakChargingSwitchEntity(coordinator),
+                ChildLockSwitchEntity(coordinator),
+                FindRobotSwitchEntity(coordinator),
+                BoostIQSwitchEntity(coordinator),
+                AutoReturnSwitchEntity(coordinator),
+                ActivityLogSwitchEntity(coordinator),
+            ]
+        entities.extend(filter_supported_entities(coordinator, candidates))
 
     async_add_entities(entities)
 

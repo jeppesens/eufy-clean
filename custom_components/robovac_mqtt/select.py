@@ -82,51 +82,63 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding select entities for %s", coordinator.device_name)
 
-        # Candidate entities — api-type gating (novel/scalar/legacy) is applied
-        # by filter_supported_entities via each entity's supported_api_types.
+        # Universal selects that work on every api type, including legacy:
+        # SuctionLevelSelectEntity's set_fan_speed is a supported legacy command,
+        # and CleaningPatternSelectEntity is scalar-only (dropped for legacy by
+        # filter_supported_entities anyway).
         candidates = [
             SuctionLevelSelectEntity(coordinator),
             CleaningPatternSelectEntity(coordinator),
-            CleaningModeSelectEntity(coordinator),
-            WaterLevelSelectEntity(coordinator),
-            MopIntensitySelectEntity(coordinator),
-            CleaningIntensitySelectEntity(coordinator),
-            DockSelectEntity(
-                coordinator,
-                "wash_frequency_mode",
-                "Wash Frequency Mode",
-                ["ByRoom", "ByTime"],
-                lambda cfg: (
-                    "ByRoom"
-                    if cfg.get("wash", {})
-                    .get("wash_freq", {})
-                    .get("mode", "ByPartition")
-                    == "ByPartition"
-                    else "ByTime"
-                ),
-                _set_wash_freq_mode,
-                icon="mdi:calendar-sync",
-            ),
-            DockSelectEntity(
-                coordinator,
-                "dry_duration",
-                "Dry Duration",
-                list(DRY_DURATION_MAP.values()),
-                _get_dry_duration,
-                _set_dry_duration,
-                icon="mdi:timer-sand",
-            ),
-            DockSelectEntity(
-                coordinator,
-                "auto_empty_mode",
-                "Auto Empty Mode",
-                ["Smart", "15 min", "30 min", "45 min", "60 min"],
-                _get_collect_dust_mode,
-                _set_collect_dust_mode,
-                icon="mdi:delete-restore",
-            ),
-            VoiceSelectEntity(coordinator),
         ]
+
+        # Novel-only selects. Legacy (Tuya Cloud plain-value) devices cannot
+        # drive these: their commands route to build_legacy_command, which
+        # returns {} and is silently dropped — so a legacy device would show
+        # functional-looking but no-op dropdowns. filter_supported_entities does
+        # NOT exclude them because effective_api_type buckets "legacy" as
+        # "novel", so guard explicitly (matching number/button/sensor).
+        if coordinator.api_type != "legacy":
+            candidates += [
+                CleaningModeSelectEntity(coordinator),
+                WaterLevelSelectEntity(coordinator),
+                MopIntensitySelectEntity(coordinator),
+                CleaningIntensitySelectEntity(coordinator),
+                DockSelectEntity(
+                    coordinator,
+                    "wash_frequency_mode",
+                    "Wash Frequency Mode",
+                    ["ByRoom", "ByTime"],
+                    lambda cfg: (
+                        "ByRoom"
+                        if cfg.get("wash", {})
+                        .get("wash_freq", {})
+                        .get("mode", "ByPartition")
+                        == "ByPartition"
+                        else "ByTime"
+                    ),
+                    _set_wash_freq_mode,
+                    icon="mdi:calendar-sync",
+                ),
+                DockSelectEntity(
+                    coordinator,
+                    "dry_duration",
+                    "Dry Duration",
+                    list(DRY_DURATION_MAP.values()),
+                    _get_dry_duration,
+                    _set_dry_duration,
+                    icon="mdi:timer-sand",
+                ),
+                DockSelectEntity(
+                    coordinator,
+                    "auto_empty_mode",
+                    "Auto Empty Mode",
+                    ["Smart", "15 min", "30 min", "45 min", "60 min"],
+                    _get_collect_dust_mode,
+                    _set_collect_dust_mode,
+                    icon="mdi:delete-restore",
+                ),
+                VoiceSelectEntity(coordinator),
+            ]
 
         # Transport-based hiding (complementary to api-type gating):
         # Scene data is delivered through Eufy's encrypted P2P channel which
