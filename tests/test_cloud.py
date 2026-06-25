@@ -584,3 +584,86 @@ async def test_get_devices_constructs_from_cloud_when_aiot_empty():
     assert dev["deviceModel"] == "T2080A"
     # Reconstructed entries carry an empty dps -> classified legacy.
     assert dev["apiType"] == "legacy"
+
+
+# ── Tuya-discovered device model resolution (issue #131) ─────────────
+
+
+def test_find_model_tuya_fallback_by_product_id(monkeypatch):
+    """A Tuya device whose devId isn't in the v2 list resolves via productId."""
+    from custom_components.robovac_mqtt.api import cloud as cloud_mod
+
+    monkeypatch.setattr(cloud_mod, "TUYA_PRODUCT_MODELS", {"prod_s1pro": "T2080A"})
+    login = _make_login(eufy_api_devices=[])
+
+    result = login.findModel(
+        "tuya_devid",
+        tuya_device={"productId": "prod_s1pro", "localKey": "k", "name": "Vac"},
+    )
+
+    assert result["deviceModel"] == "T2080A"
+    assert result["invalid"] is False
+
+
+def test_find_model_tuya_fallback_name_embedded_code():
+    """Falls back to a model code embedded in the Tuya device name."""
+    login = _make_login(eufy_api_devices=[])
+
+    result = login.findModel(
+        "tuya_devid",
+        tuya_device={"name": "Eufy S1 Pro T2080A", "localKey": "k"},
+    )
+
+    assert result["deviceModel"] == "T2080A"
+    assert result["invalid"] is False
+
+
+def test_find_model_tuya_unknown_model_but_localkey_kept():
+    """A localKey-bearing device with an unresolvable model is kept, not skipped."""
+    login = _make_login(eufy_api_devices=[])
+
+    result = login.findModel(
+        "tuya_devid",
+        tuya_device={"productId": "unmapped", "localKey": "k", "name": "Mystery"},
+    )
+
+    assert result["deviceModel"] == ""
+    assert result["invalid"] is False  # kept because a localKey is present
+
+
+def test_find_model_tuya_no_model_no_localkey_invalid():
+    """Without a resolvable model or a localKey, the Tuya device stays invalid."""
+    login = _make_login(eufy_api_devices=[])
+
+    result = login.findModel("tuya_devid", tuya_device={"name": "x"})
+
+    assert result["invalid"] is True
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_devices_keeps_localkey_device_with_unknown_model():
+    """#131 regression: an S1-Pro-like device with a localKey but no v2 match
+    is KEPT in cloud_devices (previously it was wrongly skipped)."""
+    login = _make_login(eufy_api_devices=[])
+    login.mqtt_devices = []
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {
+                "devId": "s1pro_dev",
+                "localKey": "secret_key",
+                "name": "S1 Pro",
+                "dps": {"15": "Running"},
+            }
+        ]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert len(login.cloud_devices) == 1
+    dev = login.cloud_devices[0]
+    assert dev["deviceId"] == "s1pro_dev"
+    assert dev["local_key"] == "secret_key"
+    assert dev["mqtt"] is False

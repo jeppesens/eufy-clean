@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from ..const import DPS_MAP, EUFY_CLEAN_DEVICES, SCALAR_DPS
+from ..const import DPS_MAP, EUFY_CLEAN_DEVICES, SCALAR_DPS, TUYA_PRODUCT_MODELS
 from ..utils import is_protobuf_dps_value
 from .http import EufyHTTPClient
 from .tuya_cloud import TuyaCloudClient, TuyaCloudError
@@ -167,10 +167,21 @@ class EufyLogin:
                 _LOGGER.debug("Cloud device %s: skipping (duplicate or no ID)", dev_id)
                 continue
 
-            model_info = self.findModel(dev_id)
+            model_info = self.findModel(dev_id, tuya_device=device)
             if model_info["invalid"]:
-                _LOGGER.debug("Cloud device %s: skipping (unknown model)", dev_id)
+                _LOGGER.debug(
+                    "Cloud device %s: skipping (no model and no localKey)", dev_id
+                )
                 continue
+            if not model_info["deviceModel"]:
+                _LOGGER.warning(
+                    "Cloud device %s kept with unknown model "
+                    "(productId=%s, name=%s); report this so a "
+                    "TUYA_PRODUCT_MODELS mapping can be added",
+                    dev_id,
+                    device.get("productId") or device.get("productKey"),
+                    device.get("name"),
+                )
 
             dps = self._coerce_dps(device.get("dps"))
             local_key = device.get("localKey") or ""
@@ -301,7 +312,36 @@ class EufyLogin:
             return truncated
         return code
 
-    def findModel(self, deviceId: str, aiot_device: dict | None = None):
+    @staticmethod
+    def _resolve_tuya_model(tuya_device: dict[str, Any]) -> str:
+        """Best-effort model code for a Tuya-cloud device whose devId does not
+        match any Eufy v2 device id.
+
+        Tries the productId/productKey -> model table first, then a
+        model-looking token embedded in the device name (reusing
+        ``_resolve_model``). Returns "" when no known model can be determined —
+        the caller decides validity.
+        """
+        product_id = (
+            tuya_device.get("productId")
+            or tuya_device.get("productKey")
+            or ""
+        )
+        if product_id in TUYA_PRODUCT_MODELS:
+            return TUYA_PRODUCT_MODELS[product_id]
+        name = tuya_device.get("name") or ""
+        for token in name.replace("-", " ").split():
+            candidate = EufyLogin._resolve_model(token)
+            if candidate in EUFY_CLEAN_DEVICES:
+                return candidate
+        return ""
+
+    def findModel(
+        self,
+        deviceId: str,
+        aiot_device: dict | None = None,
+        tuya_device: dict | None = None,
+    ):
         device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
 
         if device:
@@ -334,6 +374,23 @@ class EufyLogin:
                 or "Eufy Robovac",
                 "deviceModelName": None,
                 "invalid": not bool(model_code),
+            }
+
+        # Fallback: a Tuya-cloud device (legacy transport) whose devId is not in
+        # the Eufy v2 list. Resolve the model from the Tuya record rather than
+        # skipping the device. A device that exposes a localKey is a real,
+        # controllable Tuya device even when its exact model is unknown — keep
+        # it (so the legacy/local transport works) and only flag it invalid when
+        # there is neither a resolvable model nor a localKey (issue #131).
+        if tuya_device is not None:
+            model = self._resolve_tuya_model(tuya_device)
+            has_local_key = bool(tuya_device.get("localKey"))
+            return {
+                "deviceId": deviceId,
+                "deviceModel": model,
+                "deviceName": tuya_device.get("name") or "Eufy Robovac (cloud)",
+                "deviceModelName": None,
+                "invalid": not (model or has_local_key),
             }
 
         return {
