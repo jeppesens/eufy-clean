@@ -59,69 +59,107 @@ class EufyHTTPClient:
         self.user_info: dict[str, Any] | None = None
 
     async def login(self, validate_only: bool = False) -> dict[str, Any]:
-        """Perform login flow."""
-        session = await self.eufy_login()
-        if not session:
-            return {}
+        """Log in, preferring a credential set whose token yields a user_center id.
 
-        if validate_only:
-            return {"session": session}
-
-        user = await self.get_user_info()
-        mqtt = await self.get_mqtt_credentials()
-        return {"session": session, "user": user, "mqtt": mqtt}
-
-    async def eufy_login(self) -> dict[str, Any] | None:
-        """Login to Eufy Cloud. Tries v2 (new Eufy app) first, falls back to v1."""
-        session = self._websession
-        last_error: str | None = None
-
+        AIOT/MQTT discovery (get_device_list, get_mqtt_credentials) needs a
+        ``user_center_token``, which some accounts — notably ones migrated to the
+        new unified Eufy app — only obtain from the v2 ``eufy-app`` login; the v1
+        token authenticates but returns no user_center (issues #121/#124/#131).
+        So rather than use the FIRST login that returns an access_token, try each
+        and prefer one whose token actually yields a ``user_center_id``. Fall
+        back to any working token — the Tuya cloud path only needs the eufy
+        ``user_id``.
+        """
+        fallback_session: dict[str, Any] | None = None
         for config in _LOGIN_CONFIGS:
-            _LOGGER.debug(
-                "Attempting login via %s: %s", config["label"], config["url"]
-            )
-            async with session.post(
-                config["url"],
-                timeout=_REQUEST_TIMEOUT,
-                headers={
-                    "category": config["category"],
-                    "Accept": "*/*",
-                    "openudid": self.openudid,
-                    "Content-Type": "application/json",
-                    "clientType": "1",
-                    "User-Agent": "EufyHome-Android-3.1.3-753",
-                    "Connection": "keep-alive",
-                },
-                json={
-                    "email": self.username,
-                    "password": self.password,
-                    "client_id": config["client_id"],
-                    "client_secret": config["client_secret"],
-                },
-            ) as response:
-                response_json = None
-                try:
-                    response_json = await response.json()
-                except Exception:
-                    pass
+            session = await self._attempt_login(config)
+            if not session:
+                continue
+            self.session = session
+            if validate_only:
+                _LOGGER.info("Login (validate) successful via %s", config["label"])
+                return {"session": session}
 
-                if response.status == 200 and response_json:
-                    if response_json.get("access_token"):
-                        _LOGGER.info("Login successful via %s", config["label"])
-                        self.session = response_json
-                        return response_json
-
-                body = response_json or await response.text()
-                last_error = f"{config['label']}: {response.status} {body}"
-                _LOGGER.debug(
-                    "Login attempt failed for %s: %s %s",
+            user = await self.get_user_info()  # sets self.user_info
+            if user and user.get("user_center_id"):
+                _LOGGER.info(
+                    "Login successful via %s (user_center available)",
                     config["label"],
-                    response.status,
-                    body,
                 )
+                mqtt = await self.get_mqtt_credentials()
+                return {"session": session, "user": user, "mqtt": mqtt}
 
-        _LOGGER.error("All login attempts failed. Last error: %s", last_error)
-        return None
+            _LOGGER.debug(
+                "Login via %s yielded no user_center; keeping as fallback and "
+                "trying the next credential set",
+                config["label"],
+            )
+            if fallback_session is None:
+                fallback_session = session
+
+        if fallback_session is not None:
+            # No login produced a user_center id (e.g. user_center_info returns
+            # 401 for this account). Use the fallback so the Tuya cloud/local
+            # path can still discover the device via the eufy user_id.
+            _LOGGER.info(
+                "No user_center from any login; using fallback session "
+                "(Tuya cloud/local discovery only)"
+            )
+            self.session = fallback_session
+            self.user_info = None
+            return {"session": fallback_session, "user": None, "mqtt": None}
+
+        _LOGGER.error("All login attempts failed.")
+        return {}
+
+    async def _attempt_login(
+        self, config: dict[str, str]
+    ) -> dict[str, Any] | None:
+        """POST a single credential set; return the session JSON or None."""
+        _LOGGER.debug(
+            "Attempting login via %s: %s", config["label"], config["url"]
+        )
+        session = self._websession
+        async with session.post(
+            config["url"],
+            timeout=_REQUEST_TIMEOUT,
+            headers={
+                "category": config["category"],
+                "Accept": "*/*",
+                "openudid": self.openudid,
+                "Content-Type": "application/json",
+                "clientType": "1",
+                "User-Agent": "EufyHome-Android-3.1.3-753",
+                "Connection": "keep-alive",
+            },
+            json={
+                "email": self.username,
+                "password": self.password,
+                "client_id": config["client_id"],
+                "client_secret": config["client_secret"],
+            },
+        ) as response:
+            response_json = None
+            try:
+                response_json = await response.json()
+            except Exception:
+                pass
+
+            if (
+                response.status == 200
+                and response_json
+                and response_json.get("access_token")
+            ):
+                return response_json
+
+            body = response_json or await response.text()
+            _LOGGER.debug(
+                "Login attempt failed for %s: %s %s",
+                config["label"],
+                response.status,
+                body,
+            )
+            return None
 
     async def get_user_info(self) -> dict[str, Any] | None:
         """Get User details."""
@@ -142,20 +180,21 @@ class EufyHTTPClient:
             },
         ) as response:
             if response.status == 200:
-                self.user_info = await response.json()
-                if self.user_info is None or not self.user_info.get(
-                    "user_center_id"
-                ):
+                user_info = await response.json()
+                if user_info is None or not user_info.get("user_center_id"):
                     _LOGGER.error("No user_center_id found")
+                    self.user_info = None
                     return None
 
                 # Generate GToken
-                self.user_info["gtoken"] = hashlib.md5(
-                    self.user_info["user_center_id"].encode()
+                user_info["gtoken"] = hashlib.md5(
+                    user_info["user_center_id"].encode()
                 ).hexdigest()
+                self.user_info = user_info
                 return self.user_info
 
             _LOGGER.error("get user center info failed")
+            self.user_info = None
             return None
 
     async def get_device_list(self) -> list[dict[str, Any]]:

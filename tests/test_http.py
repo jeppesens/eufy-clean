@@ -149,22 +149,21 @@ def _login_response(status: int, token: str | None = None) -> AsyncMock:
 
 
 @pytest.mark.asyncio
-async def test_eufy_login_succeeds_via_v2():
+async def test_login_validate_prefers_v2():
     """v2 (unified Eufy app) login is tried first; success short-circuits v1."""
     mock_session = _mock_websession_sequence(_login_response(200, "tok_v2"))
     client = _make_client(websession=mock_session)
 
-    result = await client.eufy_login()
+    result = await client.login(validate_only=True)
 
-    assert result is not None
-    assert result["access_token"] == "tok_v2"
+    assert result["session"]["access_token"] == "tok_v2"
     assert mock_session.post.call_count == 1
     first_url = mock_session.post.call_args_list[0][0][0]
     assert "v2/email/login" in first_url
 
 
 @pytest.mark.asyncio
-async def test_eufy_login_falls_back_to_v1():
+async def test_login_validate_falls_back_to_v1():
     """When v2 fails, v1 (legacy Eufy Clean app) is attempted and returned."""
     mock_session = _mock_websession_sequence(
         _login_response(401),            # v2 fails
@@ -172,25 +171,112 @@ async def test_eufy_login_falls_back_to_v1():
     )
     client = _make_client(websession=mock_session)
 
-    result = await client.eufy_login()
+    result = await client.login(validate_only=True)
 
-    assert result is not None
-    assert result["access_token"] == "tok_v1"
+    assert result["session"]["access_token"] == "tok_v1"
     assert mock_session.post.call_count == 2
 
 
 @pytest.mark.asyncio
-async def test_eufy_login_all_attempts_fail():
-    """Returns None when both v2 and v1 fail."""
+async def test_login_all_attempts_fail():
+    """Returns {} when both v2 and v1 fail."""
     mock_session = _mock_websession_sequence(
         _login_response(401), _login_response(403)
     )
     client = _make_client(websession=mock_session)
 
-    result = await client.eufy_login()
+    result = await client.login(validate_only=True)
 
-    assert result is None
+    assert result == {}
     assert mock_session.post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_login_prefers_credential_with_user_center():
+    """When the first login authenticates but yields no user_center, login()
+    keeps trying and prefers a later credential set that does (issues
+    #121/#124/#131)."""
+    mock_session = _mock_websession_sequence(
+        _login_response(200, "tok_v2"),  # v2 authenticates...
+        _login_response(200, "tok_v1"),  # ...so does v1
+    )
+    client = _make_client(websession=mock_session)
+    # v2's token has no user_center; v1's does.
+    client.get_user_info = AsyncMock(
+        side_effect=[None, {"user_center_id": "x", "user_center_token": "t"}]
+    )
+    client.get_mqtt_credentials = AsyncMock(return_value={"endpoint": "mqtt"})
+
+    result = await client.login()
+
+    assert result["session"]["access_token"] == "tok_v1"
+    assert result["user"]["user_center_id"] == "x"
+    assert result["mqtt"] == {"endpoint": "mqtt"}
+    assert client.get_user_info.await_count == 2
+    client.get_mqtt_credentials.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_login_falls_back_when_no_user_center_anywhere():
+    """If no login yields a user_center, fall back to the first working token so
+    the Tuya cloud/local path can still discover via the eufy user_id."""
+    mock_session = _mock_websession_sequence(
+        _login_response(200, "tok_v2"),
+        _login_response(200, "tok_v1"),
+    )
+    client = _make_client(websession=mock_session)
+    client.get_user_info = AsyncMock(return_value=None)  # 401 -> no user_center
+    client.get_mqtt_credentials = AsyncMock(return_value={"endpoint": "mqtt"})
+
+    result = await client.login()
+
+    assert result["session"]["access_token"] == "tok_v2"  # first working token
+    assert result["user"] is None
+    assert result["mqtt"] is None
+    client.get_mqtt_credentials.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_login_real_sequence_v2_user_center_skips_v1():
+    """End-to-end (real get_user_info/gtoken): when the v2 login yields a
+    user_center, v1 is never attempted and MQTT creds are fetched."""
+
+    def _ctx(resp: AsyncMock) -> MagicMock:
+        c = MagicMock()
+        c.__aenter__ = AsyncMock(return_value=resp)
+        c.__aexit__ = AsyncMock(return_value=False)
+        return c
+
+    login_resp = _login_response(200, "tok_v2")
+    userinfo_resp = AsyncMock()
+    userinfo_resp.status = 200
+    userinfo_resp.json = AsyncMock(
+        return_value={"user_center_id": "uc1", "user_center_token": "uct"}
+    )
+    mqtt_resp = AsyncMock()
+    mqtt_resp.status = 200
+    mqtt_resp.json = AsyncMock(return_value={"data": {"endpoint": "mqtt"}})
+
+    mock_session = MagicMock()
+    mock_session.post.side_effect = [_ctx(login_resp), _ctx(mqtt_resp)]
+    mock_session.get.side_effect = [_ctx(userinfo_resp)]
+    client = _make_client(websession=mock_session)
+
+    result = await client.login()
+
+    assert result["session"]["access_token"] == "tok_v2"
+    assert result["user"]["user_center_id"] == "uc1"
+    assert result["user"]["gtoken"]  # real gtoken computed by get_user_info
+    assert result["mqtt"] == {"endpoint": "mqtt"}
+    assert client.user_info["user_center_id"] == "uc1"
+    # Only one login POST happened (v1 not attempted).
+    login_posts = [
+        c.args[0]
+        for c in mock_session.post.call_args_list
+        if "email/login" in c.args[0]
+    ]
+    assert len(login_posts) == 1
+    assert "v2/email/login" in login_posts[0]
 
 
 @pytest.mark.asyncio
