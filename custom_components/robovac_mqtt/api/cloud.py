@@ -12,6 +12,21 @@ from .tuya_cloud import TuyaCloudClient, TuyaCloudError
 _LOGGER = logging.getLogger(__name__)
 
 
+def _is_scalar_state_value(value: Any) -> bool:
+    """Is DPS 15 a scalar (G50) status — i.e. numeric, not a Tuya status string?
+
+    The scalar protocol reports DPS 15 as an int (or numeric string); Tuya Cloud
+    legacy devices report it as a word status like "Running"/"Charging".
+    """
+    if isinstance(value, bool):
+        return False
+    if isinstance(value, (int, float)):
+        return True
+    if isinstance(value, str):
+        return value.strip().lstrip("-").isdigit()
+    return False
+
+
 class EufyLoginError(Exception):
     """Eufy Login Error."""
 
@@ -115,7 +130,7 @@ class EufyLogin:
                 "AIOT device list empty — constructing device entries from cloud device list"
             )
             devices = [
-                {"device_sn": d["id"], "dps": {}}
+                {"device_sn": d["id"], "dps": {}, "_reconstructed": True}
                 for d in self.eufy_api_devices
                 if d.get("id")
             ]
@@ -128,6 +143,11 @@ class EufyLogin:
                 "softVersion": device.get("main_sw_version")
                 or device.get("soft_version")
                 or "",
+                # A reconstructed entry is a placeholder for a device whose real
+                # AIOT/MQTT list was empty — it is NOT a confirmed MQTT device.
+                # getCloudDevices() lets a matching Tuya device (with a localKey)
+                # supersede it so the device uses the Tuya cloud/local path.
+                "reconstructed": device.get("_reconstructed", False),
             }
             for device in devices
             if device.get("device_sn")
@@ -159,14 +179,44 @@ class EufyLogin:
             _LOGGER.warning("Failed to fetch Tuya Cloud device list: %s", e)
             return
 
-        # Device IDs already known via MQTT
-        mqtt_device_ids = {d["deviceId"] for d in self.mqtt_devices}
+        # MQTT devices split by whether they are confirmed (real AIOT dps) or
+        # just reconstructed placeholders (the AIOT list was empty). A real Tuya
+        # device with a localKey should SUPERSEDE a placeholder rather than be
+        # dropped as a duplicate — otherwise a Tuya-only device (e.g. S1 Pro)
+        # gets stuck on the MQTT path it can't actually answer (issue #131).
+        # Tuya is keyed on devId consistently with the polling path
+        # (TuyaCloudClient.get_device), so match on devId only.
+        confirmed_ids = {
+            d["deviceId"] for d in self.mqtt_devices if not d.get("reconstructed")
+        }
+        reconstructed_ids = {
+            d["deviceId"] for d in self.mqtt_devices if d.get("reconstructed")
+        }
+        superseded_ids: set[str] = set()
+        seen_cloud_ids: set[str] = set()
 
         for device in tuya_devices:
             dev_id = device.get("devId")
-            if not dev_id or dev_id in mqtt_device_ids:
-                _LOGGER.debug("Cloud device %s: skipping (duplicate or no ID)", dev_id)
+            if not dev_id:
+                _LOGGER.debug("Cloud device skipping (no devId): %s", device)
                 continue
+            if dev_id in seen_cloud_ids:
+                _LOGGER.debug("Cloud device %s: skipping (duplicate Tuya record)", dev_id)
+                continue
+            if dev_id in confirmed_ids:
+                # A confirmed MQTT device — keep the (push) MQTT path.
+                _LOGGER.debug(
+                    "Cloud device %s: skipping (already a confirmed MQTT device)",
+                    dev_id,
+                )
+                continue
+            if dev_id in reconstructed_ids:
+                superseded_ids.add(dev_id)
+                _LOGGER.debug(
+                    "Cloud device %s: superseding reconstructed MQTT placeholder "
+                    "with the Tuya cloud/local device",
+                    dev_id,
+                )
 
             model_info = self.findModel(dev_id, tuya_device=device)
             if model_info["invalid"]:
@@ -200,6 +250,36 @@ class EufyLogin:
                     "tuya_public_ip": device.get("ip") or "",
                 }
             )
+            seen_cloud_ids.add(dev_id)
+
+        # Drop the reconstructed placeholders that a Tuya device superseded.
+        if superseded_ids:
+            self.mqtt_devices = [
+                d for d in self.mqtt_devices if d["deviceId"] not in superseded_ids
+            ]
+
+        # Single-robot safety net: if Tuya returned exactly one localKey-bearing
+        # device that did NOT match any id, and exactly one reconstructed
+        # placeholder is left over, they are the same physical robot (the Eufy
+        # cloud id and the Tuya devId differ). Drop the placeholder so we don't
+        # create two coordinators for one vacuum.
+        if not superseded_ids:
+            leftover = [
+                d
+                for d in self.mqtt_devices
+                if d.get("reconstructed") and d["deviceId"] not in seen_cloud_ids
+            ]
+            keyed_cloud = [d for d in self.cloud_devices if d.get("local_key")]
+            if len(leftover) == 1 and len(keyed_cloud) == 1:
+                self.mqtt_devices = [
+                    d for d in self.mqtt_devices if d is not leftover[0]
+                ]
+                _LOGGER.debug(
+                    "Dropped lone reconstructed placeholder %s in favour of the "
+                    "single Tuya cloud device %s (id mismatch, same robot)",
+                    leftover[0]["deviceId"],
+                    keyed_cloud[0]["deviceId"],
+                )
 
         if self.cloud_devices:
             _LOGGER.info(
@@ -296,7 +376,12 @@ class EufyLogin:
             val = dps.get(key)
             if val is not None:
                 return "novel" if is_protobuf_dps_value(val) else "scalar"
-        if SCALAR_DPS["STATE"] in dps:
+        # DPS 15 is the scalar (G50) status as an INT, but Tuya Cloud legacy
+        # devices (e.g. S1 Pro) report DPS 15 as a STATUS STRING ("Running").
+        # Only the numeric form is scalar — a status string is legacy and must
+        # use the legacy parser/command builder.
+        state_val = dps.get(SCALAR_DPS["STATE"])
+        if state_val is not None and _is_scalar_state_value(state_val):
             return "scalar"
         if any(k in dps for k in DPS_MAP.values()):
             return "novel"

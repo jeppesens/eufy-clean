@@ -688,3 +688,167 @@ def test_resolve_tuya_model_name_token_requires_exact_match():
     # Kept (localKey present) but with NO wrongly-inferred model.
     assert result["deviceModel"] == ""
     assert result["invalid"] is False
+
+
+# ── Tuya device vs reconstructed MQTT placeholder (issue #131 beta) ──
+
+
+@pytest.mark.asyncio
+async def test_tuya_device_supersedes_reconstructed_mqtt_placeholder():
+    """#131: when AIOT is empty, the device reconstructed as a legacy-MQTT
+    placeholder must be SUPERSEDED by the matching Tuya cloud device (carrying
+    its localKey) so it uses the Tuya cloud/local path — not left stuck on the
+    MQTT path the S1 Pro can't answer."""
+    login = _make_login()
+    # The home-api cloud list returns the S1 Pro; its id matches the Tuya devId
+    # (both are Tuya-backed).
+    login.eufyApi.get_cloud_device_list = AsyncMock(
+        return_value=[
+            {
+                "id": "s1pro_dev",
+                "product": {"product_code": "T2080A", "name": "S1 Pro"},
+                "alias_name": "S1 Pro",
+                "device_model": "T2080A",
+            }
+        ]
+    )
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+
+    await login.getDevices()
+    # Reconstructed as a placeholder MQTT device.
+    assert len(login.mqtt_devices) == 1
+    assert login.mqtt_devices[0]["reconstructed"] is True
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {
+                "devId": "s1pro_dev",
+                "localKey": "secret",
+                "name": "S1 Pro",
+                "dps": {"15": "Running"},
+            }
+        ]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    # Placeholder gone; device is now a Tuya cloud device with its local key.
+    assert not login.mqtt_devices
+    assert len(login.cloud_devices) == 1
+    dev = login.cloud_devices[0]
+    assert dev["deviceId"] == "s1pro_dev"
+    assert dev["deviceModel"] == "T2080A"
+    assert dev["mqtt"] is False
+    assert dev["local_key"] == "secret"
+    # DPS 15 here is a status string ("Running") -> a Tuya Cloud legacy device,
+    # not scalar; it must use the legacy parser/command builder.
+    assert dev["apiType"] == "legacy"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_mqtt_device_not_superseded_by_tuya_duplicate():
+    """A genuine MQTT device (real AIOT dps, not reconstructed) keeps the MQTT
+    push path even if Tuya Cloud also lists the same id."""
+    login = _make_login(
+        eufy_api_devices=[
+            {
+                "id": "x8_dev",
+                "product": {"product_code": "T2261", "name": "X8 Pro"},
+                "alias_name": "X8",
+                "device_model": "T2261",
+            }
+        ]
+    )
+    login.eufyApi.get_cloud_device_list = AsyncMock(
+        return_value=login.eufy_api_devices
+    )
+    # AIOT returns the device with real protobuf dps -> a confirmed MQTT device.
+    login.eufyApi.get_device_list = AsyncMock(
+        return_value=[{"device_sn": "x8_dev", "dps": {"153": "CgYIBRABGAU="}}]
+    )
+
+    await login.getDevices()
+    assert len(login.mqtt_devices) == 1
+    assert login.mqtt_devices[0].get("reconstructed") is False
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[{"devId": "x8_dev", "localKey": "k", "dps": {}}]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    # MQTT (push) device kept; the Tuya duplicate is not added.
+    assert len(login.mqtt_devices) == 1
+    assert not login.cloud_devices
+
+
+def test_check_api_type_dps15_string_is_legacy_int_is_scalar():
+    """DPS 15 as a status string is a Tuya Cloud legacy device; as an int it is
+    the scalar (G50) status."""
+    # Tuya Cloud legacy (S1 Pro) reports a word status -> legacy.
+    assert EufyLogin.checkApiType({"15": "Running"}) == "legacy"
+    assert EufyLogin.checkApiType({"15": "Charging"}) == "legacy"
+    # Scalar (G50) reports an int (or numeric string) status -> scalar.
+    assert EufyLogin.checkApiType({"15": 5}) == "scalar"
+    assert EufyLogin.checkApiType({"15": "5"}) == "scalar"
+
+
+@pytest.mark.asyncio
+async def test_tuya_duplicate_record_added_once():
+    """A Tuya list that repeats the same devId must yield a single cloud device."""
+    login = _make_login(eufy_api_devices=[])
+    login.mqtt_devices = []
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {"devId": "dup_dev", "localKey": "k", "name": "S1 Pro", "dps": {}},
+            {"devId": "dup_dev", "localKey": "k", "name": "S1 Pro", "dps": {}},
+        ]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert len(login.cloud_devices) == 1
+    assert login.cloud_devices[0]["deviceId"] == "dup_dev"
+
+
+@pytest.mark.asyncio
+async def test_tuya_supersedes_placeholder_on_id_mismatch_single_robot():
+    """#131 edge: one reconstructed placeholder + one localKey Tuya device whose
+    devId differs (Eufy cloud id != Tuya devId) is the same physical robot, so
+    the placeholder is dropped — not left as a second coordinator."""
+    login = _make_login()
+    login.eufyApi.get_cloud_device_list = AsyncMock(
+        return_value=[
+            {
+                "id": "eufy_id",  # Eufy cloud id
+                "product": {"product_code": "T2080A", "name": "S1 Pro"},
+                "alias_name": "S1 Pro",
+                "device_model": "T2080A",
+            }
+        ]
+    )
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+    await login.getDevices()
+    assert len(login.mqtt_devices) == 1  # reconstructed placeholder
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {"devId": "tuya_devid", "localKey": "k", "name": "S1 Pro", "dps": {}}
+        ]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    # Placeholder dropped; only the Tuya cloud device remains (one robot).
+    assert not login.mqtt_devices
+    assert len(login.cloud_devices) == 1
+    assert login.cloud_devices[0]["deviceId"] == "tuya_devid"
+    assert login.cloud_devices[0]["local_key"] == "k"
