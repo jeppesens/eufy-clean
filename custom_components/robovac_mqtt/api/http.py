@@ -180,20 +180,21 @@ class EufyHTTPClient:
             },
         ) as response:
             if response.status == 200:
-                self.user_info = await response.json()
-                if self.user_info is None or not self.user_info.get(
-                    "user_center_id"
-                ):
+                user_info = await response.json()
+                if user_info is None or not user_info.get("user_center_id"):
                     _LOGGER.error("No user_center_id found")
+                    self.user_info = None
                     return None
 
                 # Generate GToken
-                self.user_info["gtoken"] = hashlib.md5(
-                    self.user_info["user_center_id"].encode()
+                user_info["gtoken"] = hashlib.md5(
+                    user_info["user_center_id"].encode()
                 ).hexdigest()
+                self.user_info = user_info
                 return self.user_info
 
             _LOGGER.error("get user center info failed")
+            self.user_info = None
             return None
 
     async def get_device_list(self) -> list[dict[str, Any]]:

@@ -237,6 +237,49 @@ async def test_login_falls_back_when_no_user_center_anywhere():
 
 
 @pytest.mark.asyncio
+async def test_login_real_sequence_v2_user_center_skips_v1():
+    """End-to-end (real get_user_info/gtoken): when the v2 login yields a
+    user_center, v1 is never attempted and MQTT creds are fetched."""
+
+    def _ctx(resp: AsyncMock) -> MagicMock:
+        c = MagicMock()
+        c.__aenter__ = AsyncMock(return_value=resp)
+        c.__aexit__ = AsyncMock(return_value=False)
+        return c
+
+    login_resp = _login_response(200, "tok_v2")
+    userinfo_resp = AsyncMock()
+    userinfo_resp.status = 200
+    userinfo_resp.json = AsyncMock(
+        return_value={"user_center_id": "uc1", "user_center_token": "uct"}
+    )
+    mqtt_resp = AsyncMock()
+    mqtt_resp.status = 200
+    mqtt_resp.json = AsyncMock(return_value={"data": {"endpoint": "mqtt"}})
+
+    mock_session = MagicMock()
+    mock_session.post.side_effect = [_ctx(login_resp), _ctx(mqtt_resp)]
+    mock_session.get.side_effect = [_ctx(userinfo_resp)]
+    client = _make_client(websession=mock_session)
+
+    result = await client.login()
+
+    assert result["session"]["access_token"] == "tok_v2"
+    assert result["user"]["user_center_id"] == "uc1"
+    assert result["user"]["gtoken"]  # real gtoken computed by get_user_info
+    assert result["mqtt"] == {"endpoint": "mqtt"}
+    assert client.user_info["user_center_id"] == "uc1"
+    # Only one login POST happened (v1 not attempted).
+    login_posts = [
+        c.args[0]
+        for c in mock_session.post.call_args_list
+        if "email/login" in c.args[0]
+    ]
+    assert len(login_posts) == 1
+    assert "v2/email/login" in login_posts[0]
+
+
+@pytest.mark.asyncio
 async def test_get_cloud_device_list_falls_back_to_home_api():
     """When the legacy device endpoint is empty, the home-api fallback is used."""
     legacy = AsyncMock()
