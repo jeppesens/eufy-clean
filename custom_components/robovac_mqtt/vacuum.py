@@ -28,7 +28,12 @@ from homeassistant.helpers.issue_registry import (
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .api.commands import build_command
-from .const import DOMAIN, EUFY_CLEAN_NOVEL_CLEAN_SPEED, SCALAR_SUCTION_LEVELS
+from .const import (
+    DOMAIN,
+    EUFY_CLEAN_NOVEL_CLEAN_SPEED,
+    LEGACY_CLEAN_SPEEDS,
+    SCALAR_SUCTION_LEVELS,
+)
 from .coordinator import EufyCleanCoordinator
 
 if TYPE_CHECKING:
@@ -119,6 +124,9 @@ _ACTIVITY_MAP: dict[str, VacuumActivity] = {
 }
 
 
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -170,6 +178,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         # switch (DPS 118), not a 5th fan speed.
         if coordinator.api_type == "scalar":
             self._attr_fan_speed_list: list[str] = list(SCALAR_SUCTION_LEVELS)
+        elif coordinator.api_type == "legacy":
+            self._attr_fan_speed_list = list(LEGACY_CLEAN_SPEEDS)
         else:
             self._attr_fan_speed_list = [
                 speed.value for speed in EUFY_CLEAN_NOVEL_CLEAN_SPEED
@@ -291,7 +301,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         if mode != "GENERAL":
             command_kwargs["mode"] = mode
 
-        command = build_command("room_clean", **command_kwargs)
+        command = self.coordinator.build_device_command("room_clean", **command_kwargs)
         self.coordinator.set_active_cleaning_targets(room_ids=room_ids)
         await self.coordinator.async_send_command(command)
 
@@ -302,7 +312,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         **kwargs: Any,
     ) -> None:
         """Send room customization parameters."""
-        command = build_command(
+        command = self.coordinator.build_device_command(
             "set_room_custom",
             room_config=room_config,
             map_id=map_id,
@@ -412,7 +422,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         map_id = params.get("map_id") or self.coordinator.data.map_id or 1
         clean_times = int(params.get("clean_times", 1))
 
-        command = build_command(
+        command = self.coordinator.build_device_command(
             "zone_clean",
             zones_cm=quads_cm,
             map_id=map_id,
@@ -456,7 +466,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             # Drop CLEAN_SPOT (unsupported) and never advertise CLEAN_AREA, so the
             # UI doesn't offer "cleaning by area" (there are no rooms to map).
             return supported_features & ~VacuumEntityFeature.CLEAN_SPOT
-        if _CLEAN_AREA_FEATURE is not None:
+        if _CLEAN_AREA_FEATURE is not None and self.coordinator.api_type != "legacy":
             supported_features |= _CLEAN_AREA_FEATURE
         return supported_features
 
@@ -494,54 +504,45 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             "segments": segments,
         }
 
-    @property
-    def _api_type(self) -> str:
-        """The coordinator's detected DPS protocol ("novel"/"scalar")."""
-        return self.coordinator.data.api_type
-
     async def async_return_to_base(self, **kwargs: Any) -> None:
         """Set the vacuum cleaner to return to the dock."""
         await self.coordinator.async_send_command(
-            build_command("return_to_base", api_type=self._api_type)
+            self.coordinator.build_device_command("return_to_base")
         )
 
     async def async_start(self, **kwargs: Any) -> None:
         """Start or resume the cleaning task."""
         if self.activity == VacuumActivity.PAUSED:
             await self.coordinator.async_send_command(
-                build_command("play", api_type=self._api_type)
+                self.coordinator.build_device_command("play")
             )
         else:
             await self.coordinator.async_send_command(
-                build_command("start_auto", api_type=self._api_type)
+                self.coordinator.build_device_command("start_auto")
             )
 
     async def async_pause(self, **kwargs: Any) -> None:
         """Pause the cleaning task."""
         await self.coordinator.async_send_command(
-            build_command("pause", api_type=self._api_type)
+            self.coordinator.build_device_command("pause")
         )
 
     async def async_stop(self, **kwargs: Any) -> None:
         """Stop the cleaning task."""
         await self.coordinator.async_send_command(
-            build_command("stop", api_type=self._api_type)
+            self.coordinator.build_device_command("stop")
         )
 
     async def async_clean_spot(self, **kwargs: Any) -> None:
         """Perform a spot clean-up."""
         await self.coordinator.async_send_command(
-            build_command("clean_spot", api_type=self._api_type)
+            self.coordinator.build_device_command("clean_spot")
         )
 
     async def async_locate(self, **kwargs: Any) -> None:
         """Locate the vacuum cleaner."""
         await self.coordinator.async_send_command(
-            build_command(
-                "find_robot",
-                api_type=self.coordinator.data.api_type,
-                active=True,
-            )
+            self.coordinator.build_device_command("find_robot", active=True)
         )
 
     async def async_set_fan_speed(self, fan_speed: str, **kwargs: Any) -> None:
@@ -550,11 +551,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             raise ValueError(f"Fan speed {fan_speed} not supported")
 
         await self.coordinator.async_send_command(
-            build_command(
-                "set_fan_speed",
-                api_type=self.coordinator.data.api_type,
-                fan_speed=fan_speed,
-            )
+            self.coordinator.build_device_command("set_fan_speed", fan_speed=fan_speed)
         )
 
     async def async_get_segments(self) -> list[Segment]:
@@ -604,7 +601,9 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                     None,
                 )
                 await self.coordinator.async_send_command(
-                    build_command("scene_clean", scene_id=scene_id)
+                    self.coordinator.build_device_command(
+                        "scene_clean", scene_id=scene_id
+                    )
                 )
                 self.coordinator.set_active_scene(scene_id, scene_name)
             return
@@ -637,10 +636,18 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         command_kwargs.update(kwargs)
         # Route raw service commands through the device's DPS protocol too, so
         # e.g. vacuum.send_command "pause" emits a scalar write on scalar
-        # (Tuya) devices. An explicit api_type in params still wins.
-        command_kwargs.setdefault("api_type", self._api_type)
-
-        command_dict = build_command(command, **command_kwargs)
+        # (Tuya) devices. build_device_command applies the coordinator's
+        # detected api_type itself; an explicit api_type in params overrides it
+        # — but ONLY for novel/scalar devices. A legacy (Tuya Cloud plain-value)
+        # device can't speak protobuf, so it always uses build_device_command
+        # (build_legacy_command) regardless of any api_type override.
+        if "api_type" in command_kwargs and self.coordinator.api_type != "legacy":
+            command_dict = build_command(command, **command_kwargs)
+        else:
+            command_kwargs.pop("api_type", None)
+            command_dict = self.coordinator.build_device_command(
+                command, **command_kwargs
+            )
         if command_dict:
             await self.coordinator.async_send_command(command_dict)
             return

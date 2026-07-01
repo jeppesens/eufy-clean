@@ -1,6 +1,7 @@
 build
 out
 venv
+.venv
 .python-version
 .kiro
 .git
@@ -18,3 +19,7 @@ config/
 .idea/
 .claude/
 RELEASE_NOTES.md
+
+# Ultrareview output files (per-branch reports, not part of source)
+.ultrareview-*.md
+uv.lock

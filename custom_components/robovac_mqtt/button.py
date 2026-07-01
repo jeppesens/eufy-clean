@@ -11,7 +11,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
@@ -77,6 +76,9 @@ _ACCESSORY_RESET_BUTTONS: list[
 ]
 
 
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -90,6 +92,11 @@ async def async_setup_entry(
 
     for coordinator in coordinators:
         _LOGGER.debug("Adding buttons for %s", coordinator.device_name)
+
+        # Dock and accessory buttons require protobuf DPS (173/168) and are not
+        # available on legacy (Tuya Cloud plain-value) devices.
+        if coordinator.api_type == "legacy":
+            continue
 
         buttons = [
             # Vacuum control buttons — mirrors the Eufy app's main screen controls.
@@ -207,9 +214,8 @@ class RoboVacButton(CoordinatorEntity[EufyCleanCoordinator], ButtonEntity):
 
     async def async_press(self) -> None:
         """Press the button."""
-        cmd = build_command(
+        cmd = self.coordinator.build_device_command(
             self._command,
-            api_type=self.coordinator.api_type,
             **self._command_kwargs,
         )
         await self.coordinator.async_send_command(cmd)

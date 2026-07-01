@@ -5,17 +5,26 @@ import random
 import string
 from pathlib import Path
 
+import aiohttp
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_when_setup
 
-from .api.cloud import EufyLogin
-from .const import DOMAIN
+from .api.cloud import EufyLogin, EufyLoginError
+from .const import (
+    CONF_LOCAL_DEVICES,
+    CONF_LOCAL_HOST,
+    CONF_LOCAL_VERSION,
+    CONF_ROOM_NAMES,
+    DOMAIN,
+)
 from .coordinator import EufyCleanCoordinator
 
 PLATFORMS: list[Platform] = [
@@ -88,7 +97,9 @@ async def _register_card_when_frontend_ready(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
-    entry.async_on_unload(entry.add_update_listener(update_listener))
+    # NOTE: the options update listener is registered later, AFTER the legacy
+    # last_seen_segments cleanup, so the cleanup's async_update_entry() does not
+    # trigger a reload mid-setup. (Registering it here too would double-fire.)
 
     # Register the bundled card once `frontend` is set up. async_when_setup fires
     # immediately if it already is, else when it finishes — so the card registers
@@ -105,25 +116,77 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     openudid = "".join(random.choices(string.hexdigits, k=32))
 
     # Initialize Login Controller
-    eufy_login = EufyLogin(username, password, openudid)
+    session = async_get_clientsession(hass)
+    eufy_login = EufyLogin(username, password, openudid, websession=session)
     try:
         await eufy_login.init()
+    except EufyLoginError as e:
+        raise ConfigEntryAuthFailed(f"Invalid Eufy credentials: {e}") from e
+    except (aiohttp.ClientError, TimeoutError, OSError) as e:
+        raise ConfigEntryNotReady(f"Cannot reach Eufy servers: {e}") from e
     except Exception as e:
-        _LOGGER.error("Failed to login to Eufy Clean: %s", e)
-        return False
+        raise ConfigEntryNotReady(f"Unexpected setup error: {e}") from e
 
     coordinators = []
 
     # Get Devices and create coordinators
     # eufy_login.mqtt_devices populated by init/getDevices
-    # mqtt_devices is a list of dicts with device info
-    mqtt_devices = eufy_login.mqtt_devices
-    is_multi_device = len(mqtt_devices) > 1
+    # eufy_login.cloud_devices populated by init/getCloudDevices (Tuya Cloud)
+    all_devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
+    is_multi_device = len(all_devices) > 1
+    _LOGGER.debug(
+        "Device discovery complete: %d MQTT + %d cloud = %d total",
+        len(eufy_login.mqtt_devices),
+        len(eufy_login.cloud_devices),
+        len(all_devices),
+    )
 
-    for device_info in mqtt_devices:
+    # Per-device local-Tuya overrides from options. The user enters the LAN
+    # address of each dock through the integration's options flow; we promote
+    # such devices from cloud-polled to direct local-push.
+    local_overrides: dict[str, dict] = entry.options.get(CONF_LOCAL_DEVICES, {})
+    if local_overrides:
+        _LOGGER.debug(
+            "Local Tuya overrides configured for: %s",
+            list(local_overrides.keys()),
+        )
+
+    for device_info in all_devices:
         device_id = device_info.get("deviceId")
         if not device_id:
             continue
+        if override := local_overrides.get(device_id):
+            extras: dict = {}
+            host = (override.get(CONF_LOCAL_HOST) or "").strip()
+            if host and device_info.get("local_key"):
+                extras["connection_type"] = "local"
+                extras["local_host"] = host
+                extras["local_version"] = override.get(CONF_LOCAL_VERSION, 3.3)
+                _LOGGER.info(
+                    "Device %s promoted to local Tuya (host=%s)", device_id, host
+                )
+            # Room ID → name overrides apply to any transport.
+            # JSON storage stringifies int keys, so coerce back to int for
+            # correct sort order and so downstream protobuf builders get the
+            # right type.
+            if room_overrides := override.get(CONF_ROOM_NAMES):
+                coerced: dict[int, str] = {}
+                for raw_id, name in room_overrides.items():
+                    try:
+                        coerced[int(raw_id)] = str(name)
+                    except (TypeError, ValueError):
+                        _LOGGER.warning(
+                            "Device %s: ignoring non-integer room id %r",
+                            device_id, raw_id,
+                        )
+                if coerced:
+                    extras["room_name_overrides"] = coerced
+                    _LOGGER.info(
+                        "Device %s using %d manual room name override(s)",
+                        device_id, len(coerced),
+                    )
+            if extras:
+                device_info = {**device_info, **extras}
 
         _LOGGER.debug(
             "Found device: %s (%s)",
@@ -156,10 +219,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.warning("Failed to initialize coordinator for %s: %s", device_id, e)
 
     if not coordinators:
-        _LOGGER.warning("No Eufy Clean devices found or initialized.")
-        # We generally return True anyway to avoid blocking HA startup,
-        # unless critical failure?
-        # But if no devices, nothing to do.
+        raise ConfigEntryNotReady("No Eufy Clean devices could be initialized")
 
     # Check for orphaned devices and log warnings
     current_device_ids = {c.device_id for c in coordinators}
@@ -194,6 +254,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         _LOGGER.info(
             "Removed legacy last_seen_segments from config entry %s", entry.entry_id
         )
+
+    # Register update listener AFTER segment cleanup to avoid triggering
+    # a reload from async_update_entry during setup
+    entry.async_on_unload(entry.add_update_listener(update_listener))
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 

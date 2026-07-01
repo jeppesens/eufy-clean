@@ -18,6 +18,7 @@ def _mock_coordinator():
     coordinator = MagicMock()
     coordinator.device_id = "test_device"
     coordinator.device_name = "Test Vacuum"
+    coordinator.api_type = "novel"
     coordinator.data = VacuumState()
 
     # Set up rooms data
@@ -36,6 +37,7 @@ def _mock_coordinator():
     coordinator.data.received_fields = {"mop_water_level", "cleaning_intensity"}
 
     coordinator.async_send_command = AsyncMock()
+    coordinator.build_device_command = MagicMock(return_value={"152": "encoded_cmd"})
     return coordinator
 
 
@@ -47,6 +49,12 @@ def _vacuum_entity(mock_coordinator):
 
 async def test_async_clean_segments_with_custom_params(vacuum_entity, mock_coordinator):
     """Test that segment cleaning applies current custom parameters."""
+    # Need two return values for set_room_custom + room_clean
+    mock_coordinator.build_device_command.side_effect = [
+        {"164": "room_custom_cmd"},
+        {"152": "room_clean_cmd"},
+    ]
+
     # Act
     await vacuum_entity.async_clean_segments(["1", "2"])
 
@@ -108,6 +116,12 @@ async def test_async_clean_segments_mixed_valid_invalid(
     vacuum_entity, mock_coordinator
 ):
     """Test that segment cleaning filters out invalid IDs and processes valid ones."""
+    # Need two return values for set_room_custom + room_clean
+    mock_coordinator.build_device_command.side_effect = [
+        {"164": "room_custom_cmd"},
+        {"152": "room_clean_cmd"},
+    ]
+
     # Act
     await vacuum_entity.async_clean_segments(["1", "invalid", "2", ""])
 
@@ -125,6 +139,12 @@ async def test_async_clean_segments_with_map_id(vacuum_entity, mock_coordinator)
     """Test that segment cleaning uses proper map_id from coordinator."""
     # Set a specific map_id
     mock_coordinator.data.map_id = 5
+
+    # Need two return values for set_room_custom + room_clean
+    mock_coordinator.build_device_command.side_effect = [
+        {"164": "room_custom_cmd"},
+        {"152": "room_clean_cmd"},
+    ]
 
     # Act
     await vacuum_entity.async_clean_segments(["1", "3"])

@@ -162,6 +162,71 @@ Room segments with guaranteed unique names (duplicates auto-suffixed, e.g. `Kitc
 
 ## Usage
 
+### Optional: Local Tuya transport (push, no 30 s polling)
+
+For devices the Eufy API reports as **non-MQTT** (served over the **Tuya Cloud**
+path and otherwise polled every 30 s) you can opt-in to a direct **LAN socket**
+on the dock instead. Whether a device uses this path is decided per-device at
+runtime from the Eufy API's `mqtt` flag — not by model name — so open
+**Configure** to see which of your devices are eligible. Updates then arrive
+within seconds of the device emitting them and continue to work while the
+Eufy / Tuya cloud is unreachable.
+
+How to enable it:
+
+1.  Find the **LAN address** of your dock — DHCP reservation, your router's
+    device list, or a quick `nmap -sn 192.168.1.0/24`. The local key is
+    auto-supplied by the Tuya Cloud login, you don't need to extract it.
+2.  Go to Settings → Devices & Services → **Eufy Robovac MQTT** → **Configure**.
+3.  Enter the host (IP or DNS name) for each cloud-discovered vacuum and
+    pick the Tuya protocol version (3.3 fits most vacuums; try 3.4/3.5 if
+    your model is newer and 3.3 fails to connect).
+4.  Save. The integration reloads and switches that device to local push.
+
+If the local socket fails to open (wrong host, firewall, dock offline) the
+coordinator silently falls back to cloud polling, so the dashboard never goes
+unavailable just because the LAN address has shifted.
+
+> [!WARNING]
+> **Security model.** The local transport is AES-encrypted with your device's
+> **local key** — it is *not* TLS and performs no certificate validation, so it
+> is intended for a **trusted LAN only**. The local key grants full local
+> control of the dock and is a secret: never share it, and never paste
+> integration debug logs that might contain it into public issues.
+
+> [!NOTE]
+> Live map and live X/Y position are **not** available over either Tuya
+> transport — Eufy delivers them through a separate encrypted P2P channel
+> (`eufy_mega` SDK) that no public reverse-engineering has cracked yet.
+> Everything else — vacuum/mop mode, water level, clean count, spot/zone/room
+> commands, station status, consumables, lifetime stats, all sensors —
+> works fine over both transports.
+
+### Optional: Manual room name overrides
+
+The room list (and the `select.robovac_clean_room` entity that targets it)
+normally comes from the same encrypted P2P channel as the map, so on Tuya
+transports the dropdown is empty. If you'd like to drive room cleaning from
+HA anyway, you can supply your own `room_id: name` mapping:
+
+1.  Settings → Devices & Services → **Eufy Robovac MQTT** → **Configure**.
+2.  In the **Rooms** field for your vacuum, enter one room per line:
+    ```
+    1: Lounge
+    2: Kitchen
+    3: Playroom
+    ```
+3.  Save. The `Clean Room` select entity reappears with your names as the
+    options. Selecting one fires `room_clean` with the matching ID.
+
+Finding the IDs is iterative until someone wires up MQTT-side discovery for
+Tuya devices: try `1, 2, 3, ...` and watch which room the vacuum starts on
+each, then adjust the mapping. The IDs are stable across sessions (they
+change only when the dock re-maps the floor plan).
+
+Overrides also work on the MQTT transport — useful if the auto-discovered
+names from the device aren't friendly enough for your dashboard.
+
 ### Cleaning Scenes
 
 ```yaml

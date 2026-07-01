@@ -2,6 +2,36 @@
 requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
+[project]
+# Dev/tooling metadata only. The integration is loaded by Home Assistant via
+# manifest.json (HACS), NOT pip-installed — see [tool.uv] package = false.
+name = "eufy-clean"
+version = "0.0.0"
+description = "Eufy Clean Home Assistant integration (dev tooling metadata)."
+# Matches CI (actions/setup-python 3.14); current Home Assistant needs >=3.14.2.
+requires-python = ">=3.14.2"
+
+[tool.uv]
+# This repo is a Home Assistant custom component, not an installable package;
+# uv manages the dev toolchain/venv only and never builds/installs the root.
+package = false
+
+[dependency-groups]
+# Lint + test toolchain, mirroring the CI lint (lint.yaml -> pre-commit) and
+# test (tests.yaml) jobs. Run lint with:  uv run pre-commit run --all-files
+# Run tests with:                          uv run pytest
+dev = [
+    "pytest-homeassistant-custom-component>=0.13.325",
+    "pre-commit",
+    "pylint",
+    "mypy",
+    "flake8",
+    "isort",
+    "types-requests",
+    "types-setuptools",
+    "protobuf",
+]
+
 [tool.mypy]
 python_version = "3.13"
 check_untyped_defs = false

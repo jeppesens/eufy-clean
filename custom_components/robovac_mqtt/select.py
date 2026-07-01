@@ -10,10 +10,11 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
+from ._orphan_cleanup import prune_orphan_entities
 from .const import (
     DOMAIN,
     DRY_DURATION_MAP,
@@ -21,6 +22,7 @@ from .const import (
     EUFY_CLEAN_CLEANING_MODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     EUFY_CLEAN_WATER_LEVELS,
+    LEGACY_CLEAN_SPEEDS,
     SCALAR_CLEAN_PATTERN_NAMES,
     SCALAR_SUCTION_LEVELS,
     VOICE_CATALOG,
@@ -63,6 +65,9 @@ def _optimistically_update_state(
     coordinator.async_set_updated_data(new_data)
 
 
+PARALLEL_UPDATES = 1
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -77,56 +82,87 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding select entities for %s", coordinator.device_name)
 
-        entities.extend(
-            filter_supported_entities(
-                coordinator,
-                [
-                    SuctionLevelSelectEntity(coordinator),
-                    CleaningPatternSelectEntity(coordinator),
-                    CleaningModeSelectEntity(coordinator),
-                    WaterLevelSelectEntity(coordinator),
-                    MopIntensitySelectEntity(coordinator),
-                    CleaningIntensitySelectEntity(coordinator),
-                    SceneSelectEntity(coordinator),
-                    RoomSelectEntity(coordinator),
-                    DockSelectEntity(
-                        coordinator,
-                        "wash_frequency_mode",
-                        "Wash Frequency Mode",
-                        ["ByRoom", "ByTime"],
-                        lambda cfg: (
-                            "ByRoom"
-                            if cfg.get("wash", {})
-                            .get("wash_freq", {})
-                            .get("mode", "ByPartition")
-                            == "ByPartition"
-                            else "ByTime"
-                        ),
-                        _set_wash_freq_mode,
-                        icon="mdi:calendar-sync",
+        # Universal selects that work on every api type, including legacy:
+        # SuctionLevelSelectEntity's set_fan_speed is a supported legacy command,
+        # and CleaningPatternSelectEntity is scalar-only (dropped for legacy by
+        # filter_supported_entities anyway).
+        candidates = [
+            SuctionLevelSelectEntity(coordinator),
+            CleaningPatternSelectEntity(coordinator),
+        ]
+
+        # Novel-only selects. Legacy (Tuya Cloud plain-value) devices cannot
+        # drive these: their commands route to build_legacy_command, which
+        # returns {} and is silently dropped — so a legacy device would show
+        # functional-looking but no-op dropdowns. filter_supported_entities does
+        # NOT exclude them because effective_api_type buckets "legacy" as
+        # "novel", so guard explicitly (matching number/button/sensor).
+        if coordinator.api_type != "legacy":
+            candidates += [
+                CleaningModeSelectEntity(coordinator),
+                WaterLevelSelectEntity(coordinator),
+                MopIntensitySelectEntity(coordinator),
+                CleaningIntensitySelectEntity(coordinator),
+                DockSelectEntity(
+                    coordinator,
+                    "wash_frequency_mode",
+                    "Wash Frequency Mode",
+                    ["ByRoom", "ByTime"],
+                    lambda cfg: (
+                        "ByRoom"
+                        if cfg.get("wash", {})
+                        .get("wash_freq", {})
+                        .get("mode", "ByPartition")
+                        == "ByPartition"
+                        else "ByTime"
                     ),
-                    DockSelectEntity(
-                        coordinator,
-                        "dry_duration",
-                        "Dry Duration",
-                        list(DRY_DURATION_MAP.values()),
-                        _get_dry_duration,
-                        _set_dry_duration,
-                        icon="mdi:timer-sand",
-                    ),
-                    DockSelectEntity(
-                        coordinator,
-                        "auto_empty_mode",
-                        "Auto Empty Mode",
-                        ["Smart", "15 min", "30 min", "45 min", "60 min"],
-                        _get_collect_dust_mode,
-                        _set_collect_dust_mode,
-                        icon="mdi:delete-restore",
-                    ),
-                    VoiceSelectEntity(coordinator),
-                ],
-            )
-        )
+                    _set_wash_freq_mode,
+                    icon="mdi:calendar-sync",
+                ),
+                DockSelectEntity(
+                    coordinator,
+                    "dry_duration",
+                    "Dry Duration",
+                    list(DRY_DURATION_MAP.values()),
+                    _get_dry_duration,
+                    _set_dry_duration,
+                    icon="mdi:timer-sand",
+                ),
+                DockSelectEntity(
+                    coordinator,
+                    "auto_empty_mode",
+                    "Auto Empty Mode",
+                    ["Smart", "15 min", "30 min", "45 min", "60 min"],
+                    _get_collect_dust_mode,
+                    _set_collect_dust_mode,
+                    icon="mdi:delete-restore",
+                ),
+                VoiceSelectEntity(coordinator),
+            ]
+
+        # Transport-based hiding (complementary to api-type gating):
+        # Scene data is delivered through Eufy's encrypted P2P channel which
+        # only the MQTT transport receives — skip on Tuya transports rather
+        # than expose permanently-`unknown` UI.
+        if coordinator.connection_type == "mqtt":
+            candidates.append(SceneSelectEntity(coordinator))
+        # Room list is normally P2P-only too, but the user can supply a
+        # manual {room_id: name} override through the options flow which
+        # works on every transport.
+        if coordinator.connection_type == "mqtt" or coordinator.room_name_overrides:
+            candidates.append(RoomSelectEntity(coordinator))
+
+        entities.extend(filter_supported_entities(coordinator, candidates))
+
+    # Prune registry orphans (e.g., scene/clean_room entities registered by an
+    # older build but no longer created on Tuya transports).
+    prune_orphan_entities(
+        hass,
+        config_entry.entry_id,
+        coordinators,
+        added_unique_ids={e.unique_id for e in entities if e.unique_id},
+        platform="select",
+    )
 
     async_add_entities(entities)
 
@@ -246,10 +282,12 @@ class DockSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
     async def async_select_option(self, option: str) -> None:
         """Change the selected option."""
+        if not self.coordinator.data.dock_auto_cfg:
+            raise HomeAssistantError("Dock configuration not yet received from device")
         cfg = copy.deepcopy(self.coordinator.data.dock_auto_cfg)
         self._setter(cfg, option)
 
-        command = build_command("set_auto_cfg", cfg=cfg)
+        command = self.coordinator.build_device_command("set_auto_cfg", cfg=cfg)
         await self.coordinator.async_send_command(command)
 
 
@@ -313,7 +351,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         scene_id = scene["id"]
         _LOGGER.info("Triggering scene '%s' (ID: %s)", option, scene_id)
 
-        command = build_command("scene_clean", scene_id=scene_id)
+        command = self.coordinator.build_device_command("scene_clean", scene_id=scene_id)
         await self.coordinator.async_send_command(command)
         self.coordinator.set_active_scene(scene_id, scene.get("name"))
 
@@ -321,7 +359,18 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
 
 class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
-    """Select entity for choosing and triggering room cleaning."""
+    """Select entity for choosing and triggering room cleaning.
+
+    Two data sources for the room list, in priority order:
+
+    1. ``coordinator.room_name_overrides`` — manual ``{room_id: name}`` mapping
+       supplied via the options flow. Used on transports that can't deliver
+       the room list from the device (Tuya cloud / local Tuya), and also
+       useful as an MQTT-side override if the device's auto-supplied names
+       are wrong or unfriendly.
+    2. ``coordinator.data.rooms`` — names received via the MQTT/P2P
+       MultiMapsManageResponse / RoomParams stream.
+    """
 
     supported_api_types = (API_TYPE_NOVEL,)
 
@@ -337,11 +386,24 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
     _PLACEHOLDER = "None"
 
+    def _override_rooms(self) -> list[dict[str, Any]]:
+        """Return manual overrides as a [{id, name}] list (sorted by ID for stable ordering)."""
+        overrides = self.coordinator.room_name_overrides
+        if not overrides:
+            return []
+        return [{"id": rid, "name": name} for rid, name in sorted(overrides.items())]
+
+    def _active_rooms(self) -> list[dict[str, Any]]:
+        """Choose between override and P2P-derived rooms (overrides win)."""
+        if rooms := self._override_rooms():
+            return rooms
+        return self.coordinator.data.rooms
+
     @property
     def options(self) -> list[str]:
         """Return available rooms with a placeholder as the first entry."""
         return [self._PLACEHOLDER] + [
-            _format_option_label(r, "Room") for r in self.coordinator.data.rooms
+            _format_option_label(r, "Room") for r in self._active_rooms()
         ]
 
     @property
@@ -349,7 +411,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         """Return active room if cleaning, otherwise the placeholder."""
         active_ids = set(self.coordinator.data.active_room_ids)
         if active_ids:
-            for r in self.coordinator.data.rooms:
+            for r in self._active_rooms():
                 if r.get("id") in active_ids:
                     return _format_option_label(r, "Room")
         return self._PLACEHOLDER
@@ -359,7 +421,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         if option == self._PLACEHOLDER:
             return
 
-        rooms = self.coordinator.data.rooms
+        rooms = self._active_rooms()
         room = next(
             (r for r in rooms if _format_option_label(r, "Room") == option),
             None,
@@ -378,7 +440,7 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             map_id,
         )
 
-        command = build_command("room_clean", room_ids=[room_id], map_id=map_id)
+        command = self.coordinator.build_device_command("room_clean", room_ids=[room_id], map_id=map_id)
         await self.coordinator.async_send_command(command)
         self.coordinator.set_active_cleaning_targets(room_ids=[room_id])
 
@@ -435,10 +497,8 @@ class _StateBackedSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEn
 
         state_value = self._option_to_state(option)
         await self.coordinator.async_send_command(
-            build_command(
-                self._command_name,
-                api_type=self.coordinator.data.api_type,
-                **{self._command_arg_name: state_value},
+            self.coordinator.build_device_command(
+                self._command_name, **{self._command_arg_name: state_value}
             )
         )
         _optimistically_update_state(
@@ -451,14 +511,13 @@ class _StateBackedSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEn
 class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     """Select entity for adjusting suction level.
 
-    Hidden until a fan speed value is reported from DPS 154.
+    Hidden until a fan speed value is reported from DPS 154 (novel) or DPS 102 (legacy).
     """
 
     _attr_has_entity_name = True
     _attr_name = "Suction Level"
     _attr_icon = "mdi:fan"
     _attr_entity_category = EntityCategory.CONFIG
-    _attr_options = _SUCTION_LEVELS
     _command_name = "set_fan_speed"
     _command_arg_name = "fan_speed"
     _state_field = "fan_speed"
@@ -468,10 +527,15 @@ class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize suction level select."""
         super().__init__(coordinator, "suction_level")
-        # scalar-protocol (scalar protocol) devices expose BoostIQ as a separate switch
-        # (DPS 118), so their suction list is the four levels without Boost_IQ.
-        if coordinator.data.api_type == "scalar":
+        # scalar-protocol devices expose BoostIQ as a separate switch (DPS 118),
+        # so their suction list is the four levels without Boost_IQ. legacy
+        # (Tuya Cloud) devices use the plain Tuya speed strings.
+        if coordinator.api_type == "scalar":
             self._attr_options = SCALAR_SUCTION_LEVELS
+        elif coordinator.api_type == "legacy":
+            self._attr_options = list(LEGACY_CLEAN_SPEEDS)
+        else:
+            self._attr_options = _SUCTION_LEVELS
 
 
 class CleaningModeSelectEntity(_StateBackedSelectEntity):
@@ -646,7 +710,7 @@ class VoiceSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             _LOGGER.warning("Unknown voice option '%s'", option)
             return
 
-        command = build_command("set_voice", set_id=set_id)
+        command = self.coordinator.build_device_command("set_voice", set_id=set_id)
         if not command:
             return
 

@@ -6,6 +6,7 @@ import json
 import logging
 import time
 from dataclasses import replace
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.persistent_notification import (
@@ -16,6 +17,7 @@ from homeassistant.components.persistent_notification import (
 )
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.device_registry import (
     CONNECTION_NETWORK_MAC,
     DeviceInfo,
@@ -28,6 +30,10 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api.client import EufyCleanClient
 from .api.cloud import EufyLogin
+from .api.commands import build_command
+from .api.legacy_commands import build_legacy_command
+from .api.legacy_parser import update_state_legacy
+from .api.local_tuya import LocalTuyaClient, LocalTuyaError
 from .api.map_stream import (
     MapData,
     parse_biz_protocol41,
@@ -51,6 +57,10 @@ from .models import VacuumState
 
 _LOGGER = logging.getLogger(__name__)
 
+_CLOUD_POLL_INTERVAL = timedelta(seconds=30)
+_MAX_BACKOFF_INTERVAL = timedelta(minutes=5)
+_FAILURE_THRESHOLD = 5  # Raise UpdateFailed after this many consecutive failures
+
 
 def _px_dist(a: tuple[int, int], b: tuple[int, int]) -> float:
     """Euclidean distance between two pixel coords."""
@@ -72,22 +82,57 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self.device_id = device_info["deviceId"]
         self.device_model = device_info["deviceModel"]
         # DPS protocol ("novel" protobuf / "scalar" Tuya-int / "legacy"),
-        # classified cloud-side by EufyLogin.checkApiType from the initial snapshot.
-        self.api_type = device_info.get("apiType", "novel")
+        # classified cloud-side by EufyLogin.checkApiType from the initial
+        # snapshot. Determines both the parser and the command builder.
+        self.api_type: str = device_info.get("apiType", "novel")
         self.device_name = device_info["deviceName"]
         self.serial_number = device_info.get("deviceId")  # Usually deviceId is SN
         self.firmware_version = device_info.get("softVersion")
         self.eufy_login = eufy_login
+
+        # Connection type determines transport. Three options:
+        #   "mqtt"  — Anker AIOT MQTT (push, novel devices on the new Eufy app)
+        #   "local" — direct Tuya LAN socket (push, requires local_key + LAN reachability)
+        #   "cloud" — Tuya Cloud REST polling (legacy / fallback)
+        # Preserve historical default: mqtt-unspecified means mqtt (so MQTT
+        # devices, and tests that don't set the field, behave as before).
+        if device_info.get("connection_type"):
+            self.connection_type: str = device_info["connection_type"]
+        elif device_info.get("mqtt", True):
+            self.connection_type = "mqtt"
+        else:
+            self.connection_type = "cloud"
+
+        # Local Tuya credentials (only populated when connection_type=="local")
+        self._local_key: str | None = device_info.get("local_key")
+        self._local_host: str | None = device_info.get("local_host")
+        self._local_version: float = float(device_info.get("local_version", 3.3))
+        # Manual room ID -> name overrides for transports that can't deliver
+        # the room list from the device (Tuya cloud / local Tuya). Empty dict
+        # = no overrides, RoomSelectEntity falls back to P2P-derived names.
+        self.room_name_overrides: dict[int, str] = dict(
+            device_info.get("room_name_overrides") or {}
+        )
+
+        update_interval = _CLOUD_POLL_INTERVAL if self.connection_type == "cloud" else None
+
+        _LOGGER.debug(
+            "Coordinator created: device=%s, model=%s, api_type=%s, connection=%s, poll=%s",
+            self.device_id, self.device_model, self.api_type, self.connection_type, update_interval,
+        )
 
         super().__init__(
             hass,
             _LOGGER,
             name=f"{DOMAIN}_{self.device_name}",
             config_entry=config_entry,
+            update_interval=update_interval,
         )
 
-        self.client: EufyCleanClient | None = None
+        self.client: EufyCleanClient | LocalTuyaClient | None = None
         self.data = VacuumState(device_model=self.device_model, api_type=self.api_type)
+        self._consecutive_cloud_failures: int = 0
+        self._base_poll_interval: timedelta | None = update_interval
         self._dock_idle_cancel: CALLBACK_TYPE | None = (
             None  # Timer for dock IDLE debounce
         )
@@ -110,13 +155,34 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._last_map_save: float = 0.0
 
         if dps := device_info.get("dps"):
-            self.data, _ = update_state(self.data, dps)
+            self.data, _ = self._parse_dps(dps)
             # Use the product name from the device itself (DPS 169) if the
             # cloud API only returned a generic placeholder like "Robovac".
             if self.data.product_name and self.device_name.lower() in (
                 "robovac", "eufy robovac", ""
             ):
                 self.device_name = self.data.product_name
+
+    def _parse_dps(self, dps: dict[str, Any]) -> tuple[VacuumState, dict[str, Any]]:
+        """Dispatch DPS parsing based on api_type.
+
+        Novel (protobuf) and scalar (Tuya-int) DPS are both handled by
+        update_state, which branches internally on state.api_type; legacy
+        (Tuya Cloud plain-value) devices use the dedicated legacy parser.
+        """
+        if self.api_type == "legacy":
+            return update_state_legacy(self.data, dps)
+        return update_state(self.data, dps)
+
+    def build_device_command(self, command: str, **kwargs: Any) -> dict[str, Any]:
+        """Build a DPS command dict appropriate for this device's API type.
+
+        Legacy devices use the plain-value builder; novel and scalar devices
+        share build_command, which branches internally on api_type.
+        """
+        if self.api_type == "legacy":
+            return build_legacy_command(command, **kwargs)
+        return build_command(command, api_type=self.api_type, **kwargs)
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -136,6 +202,62 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     async def initialize(self) -> None:
         """Initialize connection to the device."""
+        _LOGGER.debug("Initializing %s via %s", self.device_name, self.connection_type)
+        if self.connection_type == "cloud":
+            await self._initialize_cloud()
+        elif self.connection_type == "local":
+            await self._initialize_local()
+        else:
+            await self._initialize_mqtt()
+
+    async def _fall_back_to_cloud(self) -> None:
+        """Switch this coordinator to cloud polling and initialize it."""
+        self.connection_type = "cloud"
+        self.update_interval = _CLOUD_POLL_INTERVAL
+        self._base_poll_interval = _CLOUD_POLL_INTERVAL
+        await self._initialize_cloud()
+
+    async def _initialize_local(self) -> None:
+        """Initialize a direct local-Tuya socket connection.
+
+        Falls back to cloud polling if the local socket can't be opened —
+        the device may be on a different network segment, the local key may be
+        wrong, or the dock may be temporarily off-line.
+        """
+        if not self._local_key or not self._local_host:
+            _LOGGER.warning(
+                "Local Tuya requested for %s but local_key/host missing; "
+                "falling back to cloud polling",
+                self.device_name,
+            )
+            await self._fall_back_to_cloud()
+            return
+
+        _LOGGER.info(
+            "Initializing local Tuya for %s (host=%s, version=%s)",
+            self.device_name, self._local_host, self._local_version,
+        )
+        self.client = LocalTuyaClient(
+            device_id=self.device_id,
+            local_key=self._local_key,
+            host=self._local_host,
+            version=self._local_version,
+        )
+        self.client.set_on_message(self._handle_mqtt_message)
+        try:
+            await self.client.connect()
+        except (LocalTuyaError, OSError, TimeoutError) as e:
+            _LOGGER.warning(
+                "Local Tuya connect failed for %s (%s); falling back to cloud polling",
+                self.device_name, e,
+            )
+            self.client = None
+            await self._fall_back_to_cloud()
+            return
+        await self.async_load_storage()
+
+    async def _initialize_mqtt(self) -> None:
+        """Initialize MQTT connection."""
         try:
             if not self.eufy_login.mqtt_credentials:
                 await self.eufy_login.checkLogin()
@@ -165,9 +287,18 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         except Exception as e:
             _LOGGER.error(
-                "Failed to initialize coordinator for %s: %s", self.device_name, e
+                "Failed to initialize MQTT coordinator for %s: %s", self.device_name, e
             )
             raise
+
+    async def _initialize_cloud(self) -> None:
+        """Initialize cloud polling connection."""
+        _LOGGER.info(
+            "Initializing cloud polling for %s (interval: %s)",
+            self.device_name,
+            _CLOUD_POLL_INTERVAL,
+        )
+        await self.async_load_storage()
 
     @callback
     def _handle_mqtt_message(self, payload: bytes) -> None:
@@ -183,7 +314,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             if dps := payload_data.get("data"):
                 # Calculate new state based on connection
                 prev_activity = self.data.activity
-                new_state, changes = update_state(self.data, dps)
+                new_state, changes = self._parse_dps(dps)
 
                 if "error_code" in changes:
                     if new_state.error_code != 0:
@@ -622,20 +753,85 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     async def async_send_command(self, command_dict: dict[str, Any]) -> None:
         """Send command to device."""
-        if self.client:
-            await self.client.send_command(command_dict)
-        else:
-            _LOGGER.warning("Cannot send command: no MQTT client available")
+        if not command_dict:
+            _LOGGER.debug("Ignoring empty command for %s", self.device_name)
+            return
+        _LOGGER.debug(
+            "Sending command to %s via %s: %s",
+            self.device_name, self.connection_type, command_dict,
+        )
+        try:
+            if self.connection_type == "cloud":
+                await self.eufy_login.sendCloudCommand(self.device_id, command_dict)
+            elif self.client:
+                # Both LocalTuyaClient and EufyCleanClient expose send_command.
+                await self.client.send_command(command_dict)
+            else:
+                raise HomeAssistantError(
+                    f"Cannot send command to {self.device_name}: no connection available"
+                )
+        except HomeAssistantError:
+            raise
+        except Exception as e:
+            raise HomeAssistantError(
+                f"Failed to send command to {self.device_name}: {e}"
+            ) from e
 
     async def _async_update_data(self) -> VacuumState:
         """Fetch data from API endpoint.
 
-        For this integration, we rely on push updates.
-        This method is called by RequestRefresh or polling.
-        We can potentially fetch HTTP state here if needed as fallback.
-        For now, just return current state.
+        For MQTT devices, we rely on push updates.
+        For cloud devices, poll via Tuya Cloud API with exponential backoff.
         """
+        if self.connection_type == "cloud":
+            _LOGGER.debug("Cloud poll starting for %s", self.device_name)
+            try:
+                dps = await self.eufy_login.getCloudDevice(self.device_id)
+                if dps:
+                    new_state, _ = self._parse_dps(dps)
+                    self._on_cloud_success()
+                    return new_state
+            except Exception as e:
+                _LOGGER.warning(
+                    "Error polling cloud device %s: %s", self.device_name, e
+                )
+
+            # Poll returned None or raised — count as failure
+            self._on_cloud_failure()
+            if self._consecutive_cloud_failures >= _FAILURE_THRESHOLD:
+                raise UpdateFailed(
+                    f"Cloud device {self.device_name} unreachable after "
+                    f"{self._consecutive_cloud_failures} consecutive failures"
+                )
+
         return self.data
+
+    def _on_cloud_success(self) -> None:
+        """Reset failure counter and restore base poll interval."""
+        if self._consecutive_cloud_failures > 0:
+            _LOGGER.debug(
+                "Cloud device %s recovered after %d failure(s)",
+                self.device_name,
+                self._consecutive_cloud_failures,
+            )
+        self._consecutive_cloud_failures = 0
+        if self._base_poll_interval:
+            self.update_interval = self._base_poll_interval
+
+    def _on_cloud_failure(self) -> None:
+        """Increment failure counter and apply exponential backoff."""
+        self._consecutive_cloud_failures += 1
+        if self._base_poll_interval:
+            backoff = self._base_poll_interval * (
+                2 ** min(self._consecutive_cloud_failures, 4)
+            )
+            self.update_interval = min(backoff, _MAX_BACKOFF_INTERVAL)
+            _LOGGER.debug(
+                "Cloud device %s: failure %d, next poll in %s",
+                self.device_name,
+                self._consecutive_cloud_failures,
+                self.update_interval,
+            )
 
     async def async_load_storage(self) -> None:
         """Load data from storage."""
