@@ -156,6 +156,17 @@ async def async_setup_entry(
         "async_room_at_point",
         supports_response=SupportsResponse.ONLY,
     )
+    # Switch the active map to another saved multi-map by its cloud map id
+    # (novel/protobuf devices only). See async_map_load / build_map_load_command
+    # for the pose-re-localization caveat.
+    platform.async_register_entity_service(
+        "map_load",
+        {
+            vol.Required("cloud_mapid"): vol.Coerce(int),
+            vol.Optional("seq", default=1): vol.Coerce(int),
+        },
+        "async_map_load",
+    )
 
 
 class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEntity):
@@ -456,6 +467,30 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         """
         room_id, room_name = self.coordinator.room_id_at_normalized(x, y)
         return {"room_id": room_id, "room_name": room_name or ""}
+
+    async def async_map_load(self, cloud_mapid: int, seq: int = 1) -> None:
+        """Switch the active map to a saved multi-map by its cloud map id.
+
+        Loads the target map and its room list immediately. The robot re-localizes
+        onto the new map only when it next MOVES — see the ``map_load`` service
+        docs for the workaround: a single-room clean (via a script or the card's
+        room list) is the most reliable way to ground the pose; avoid map-tap or
+        zone targeting until the frame re-grounds. Multi-map switching is a novel
+        (protobuf) feature; scalar/legacy devices have no multi-map.
+        """
+        if self.coordinator.api_type != "novel":
+            _LOGGER.warning(
+                "map_load ignored: switching maps is only supported on novel "
+                "(protobuf) devices, not api_type=%s",
+                self.coordinator.api_type,
+            )
+            return
+        command = self.coordinator.build_device_command(
+            "map_load", cloud_mapid=int(cloud_mapid), seq=int(seq)
+        )
+        if not command:
+            return
+        await self.coordinator.async_send_command(command)
 
     @property
     def supported_features(self) -> VacuumEntityFeature:

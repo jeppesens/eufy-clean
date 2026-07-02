@@ -31,3 +31,46 @@ room_at_point:
           max: 1
           step: any
           mode: box
+
+map_load:
+  name: Load map
+  description: >-
+    Switch the active map to another saved multi-map by its cloud map id (novel /
+    protobuf devices only; scalar and legacy models have no multi-map). The map and
+    its room list switch over immediately.
+
+    NOTE: the robot pose does NOT switch automatically. After loading a map the
+    robot's position / coordinate frame stays on the previous map until the vacuum
+    RE-LOCALIZES, which only happens once it MOVES. To ground the new map right away,
+    follow this with a small movement — the most reliable is a single-room clean
+    (vacuum only, quiet, one pass), started from a script/automation or by picking a
+    room from the list in the Eufy Clean card. Avoid selecting the room by tapping it
+    on the map right after a switch: the coordinate frame hasn't re-grounded yet, so
+    map taps (and zone drawing) can resolve to the wrong spot. Once the robot moves
+    and re-localizes, the reported position snaps onto the loaded map.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    cloud_mapid:
+      name: Cloud map id
+      description: >-
+        The saved map's id, as reported by the device (the map_id seen in incoming
+        map data). Switch maps in the Eufy app once and note the id each map reports.
+      required: true
+      example: 7
+      selector:
+        number:
+          min: 1
+          mode: box
+    seq:
+      name: Sequence
+      description: Optional request sequence number the device echoes back in its acknowledgement. Leave as the default unless you need to correlate the ack.
+      required: false
+      default: 1
+      example: 1
+      selector:
+        number:
+          min: 0
+          mode: box
