@@ -217,3 +217,11 @@ def test_map_description_rejects_non_printable_name():
 def test_map_description_rejects_garbage():
     """Non-hex / undecodable input -> None, never raises."""
     assert try_extract_map_description("zznothex") is None
+
+
+def test_map_description_strips_whitespace():
+    """A name seeded with a trailing space (Eufy same-name workaround) is trimmed."""
+    assert try_extract_map_description(_make_map_desc_hex(6, "The main floor ")) == (
+        6,
+        "The main floor",
+    )

@@ -456,10 +456,10 @@ class MapSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     arrives reliably over the DPS state stream (the same signal the Active Map
     sensor tracks), so every map the robot has been on is appended and becomes
     switchable, shown as ``Map (ID: <id>)``. A friendly name is layered in when
-    that map's ``MapDescription`` is seen on the biz stream — the device emits it
-    when you open multi-map management or rename a map in the app (a plain switch
-    carries only the id), after which the name is persisted with the id. Bulk
-    enumeration (``MAP_GET_ALL``) is P2P-only, so this is a learn-as-seen list.
+    that map's ``MapDescription`` is seen on the biz stream — the device only
+    emits it when you rename the map in the app (a plain switch or view carries
+    only the id), after which the name is persisted with the id. Bulk enumeration
+    (``MAP_GET_ALL``) is P2P-only, so this is a learn-as-seen list.
 
     Selecting an option sends ``map_load``. NOTE: the robot pose does not
     re-localize onto the new map until the vacuum next MOVES — see the

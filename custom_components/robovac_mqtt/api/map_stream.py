@@ -541,7 +541,10 @@ def try_extract_map_description(hex_data: str) -> tuple[int, str] | None:
         desc = stream_pb2.MapDescription().FromString(proto_bytes)
     except Exception:
         return None
-    name = desc.name
+    # Strip surrounding whitespace: renaming a map to a name Eufy considers
+    # "unchanged" is rejected, so users seed a name by adding a trailing space —
+    # keep the visible label clean.
+    name = desc.name.strip()
     if desc.map_id > 0 and name and name.isprintable() and len(name) <= 48:
         return desc.map_id, name
     return None
