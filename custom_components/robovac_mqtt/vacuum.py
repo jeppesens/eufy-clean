@@ -471,10 +471,10 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         scene_id = scene_ids[0]
         scene_name = scene_lookup.get(scene_id)
-        await self.coordinator.async_send_command(
-            build_command("scene_clean", scene_id=scene_id)
-        )
-        self.coordinator.set_active_scene(scene_id, scene_name)
+        command = self.coordinator.build_device_command("scene_clean", scene_id=scene_id)
+        if command:
+            await self.coordinator.async_send_command(command)
+            self.coordinator.set_active_scene(scene_id, scene_name)
 
 
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
