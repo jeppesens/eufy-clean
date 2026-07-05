@@ -17,6 +17,7 @@ from homeassistant.core import (
     SupportsResponse,
     callback,
 )
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_platform
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
@@ -162,8 +163,8 @@ async def async_setup_entry(
     platform.async_register_entity_service(
         "map_load",
         {
-            vol.Required("cloud_mapid"): vol.Coerce(int),
-            vol.Optional("seq", default=1): vol.Coerce(int),
+            vol.Required("cloud_mapid"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            vol.Optional("seq", default=1): vol.All(vol.Coerce(int), vol.Range(min=0)),
         },
         "async_map_load",
     )
@@ -479,17 +480,18 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         (protobuf) feature; scalar/legacy devices have no multi-map.
         """
         if self.coordinator.api_type != "novel":
-            _LOGGER.warning(
-                "map_load ignored: switching maps is only supported on novel "
-                "(protobuf) devices, not api_type=%s",
-                self.coordinator.api_type,
+            raise HomeAssistantError(
+                "Switching maps is only supported on novel (protobuf) devices, "
+                f"not api_type={self.coordinator.api_type}"
             )
-            return
         command = self.coordinator.build_device_command(
             "map_load", cloud_mapid=int(cloud_mapid), seq=int(seq)
         )
         if not command:
-            return
+            raise HomeAssistantError(
+                "Failed to build map_load command "
+                "(unsupported device or invalid map id)"
+            )
         await self.coordinator.async_send_command(command)
 
     @property

@@ -37,7 +37,9 @@ map_load:
   description: >-
     Switch the active map to another saved multi-map by its cloud map id (novel /
     protobuf devices only; scalar and legacy models have no multi-map). The map and
-    its room list switch over immediately.
+    its room list switch over immediately. For most uses the "Active Map" select
+    entity is easier — it lists your saved maps by name and calls this service for
+    you; this raw service is for scripts/automations that already know the id.
 
     NOTE: the robot pose does NOT switch automatically. After loading a map the
     robot's position / coordinate frame stays on the previous map until the vacuum
@@ -56,8 +58,10 @@ map_load:
     cloud_mapid:
       name: Cloud map id
       description: >-
-        The saved map's id, as reported by the device (the map_id seen in incoming
-        map data). Switch maps in the Eufy app once and note the id each map reports.
+        The saved map's id, as reported by the device. The easiest way to find it:
+        the "Active Map" select entity lists each discovered map as
+        "<name> (ID: <id>)" — cycle through your maps in the Eufy app once (with HA
+        running) so each map's id and name are learned, then read the ids there.
       required: true
       example: 7
       selector:

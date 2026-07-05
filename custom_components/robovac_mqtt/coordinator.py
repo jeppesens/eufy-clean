@@ -40,6 +40,7 @@ from .api.map_stream import (
     render_map_png,
     try_decode_as_dynamic_data,
     try_extract_map_data,
+    try_extract_map_description,
 )
 from .api.parser import update_state
 from .const import (
@@ -141,6 +142,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
         self._pending_dock_status: str | None = None
         self.last_seen_segments: list[Any] | None = None
+        # Discovered saved maps {cloud_mapid: name}, learned from MapDescription
+        # frames on the biz/ stream and persisted; backs the Active Map selector.
+        self.last_seen_maps: dict[int, str] = {}
         self._store = Store(hass, 1, f"{DOMAIN}.{self.device_id}")
         self._map_data_chan_id: int | None = None
         self._map_data: MapData | None = None
@@ -430,6 +434,21 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         channel_id, hex_data = result
         _LOGGER.debug("biz/ protocol-41 channel_id=%d, hex_len=%d", channel_id, len(hex_data))
+
+        # Map discovery: a small single-shot MapDescription frame carries the
+        # active map's id + friendly name (delivered on a map switch). Capture it
+        # for the Active Map selector, persist, and notify entities.
+        desc = try_extract_map_description(hex_data)
+        if desc is not None:
+            map_id, name = desc
+            if self.last_seen_maps.get(map_id) != name:
+                self.last_seen_maps[map_id] = name
+                _LOGGER.debug(
+                    "Discovered map %d = %r for %s", map_id, name, self.device_name
+                )
+                self.async_update_listeners()
+                self.hass.async_create_task(self.async_save_maps())
+            return
 
         # Small channels (<200 hex chars = ~100 bytes): try as robot pose (DynamicData).
         if len(hex_data) < 200:
@@ -842,6 +861,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 len(self.last_seen_segments) if self.last_seen_segments else 0,
                 self.device_name,
             )
+            self.last_seen_maps = {
+                int(k): v for k, v in (data.get("last_seen_maps") or {}).items()
+            }
             if map_b64 := data.get("map_image_png"):
                 self.map_image = base64.b64decode(map_b64)
                 _LOGGER.debug(
@@ -924,5 +946,16 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         _LOGGER.debug(
             "Saved %s segments to storage for %s",
             len(segments_payload),
+            self.device_name,
+        )
+
+    async def async_save_maps(self) -> None:
+        """Persist discovered saved-map id→name to storage."""
+        data = await self._store.async_load() or {}
+        data["last_seen_maps"] = {str(k): v for k, v in self.last_seen_maps.items()}
+        await self._store.async_save(data)
+        _LOGGER.debug(
+            "Saved %s discovered maps to storage for %s",
+            len(self.last_seen_maps),
             self.device_name,
         )

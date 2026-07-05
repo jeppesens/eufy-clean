@@ -146,6 +146,7 @@ async def async_setup_entry(
         # than expose permanently-`unknown` UI.
         if coordinator.connection_type == "mqtt":
             candidates.append(SceneSelectEntity(coordinator))
+            candidates.append(ActiveMapSelectEntity(coordinator))
         # Room list is normally P2P-only too, but the user can supply a
         # manual {room_id: name} override through the options flow which
         # works on every transport.
@@ -444,6 +445,84 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         await self.coordinator.async_send_command(command)
         self.coordinator.set_active_cleaning_targets(room_ids=[room_id])
 
+        self.async_write_ha_state()
+
+
+class ActiveMapSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
+    """Select entity for switching the active saved map.
+
+    Options are discovered from the cloud map stream: each saved map's id and
+    friendly name arrive as a ``MapDescription`` when the map becomes active
+    (novel/protobuf devices only). The list fills in as maps are seen — a
+    one-time cycle through the maps in the Eufy app, or normal use, populates it;
+    a map shows as ``Map (ID: <id>)`` until its name has been seen. Bulk
+    enumeration (``MAP_GET_ALL``) is delivered over P2P, which this integration
+    does not implement, so this is intentionally a learn-as-seen list.
+
+    Selecting an option sends ``map_load``. NOTE: the robot pose does not
+    re-localize onto the new map until the vacuum next MOVES — see the
+    ``map_load`` service docs for the single-room-clean workaround.
+    """
+
+    supported_api_types = (API_TYPE_NOVEL,)
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize the active-map select."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_active_map"
+        self._attr_has_entity_name = True
+        self._attr_name = "Active Map"
+        self._attr_icon = "mdi:map-outline"
+        self._attr_device_info = coordinator.device_info
+
+    def _known_maps(self) -> dict[int, str]:
+        """Discovered ``{map_id: name}``, including the active map id if unnamed."""
+        maps = dict(self.coordinator.last_seen_maps or {})
+        active = self.coordinator.data.map_id
+        if active and active not in maps:
+            maps[active] = ""  # id-only; label falls back to "Map (ID: <id>)"
+        return maps
+
+    @property
+    def options(self) -> list[str]:
+        """Return discovered maps as labels, sorted by id for stable ordering."""
+        return [
+            _format_option_label({"id": mid, "name": name}, "Map")
+            for mid, name in sorted(self._known_maps().items())
+        ]
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the active map's label."""
+        active = self.coordinator.data.map_id
+        if not active:
+            return None
+        return _format_option_label(
+            {"id": active, "name": self._known_maps().get(active, "")}, "Map"
+        )
+
+    @property
+    def available(self) -> bool:
+        """Available once at least one map has been discovered."""
+        return super().available and bool(self._known_maps())
+
+    async def async_select_option(self, option: str) -> None:
+        """Switch the active map to the selected one via ``map_load``."""
+        target = next(
+            (
+                mid
+                for mid, name in self._known_maps().items()
+                if _format_option_label({"id": mid, "name": name}, "Map") == option
+            ),
+            None,
+        )
+        if target is None:
+            raise HomeAssistantError(f"Unknown map option: {option}")
+
+        command = self.coordinator.build_device_command("map_load", cloud_mapid=target)
+        if not command:
+            raise HomeAssistantError("map_load is not supported on this device")
+        await self.coordinator.async_send_command(command)
         self.async_write_ha_state()
 
 

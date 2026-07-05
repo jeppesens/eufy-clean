@@ -9,6 +9,7 @@ from custom_components.robovac_mqtt.api.map_stream import (
     parse_biz_protocol41,
     render_map_png,
     try_extract_map_data,
+    try_extract_map_description,
 )
 from custom_components.robovac_mqtt.proto.cloud import stream_pb2
 from custom_components.robovac_mqtt.utils import encode_varint
@@ -177,3 +178,42 @@ def test_render_map_png_rejects_oversized():
     map_data = MapData(raw_pixels=b"", width=5000, height=5000)
     with pytest.raises(ValueError, match="exceed safety limit"):
         render_map_png(map_data)
+
+
+# ---------------------------------------------------------------------------
+# try_extract_map_description — map id + name discovery
+# ---------------------------------------------------------------------------
+
+
+def _make_map_desc_hex(map_id: int, name: str) -> str:
+    """Return hex of a varint-prefixed MapDescription proto."""
+    body = stream_pb2.MapDescription(map_id=map_id, name=name).SerializeToString()
+    return (encode_varint(len(body)) + body).hex()
+
+
+def test_map_description_extracts_id_and_name():
+    """A well-formed MapDescription yields (map_id, name)."""
+    assert try_extract_map_description(_make_map_desc_hex(6, "My home")) == (
+        6,
+        "My home",
+    )
+
+
+def test_map_description_rejects_zero_id():
+    """map_id 0 is not a real saved map -> None (drops the RoomParams misparse)."""
+    assert try_extract_map_description(_make_map_desc_hex(0, "My home")) is None
+
+
+def test_map_description_rejects_empty_name():
+    """An empty name is not usable as a label -> None."""
+    assert try_extract_map_description(_make_map_desc_hex(7, "")) is None
+
+
+def test_map_description_rejects_non_printable_name():
+    """A non-printable name signals a misparsed frame -> None."""
+    assert try_extract_map_description(_make_map_desc_hex(7, "bad\x00name")) is None
+
+
+def test_map_description_rejects_garbage():
+    """Non-hex / undecodable input -> None, never raises."""
+    assert try_extract_map_description("zznothex") is None
