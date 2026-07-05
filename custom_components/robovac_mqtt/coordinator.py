@@ -401,6 +401,20 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     new_state, dock_status=effective_current_status
                 )
 
+                # Accumulate every visited map id so the Switch Map selector can
+                # switch to any map the robot has been on. map_id arrives reliably
+                # over this DPS path (the signal the Active Map sensor tracks); the
+                # friendly name is layered in from the biz MapDescription stream
+                # when seen, else the option shows as "Map (ID: <id>)".
+                if (
+                    "map_id" in changes
+                    and new_state.map_id
+                    and new_state.map_id > 0
+                    and new_state.map_id not in self.last_seen_maps
+                ):
+                    self.last_seen_maps[new_state.map_id] = ""
+                    self.hass.async_create_task(self.async_save_maps())
+
                 self.async_set_updated_data(state_to_publish)
 
                 # Re-render now that self.data reflects the new activity/dock state.

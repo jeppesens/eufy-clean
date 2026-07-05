@@ -11,10 +11,10 @@ from homeassistant.exceptions import HomeAssistantError
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.select import (
-    ActiveMapSelectEntity,
     CleaningIntensitySelectEntity,
     CleaningModeSelectEntity,
     DockSelectEntity,
+    MapSelectEntity,
     MopIntensitySelectEntity,
     RoomSelectEntity,
     SceneSelectEntity,
@@ -397,17 +397,17 @@ async def test_legacy_coordinator_excludes_novel_only_selects():
 
 
 # ---------------------------------------------------------------------------
-# ActiveMapSelectEntity — map switching + learn-as-seen discovery
+# MapSelectEntity — map switching + learn-as-seen discovery
 # ---------------------------------------------------------------------------
 
 
 def _active_map_entity(mock_coordinator, maps, active_id):
-    """Build an ActiveMapSelectEntity with discovered maps + an active map id."""
+    """Build a MapSelectEntity with discovered maps + an active map id."""
     mock_coordinator.last_seen_maps = maps
     data = VacuumState()
     data.map_id = active_id
     mock_coordinator.data = data
-    return ActiveMapSelectEntity(mock_coordinator)
+    return MapSelectEntity(mock_coordinator)
 
 
 def test_active_map_options_and_current(mock_coordinator):

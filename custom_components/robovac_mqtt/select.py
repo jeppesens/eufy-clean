@@ -146,7 +146,7 @@ async def async_setup_entry(
         # than expose permanently-`unknown` UI.
         if coordinator.connection_type == "mqtt":
             candidates.append(SceneSelectEntity(coordinator))
-            candidates.append(ActiveMapSelectEntity(coordinator))
+            candidates.append(MapSelectEntity(coordinator))
         # Room list is normally P2P-only too, but the user can supply a
         # manual {room_id: name} override through the options flow which
         # works on every transport.
@@ -448,16 +448,18 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         self.async_write_ha_state()
 
 
-class ActiveMapSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
-    """Select entity for switching the active saved map.
+class MapSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
+    """Writable map switcher ("Switch Map").
 
-    Options are discovered from the cloud map stream: each saved map's id and
-    friendly name arrive as a ``MapDescription`` when the map becomes active
-    (novel/protobuf devices only). The list fills in as maps are seen — a
-    one-time cycle through the maps in the Eufy app, or normal use, populates it;
-    a map shows as ``Map (ID: <id>)`` until its name has been seen. Bulk
-    enumeration (``MAP_GET_ALL``) is delivered over P2P, which this integration
-    does not implement, so this is intentionally a learn-as-seen list.
+    Distinct from the read-only "Active Map" *sensor*: this is the selector you
+    use to change maps. Options accumulate as the robot visits maps — the map id
+    arrives reliably over the DPS state stream (the same signal the Active Map
+    sensor tracks), so every map the robot has been on is appended and becomes
+    switchable, shown as ``Map (ID: <id>)``. A friendly name is layered in when
+    that map's ``MapDescription`` is seen on the biz stream. The list is persisted
+    so it survives restarts. Bulk enumeration (``MAP_GET_ALL``) is P2P-only, so
+    this is a learn-as-seen list — flip each map once (in the app or here) to seed
+    it, after which switching works from HA.
 
     Selecting an option sends ``map_load``. NOTE: the robot pose does not
     re-localize onto the new map until the vacuum next MOVES — see the
@@ -467,11 +469,11 @@ class ActiveMapSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntit
     supported_api_types = (API_TYPE_NOVEL,)
 
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
-        """Initialize the active-map select."""
+        """Initialize the map switcher select."""
         super().__init__(coordinator)
-        self._attr_unique_id = f"{coordinator.device_id}_active_map"
+        self._attr_unique_id = f"{coordinator.device_id}_map_select"
         self._attr_has_entity_name = True
-        self._attr_name = "Active Map"
+        self._attr_name = "Switch Map"
         self._attr_icon = "mdi:map-outline"
         self._attr_device_info = coordinator.device_info
 
