@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components.vacuum import VacuumActivity
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.robovac_mqtt.const import (
     EUFY_CLEAN_CLEAN_SPEED,
@@ -339,4 +340,42 @@ async def test_async_clean_segments_empty_list(mock_coordinator, mock_config_ent
     entity.hass = mock_coordinator.hass
 
     await entity.async_clean_segments([])
+    mock_coordinator.async_send_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_map_load_novel_sends_command(mock_coordinator, mock_config_entry):
+    """map_load on a novel device builds and sends the command."""
+    mock_coordinator.api_type = "novel"
+    mock_coordinator.build_device_command = MagicMock(return_value={"172": "x"})
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    await entity.async_map_load(6, seq=2)
+
+    mock_coordinator.build_device_command.assert_called_once_with(
+        "map_load", cloud_mapid=6, seq=2
+    )
+    mock_coordinator.async_send_command.assert_awaited_once_with({"172": "x"})
+
+
+@pytest.mark.asyncio
+async def test_map_load_scalar_raises(mock_coordinator, mock_config_entry):
+    """map_load on a scalar/legacy device raises instead of silently no-oping."""
+    mock_coordinator.api_type = "scalar"
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    with pytest.raises(HomeAssistantError):
+        await entity.async_map_load(6)
+    mock_coordinator.async_send_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_map_load_empty_command_raises(mock_coordinator, mock_config_entry):
+    """An empty builder result (unsupported / invalid id) raises."""
+    mock_coordinator.api_type = "novel"
+    mock_coordinator.build_device_command = MagicMock(return_value={})
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    with pytest.raises(HomeAssistantError):
+        await entity.async_map_load(6)
     mock_coordinator.async_send_command.assert_not_called()

@@ -5,6 +5,7 @@ import base64
 from custom_components.robovac_mqtt.api.commands import (
     _build_off_peak_sub_bytes,
     build_command,
+    build_map_load_command,
     build_set_boost_iq_command,
     build_set_child_lock_command,
     build_set_cleaning_intensity_command,
@@ -24,6 +25,9 @@ from custom_components.robovac_mqtt.const import (
     SCALAR_DPS,
 )
 from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
+from custom_components.robovac_mqtt.proto.cloud.multi_maps_pb2 import (
+    MultiMapsManageRequest,
+)
 from custom_components.robovac_mqtt.proto.cloud.unisetting_pb2 import UnisettingRequest
 from custom_components.robovac_mqtt.utils import decode, decode_varint, encode_varint
 
@@ -118,6 +122,34 @@ def test_build_command_zone_clean_dispatch():
     decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
     assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ZONES_CLEAN
     assert decoded.select_zones_clean.map_id == 1
+
+
+def test_build_map_load_command():
+    """Map load encodes a MAP_LOAD MultiMapsManageRequest on DPS 172."""
+    result = build_map_load_command(7, seq=5)
+
+    assert DPS_MAP["MULTI_MAP_MANAGE"] in result
+    decoded = decode(MultiMapsManageRequest, result[DPS_MAP["MULTI_MAP_MANAGE"]])
+    assert decoded.method == MultiMapsManageRequest.MAP_LOAD
+    assert decoded.seq == 5
+    assert decoded.common.cloud_mapid == 7
+
+
+def test_build_map_load_command_invalid_id():
+    """A non-positive cloud_mapid dispatches nothing."""
+    assert not build_map_load_command(0)
+    assert not build_map_load_command(-1)
+
+
+def test_build_command_map_load_dispatch():
+    """build_command routes 'map_load' to the map-load builder."""
+    result = build_command("map_load", cloud_mapid=6, seq=2)
+
+    assert DPS_MAP["MULTI_MAP_MANAGE"] in result
+    decoded = decode(MultiMapsManageRequest, result[DPS_MAP["MULTI_MAP_MANAGE"]])
+    assert decoded.method == MultiMapsManageRequest.MAP_LOAD
+    assert decoded.common.cloud_mapid == 6
+    assert decoded.seq == 2
 
 
 # ── G-series scalar command builders (T2210/G50) ─────────────────────

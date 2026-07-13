@@ -526,6 +526,30 @@ def try_extract_map_data(hex_data: str) -> MapData | None:
     )
 
 
+def try_extract_map_description(hex_data: str) -> tuple[int, str] | None:
+    """Extract ``(map_id, name)`` from a biz/ ``MapDescription`` frame, or None.
+
+    Each saved map's id and friendly name arrive over the cloud map stream as a
+    single-shot ``MapDescription`` when that map becomes active (e.g. after a map
+    switch). Other small biz/ frames (robot pose ``DynamicData``, ``RoomParams``)
+    can also decode without raising, so guard strictly: require a positive
+    ``map_id`` and a short, printable name. Used for map discovery (the Active Map
+    selector), which is why only id+name — not pixels — are returned.
+    """
+    try:
+        proto_bytes = _hex_to_proto_bytes(hex_data)
+        desc = stream_pb2.MapDescription().FromString(proto_bytes)
+    except Exception:
+        return None
+    # Strip surrounding whitespace: renaming a map to a name Eufy considers
+    # "unchanged" is rejected, so users seed a name by adding a trailing space —
+    # keep the visible label clean.
+    name = desc.name.strip()
+    if desc.map_id > 0 and name and name.isprintable() and len(name) <= 48:
+        return desc.map_id, name
+    return None
+
+
 def try_decode_as_dynamic_data(hex_data: str) -> tuple[int, int, int] | None:
     """Decode channel as DynamicData robot pose. Returns (x_cm, y_cm, theta_crad) or None."""
     try:

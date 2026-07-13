@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.const import EntityCategory
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
@@ -13,6 +14,7 @@ from custom_components.robovac_mqtt.select import (
     CleaningIntensitySelectEntity,
     CleaningModeSelectEntity,
     DockSelectEntity,
+    MapSelectEntity,
     MopIntensitySelectEntity,
     RoomSelectEntity,
     SceneSelectEntity,
@@ -392,3 +394,62 @@ async def test_legacy_coordinator_excludes_novel_only_selects():
         assert novel_only not in classes, f"{novel_only} should be hidden on legacy"
     # The universal suction-level select stays (set_fan_speed works on legacy).
     assert "SuctionLevelSelectEntity" in classes
+
+
+# ---------------------------------------------------------------------------
+# MapSelectEntity — map switching + learn-as-seen discovery
+# ---------------------------------------------------------------------------
+
+
+def _active_map_entity(mock_coordinator, maps, active_id):
+    """Build a MapSelectEntity with discovered maps + an active map id."""
+    mock_coordinator.last_seen_maps = maps
+    data = VacuumState()
+    data.map_id = active_id
+    mock_coordinator.data = data
+    return MapSelectEntity(mock_coordinator)
+
+
+def test_active_map_options_and_current(mock_coordinator):
+    """Discovered maps become '<name> (ID: <id>)' options; current tracks map_id."""
+    entity = _active_map_entity(mock_coordinator, {6: "My home", 7: "Testing map"}, 6)
+    assert entity.options == ["My home (ID: 6)", "Testing map (ID: 7)"]
+    assert entity.current_option == "My home (ID: 6)"
+
+
+def test_active_map_unnamed_active_falls_back(mock_coordinator):
+    """The active map, seen by id only, shows as 'Map (ID: <id>)'."""
+    entity = _active_map_entity(mock_coordinator, {}, 6)
+    assert entity.options == ["Map (ID: 6)"]
+    assert entity.current_option == "Map (ID: 6)"
+
+
+def test_active_map_empty_when_nothing_known(mock_coordinator):
+    """No discovered maps and no active id -> no options, no current."""
+    entity = _active_map_entity(mock_coordinator, {}, 0)
+    assert entity.options == []
+    assert entity.current_option is None
+
+
+@pytest.mark.asyncio
+async def test_active_map_select_sends_map_load(mock_coordinator):
+    """Selecting a map resolves its id and sends map_load."""
+    entity = _active_map_entity(mock_coordinator, {6: "My home"}, 7)
+    mock_coordinator.build_device_command = MagicMock(return_value={"172": "x"})
+    entity.async_write_ha_state = MagicMock()
+
+    await entity.async_select_option("My home (ID: 6)")
+
+    mock_coordinator.build_device_command.assert_called_once_with(
+        "map_load", cloud_mapid=6
+    )
+    mock_coordinator.async_send_command.assert_awaited_once_with({"172": "x"})
+
+
+@pytest.mark.asyncio
+async def test_active_map_select_unknown_raises(mock_coordinator):
+    """Selecting an option that maps to no known id raises."""
+    entity = _active_map_entity(mock_coordinator, {6: "My home"}, 6)
+    entity.async_write_ha_state = MagicMock()
+    with pytest.raises(HomeAssistantError):
+        await entity.async_select_option("Nope (ID: 99)")

@@ -28,6 +28,7 @@ from ..proto.cloud.control_pb2 import (
     SelectZonesClean,
 )
 from ..proto.cloud.map_edit_pb2 import MapEditRequest
+from ..proto.cloud.multi_maps_pb2 import MultiMapsManageRequest
 from ..proto.cloud.station_pb2 import StationRequest
 from ..proto.cloud.undisturbed_pb2 import UndisturbedRequest
 from ..proto.cloud.unisetting_pb2 import UnisettingRequest
@@ -203,6 +204,36 @@ def build_zone_clean_command(
         )
     )
     return {DPS_MAP["PLAY_PAUSE"]: value}
+
+
+def build_map_load_command(cloud_mapid: int, seq: int = 1) -> dict[str, str]:
+    """Build a command to switch the active map to a saved multi-map by id.
+
+    Sends ``MultiMapsManageRequest{method=MAP_LOAD, common.cloud_mapid=<id>}`` on
+    the multi-map-manage DP (172). *cloud_mapid* is the saved map's id as reported
+    by the device (the ``map_id`` carried in incoming MAP_DATA); *seq* is an
+    arbitrary request sequence number the device echoes back in its ack.
+
+    NOTE — the robot pose does NOT switch automatically. Loading a map switches
+    the active map and its room list right away, but the robot's pose / coordinate
+    frame stays on the previous map until the vacuum RE-LOCALIZES, which only
+    happens once it MOVES. To ground the new map immediately after a switch, run a
+    small movement — a single-room clean (``room_clean`` / ``clean_segments``) is
+    the most reliable, since it targets a stable room id. Prefer starting it from a
+    script or the room LIST in the card; avoid coordinate-based targeting
+    (tap-a-room-on-the-map or zone drawing) until the frame re-grounds — the
+    transform is stale right after a switch. Once the robot moves, the reported
+    position snaps onto the loaded map.
+    """
+    if int(cloud_mapid) <= 0:
+        _LOGGER.warning("map_load ignored: cloud_mapid must be a positive map id")
+        return {}
+    req = MultiMapsManageRequest(
+        method=MultiMapsManageRequest.MAP_LOAD,
+        seq=int(seq),
+        common=MultiMapsManageRequest.Common(cloud_mapid=int(cloud_mapid)),
+    )
+    return {DPS_MAP["MULTI_MAP_MANAGE"]: encode_message(req)}
 
 
 def build_set_room_custom_command(
@@ -616,6 +647,11 @@ def build_command(
             kwargs.get("zones_cm", []),
             kwargs.get("map_id", 3),
             int(kwargs.get("clean_times", 1)),
+        )
+    if cmd == "map_load":
+        return build_map_load_command(
+            int(kwargs.get("cloud_mapid", 0)),
+            int(kwargs.get("seq", 1)),
         )
     if cmd == "set_room_custom":
         return build_set_room_custom_command(
