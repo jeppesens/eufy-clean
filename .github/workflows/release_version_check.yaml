@@ -1,0 +1,25 @@
+name: Release version check
+
+on:
+  push:
+    tags:
+      - "v*"
+  release:
+    types:
+      - published
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Check manifest version matches release tag
+        run: |
+          manifest_version=$(python -c 'import json; print(json.load(open("custom_components/robovac_mqtt/manifest.json"))["version"])')
+          tag_version="${GITHUB_REF_NAME#v}"
+
+          echo "manifest.json: ${manifest_version}"
+          echo "release tag:   ${tag_version}"
+
+          test "${manifest_version}" = "${tag_version}"

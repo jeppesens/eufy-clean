@@ -1,0 +1,102 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, matching manifest.json (for example: 1.12.0)"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a prerelease"
+        required: true
+        default: false
+        type: boolean
+      draft:
+        description: "Create the GitHub release as a draft"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Validate release input
+        run: |
+          if [ "${GITHUB_REF_NAME}" != "main" ]; then
+            echo "::error::Run releases from the main branch, not '${GITHUB_REF_NAME}'."
+            exit 1
+          fi
+
+          version="${{ inputs.version }}"
+          version="${version#v}"
+          tag="v${version}"
+
+          manifest_version=$(python -c 'import json; print(json.load(open("custom_components/robovac_mqtt/manifest.json"))["version"])')
+
+          echo "manifest.json: ${manifest_version}"
+          echo "release input: ${version}"
+          echo "release tag:   ${tag}"
+
+          if [ "${manifest_version}" != "${version}" ]; then
+            echo "::error::manifest.json version (${manifest_version}) must match release version (${version})."
+            exit 1
+          fi
+
+          if git rev-parse "${tag}" >/dev/null 2>&1; then
+            echo "::error::Tag '${tag}' already exists."
+            exit 1
+          fi
+
+          {
+            echo "VERSION=${version}"
+            echo "TAG=${tag}"
+          } >> "${GITHUB_ENV}"
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.14"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest pytest-homeassistant-custom-component
+          pip install -r requirements_test.txt || true
+
+      - name: Run tests
+        run: pytest
+
+      - name: Validate with HACS
+        uses: hacs/action@main
+        with:
+          category: integration
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          args=(
+            "${TAG}"
+            --target "${GITHUB_SHA}"
+            --title "${TAG}"
+            --generate-notes
+          )
+
+          if [ "${{ inputs.prerelease }}" = "true" ]; then
+            args+=(--prerelease)
+          fi
+
+          if [ "${{ inputs.draft }}" = "true" ]; then
+            args+=(--draft)
+          fi
+
+          gh release create "${args[@]}"
