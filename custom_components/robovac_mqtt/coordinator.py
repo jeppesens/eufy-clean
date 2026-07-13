@@ -401,19 +401,16 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     new_state, dock_status=effective_current_status
                 )
 
-                # Accumulate every visited map id so the Switch Map selector can
-                # switch to any map the robot has been on. map_id arrives reliably
-                # over this DPS path (the signal the Active Map sensor tracks); the
-                # friendly name is layered in from the biz MapDescription stream
-                # when seen, else the option shows as "Map (ID: <id>)".
-                if (
-                    "map_id" in changes
-                    and new_state.map_id
-                    and new_state.map_id > 0
-                    and new_state.map_id not in self.last_seen_maps
-                ):
-                    self.last_seen_maps[new_state.map_id] = ""
-                    self.hass.async_create_task(self.async_save_maps())
+                # Remember every visited map id so the Switch Map selector can switch
+                # to any map the robot has been on — including the one active at
+                # STARTUP, which never arrives as a map_id "change" and so was
+                # previously dropped from the selector until the robot switched to it
+                # again. Seeding the current map on every state (not only on a change)
+                # fixes that; the helper no-ops once the id is known, so it stays cheap.
+                # map_id rides this DPS path reliably (the signal the Active Map sensor
+                # tracks); the friendly name is layered in from the biz MapDescription
+                # stream when seen, else the option shows as "Map (ID: <id>)".
+                self._remember_map_id(new_state.map_id)
 
                 self.async_set_updated_data(state_to_publish)
 
@@ -962,6 +959,20 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             len(segments_payload),
             self.device_name,
         )
+
+    def _remember_map_id(self, map_id: int | None) -> None:
+        """Record a visited map id into ``last_seen_maps`` (id-only; the friendly name
+        is layered in later from the biz ``MapDescription`` stream) and persist it.
+
+        The single path both a live DPS ``map_id`` change and the map active at startup
+        go through. The startup map never arrives as a "change", so seeding the current
+        map on every state is what keeps it in the Switch Map selector after switching
+        away. No-op for a missing / non-positive id or one already known, so it is cheap
+        to call on every state update.
+        """
+        if map_id and map_id > 0 and map_id not in self.last_seen_maps:
+            self.last_seen_maps[map_id] = ""
+            self.hass.async_create_task(self.async_save_maps())
 
     async def async_save_maps(self) -> None:
         """Persist discovered saved-map id→name to storage."""

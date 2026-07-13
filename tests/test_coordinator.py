@@ -200,6 +200,81 @@ def test_handle_mqtt_message(mock_hass, mock_login):
         coordinator.async_set_updated_data.assert_called_with(new_state)
 
 
+def test_remember_map_id_seeds_and_dedupes(mock_hass, mock_login):
+    """A visited map id is recorded once and persisted; re-seeing it or a
+    non-positive/missing id is a no-op (cheap to call on every state)."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.async_save_maps = MagicMock()
+
+    coordinator._remember_map_id(4)
+    assert coordinator.last_seen_maps == {4: ""}
+    assert coordinator.async_save_maps.call_count == 1
+
+    # Already known -> no re-write, no extra save.
+    coordinator._remember_map_id(4)
+    assert coordinator.last_seen_maps == {4: ""}
+    assert coordinator.async_save_maps.call_count == 1
+
+    # Non-positive / missing ids are ignored.
+    coordinator._remember_map_id(0)
+    coordinator._remember_map_id(None)
+    assert coordinator.last_seen_maps == {4: ""}
+    assert coordinator.async_save_maps.call_count == 1
+
+
+def test_handle_mqtt_message_seeds_startup_map(mock_hass, mock_login):
+    """The map active at STARTUP is persisted even though it never arrives as a
+    map_id 'change' — regression for the selector dropping it after a switch."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.async_set_updated_data = MagicMock()
+    coordinator.async_save_maps = MagicMock()
+
+    payload_bytes = b'{"payload": {"data": {"101": "val"}}}'
+    with patch(
+        "custom_components.robovac_mqtt.coordinator.update_state"
+    ) as mock_update:
+        # changes == {} -> the startup map_id is NOT flagged as changed.
+        mock_update.return_value = (VacuumState(map_id=4), {})
+        coordinator._handle_mqtt_message(payload_bytes)
+
+    assert coordinator.last_seen_maps == {4: ""}
+    coordinator.async_save_maps.assert_called_once()
+
+
+def test_handle_mqtt_message_switch_keeps_prior_map(mock_hass, mock_login):
+    """Start on map 4, then switch to 6 in the app: both stay in the selector.
+    (The reported bug was 4 disappearing until it was switched back to.)"""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.async_set_updated_data = MagicMock()
+    coordinator.async_save_maps = MagicMock()
+
+    payload_bytes = b'{"payload": {"data": {"101": "val"}}}'
+    with patch(
+        "custom_components.robovac_mqtt.coordinator.update_state"
+    ) as mock_update:
+        mock_update.return_value = (VacuumState(map_id=4), {})  # startup on 4
+        coordinator._handle_mqtt_message(payload_bytes)
+        mock_update.return_value = (VacuumState(map_id=6), {"map_id": 6})  # switch
+        coordinator._handle_mqtt_message(payload_bytes)
+
+    assert coordinator.last_seen_maps == {4: "", 6: ""}
+
+
 @pytest.mark.asyncio
 async def test_async_send_command(mock_hass, mock_login):
     """Test sending commands."""
