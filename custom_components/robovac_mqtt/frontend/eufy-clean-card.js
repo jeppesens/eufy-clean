@@ -104,6 +104,8 @@ class EufyCleanCard extends HTMLElement {
     // so zone drawing + map-tap room select would land wrong until then.
     this._mapSwitchEntity = null; // resolved Switch Map select entity id (or null)
     this._mapSwitchSig = null; // Switch Map option-list signature (rebuild guard)
+    this._mapSwitchPending = null; // target label of an in-flight switch (debounce)
+    this._mapSwitchPendingAt = 0; // Date.now() of that switch (timeout fallback)
     this._lastActiveMap = null; // last-seen Active Map sensor value (switch detector)
     this._frameUngrounded = false; // true during the un-grounded window after a switch
     this._poseAtSwitch = null; // {x,y} raw pose captured at the switch
@@ -137,6 +139,7 @@ class EufyCleanCard extends HTMLElement {
     this._roomPins = {};
     this._lastActiveMap = null; // re-evaluate the frame gate for the (possibly new) vacuum
     this._frameStore = undefined;
+    this._mapSwitchPending = null;
     if (this._built) {
       this._selectsKey = null; // rebuild zone selects on next sync
       this._roomIdKey = null; // rebuild room list on next sync
@@ -348,12 +351,18 @@ class EufyCleanCard extends HTMLElement {
     this._els.modeRooms.addEventListener("click", () => this._setMode("rooms"));
     this._els.modeZones.addEventListener("click", () => this._setMode("zones"));
 
-    // Switch Map picker -> fire the fork's select.<slug>_switch_map (=> map_load).
+    // Switch Map picker -> fire the fork's select.<slug>_switch_map (=> map_load). Debounced:
+    // disable until the active map reflects the pick, so a rapid second switch can't fire
+    // mid-transition (that produces the fork's merged-map ghost).
     this._els.mapswitch.addEventListener("change", () => {
       if (!this._hass || !this._mapSwitchEntity) return;
+      const target = this._els.mapswitch.value;
+      this._mapSwitchPending = target;
+      this._mapSwitchPendingAt = Date.now();
+      this._els.mapswitch.disabled = true;
       this._hass.callService("select", "select_option", {
         entity_id: this._mapSwitchEntity,
-        option: this._els.mapswitch.value,
+        option: target,
       });
     });
 
@@ -852,6 +861,8 @@ class EufyCleanCard extends HTMLElement {
     const avail = !!st && st.state !== "unknown" && st.state !== "unavailable";
     if (!st || !avail || opts.length < 2) {
       this._mapSwitchEntity = null;
+      this._mapSwitchPending = null;
+      this._els.mapswitch.disabled = false;
       this._els.mapbar.hidden = true;
       return;
     }
@@ -861,6 +872,18 @@ class EufyCleanCard extends HTMLElement {
     if (sig !== this._mapSwitchSig) {
       this._els.mapswitch.innerHTML = opts.map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
       this._mapSwitchSig = sig;
+    }
+    // Debounce: while a pick is in flight, keep the dropdown disabled + showing the target
+    // until the active map reflects it (or an 8s timeout), then resume live-syncing its value.
+    if (this._mapSwitchPending != null) {
+      const settled = st.state === this._mapSwitchPending || Date.now() - this._mapSwitchPendingAt > 8000;
+      if (!settled) {
+        this._els.mapswitch.disabled = true;
+        if (this._els.mapswitch.value !== this._mapSwitchPending) this._els.mapswitch.value = this._mapSwitchPending;
+        return;
+      }
+      this._mapSwitchPending = null;
+      this._els.mapswitch.disabled = false;
     }
     if (this._els.mapswitch.value !== st.state) this._els.mapswitch.value = st.state;
   }
