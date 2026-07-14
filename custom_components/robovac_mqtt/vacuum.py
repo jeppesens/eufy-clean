@@ -168,6 +168,16 @@ async def async_setup_entry(
         },
         "async_map_load",
     )
+    # Prune a saved map from the learn-as-seen Switch Map list (a map deleted on the
+    # device or left over after a factory reset). Local-only; the active map can't be
+    # forgotten. See async_forget_map.
+    platform.async_register_entity_service(
+        "forget_map",
+        {
+            vol.Required("cloud_mapid"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        },
+        "async_forget_map",
+    )
 
 
 class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEntity):
@@ -493,6 +503,22 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                 "(unsupported device or invalid map id)"
             )
         await self.coordinator.async_send_command(command)
+
+    async def async_forget_map(self, cloud_mapid: int) -> None:
+        """Remove a saved map from the Switch Map list (``last_seen_maps``).
+
+        For maps that no longer exist on the device — deleted in the app or wiped by a
+        factory reset — which otherwise linger in the selector forever (the list is
+        learn-as-seen; the device exposes no authoritative map list to reconcile
+        against). Local only: nothing is sent to the robot. The ACTIVE map can't be
+        forgotten (it would immediately re-seed); forgetting an unknown id is a no-op.
+        """
+        cloud_mapid = int(cloud_mapid)
+        if cloud_mapid == self.coordinator.data.map_id:
+            raise HomeAssistantError(
+                f"Cannot forget map {cloud_mapid} — it is the active map."
+            )
+        await self.coordinator.async_forget_map(cloud_mapid)
 
     @property
     def supported_features(self) -> VacuumEntityFeature:
