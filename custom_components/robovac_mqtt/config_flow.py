@@ -407,7 +407,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_ROOM_NAMES,
                 default=_format_rooms_text(current.get(CONF_ROOM_NAMES) or {}),
             )
-        ] = cv.string
+        ] = selector.TextSelector(
+            selector.TextSelectorConfig(multiline=True)
+        )
         return self.async_show_form(
             step_id="device",
             data_schema=Schema(schema_dict),
