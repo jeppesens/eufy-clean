@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
+from homeassistant.exceptions import HomeAssistantError
 import voluptuous as vol
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
@@ -459,8 +459,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             return
 
         if len(scene_ids) > 1:
-            _LOGGER.warning(
-                "Multiple scene-based segments selected; only the first scene will be cleaned"
+            raise HomeAssistantError(
+                "Multiple scene-based segments selected; device supports cleaning only a single scene-based segment"
             )
 
         scene_lookup = {

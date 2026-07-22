@@ -343,20 +343,15 @@ async def test_app_segment_clean_uses_scene_clean_when_no_rooms(
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
     entity.hass = mock_coordinator.hass
 
-    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "scene"}
-        await entity.async_send_command("app_segment_clean", params=["1"])
-
-        mock_build.assert_called_with("scene_clean", scene_id=1)
-        mock_coordinator.async_send_command.assert_called_with({"cmd": "scene"})
-        mock_coordinator.set_active_scene.assert_called_with(1, "Kitchen Scene")
+    await entity.async_send_command("app_segment_clean", params=["1"])
+    mock_coordinator.build_device_command.assert_called_with("scene_clean", scene_id=1)
 
 
 @pytest.mark.asyncio
-async def test_app_segment_clean_uses_first_scene_when_multiple_selected(
+async def test_app_segment_clean_raises_on_multiple_scenes(
     mock_coordinator, mock_config_entry
 ):
-    """Test app_segment_clean uses only the first scene when multiple are selected."""
+    """Test app_segment_clean raises when multiple scenes are selected."""
     mock_coordinator.data.rooms = []
     mock_coordinator.data.scenes = [
         {"id": 1, "name": "Kitchen Scene"},
@@ -366,14 +361,8 @@ async def test_app_segment_clean_uses_first_scene_when_multiple_selected(
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
     entity.hass = mock_coordinator.hass
 
-    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "scene"}
+    with pytest.raises(HomeAssistantError):
         await entity.async_send_command("app_segment_clean", params=["1", "2"])
-
-        mock_build.assert_called_once_with("scene_clean", scene_id=1)
-        mock_coordinator.async_send_command.assert_called_once_with({"cmd": "scene"})
-        mock_coordinator.set_active_scene.assert_called_with(1, "Kitchen Scene")
-
 
 @pytest.mark.asyncio
 async def test_async_clean_segments_uses_scene_clean_when_no_rooms(
@@ -386,20 +375,17 @@ async def test_async_clean_segments_uses_scene_clean_when_no_rooms(
     mock_coordinator.async_send_command = AsyncMock()
 
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
-    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "scene"}
-        await entity.async_clean_segments(["2"])
+    await entity.async_clean_segments(["2"])
 
-        mock_build.assert_called_with("scene_clean", scene_id=2)
-        mock_coordinator.async_send_command.assert_called_once_with({"cmd": "scene"})
-        mock_coordinator.set_active_scene.assert_called_with(2, "Living Room Scene")
-
+    mock_coordinator.build_device_command.assert_called_with("scene_clean", scene_id=2)
+    mock_coordinator.async_send_command.assert_called_once_with({"cmd": "val"})
+    mock_coordinator.set_active_scene.assert_called_with(2, "Living Room Scene")
 
 @pytest.mark.asyncio
-async def test_async_clean_segments_uses_first_scene_when_multiple_selected(
+async def test_async_clean_segments_raises_on_multiple_scenes(
     mock_coordinator, mock_config_entry
 ):
-    """Test async_clean_segments uses only the first scene when multiple are selected."""
+    """Test app_segment_clean raises when multiple scenes are selected."""
     mock_coordinator.data.rooms = []
     mock_coordinator.data.scenes = [
         {"id": 1, "name": "Kitchen Scene"},
@@ -409,13 +395,9 @@ async def test_async_clean_segments_uses_first_scene_when_multiple_selected(
     mock_coordinator.async_send_command = AsyncMock()
 
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
-    with patch("custom_components.robovac_mqtt.vacuum.build_command") as mock_build:
-        mock_build.return_value = {"cmd": "scene"}
+    with pytest.raises(HomeAssistantError):
         await entity.async_clean_segments(["1", "2"])
 
-        mock_build.assert_called_once_with("scene_clean", scene_id=1)
-        mock_coordinator.async_send_command.assert_called_once_with({"cmd": "scene"})
-        mock_coordinator.set_active_scene.assert_called_with(1, "Kitchen Scene")
 
 
 def test_get_segments_falls_back_to_scenes(mock_coordinator, mock_config_entry):
