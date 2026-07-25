@@ -711,12 +711,35 @@ class EufyCleanCard extends HTMLElement {
   }
 
   // --- map switch + post-switch frame gate ---------------------------------------------------
-  // Raw robot pose from the fork's coordinate sensors, or null.
-  _readPose(slug) {
+  // Resolve a per-vacuum sensor by DEVICE SIBLING (same device as the vacuum), then fall back to
+  // the slug-based id — the same robustness as _resolveMapSwitchEntity(). Without this the gate's
+  // active-map + pose lookups were slug-only, so a renamed / area-prefixed setup showed a working
+  // Switch Map picker while the post-switch safety gate silently no-op'd (found no active_map
+  // sensor by slug and cleared itself). Returns an entity id, or null.
+  _resolveSiblingEntity(domain, suffix) {
+    const hass = this._hass;
+    const vac = this._config && this._config.vacuum;
+    if (!hass || !vac) return null;
+    const ents = hass.entities || {};
+    const devId = ents[vac] && ents[vac].device_id;
+    if (devId) {
+      for (const [eid, e] of Object.entries(ents)) {
+        if (e && e.device_id === devId && eid.startsWith(`${domain}.`) && eid.endsWith(suffix)) return eid;
+      }
+    }
+    const slug = vac.split(".")[1] || "";
+    const guess = `${domain}.${slug}${suffix}`;
+    return hass.states && hass.states[guess] ? guess : null;
+  }
+
+  // Raw robot pose from the fork's coordinate sensors (device-sibling resolved), or null.
+  _readPose() {
     const st = this._hass && this._hass.states;
     if (!st) return null;
-    const xs = st[`sensor.${slug}_robot_position_x_raw`];
-    const ys = st[`sensor.${slug}_robot_position_y_raw`];
+    const xid = this._resolveSiblingEntity("sensor", "_robot_position_x_raw");
+    const yid = this._resolveSiblingEntity("sensor", "_robot_position_y_raw");
+    const xs = xid && st[xid];
+    const ys = yid && st[yid];
     if (!xs || !ys) return null;
     const x = Number(xs.state);
     const y = Number(ys.state);
@@ -756,8 +779,8 @@ class EufyCleanCard extends HTMLElement {
     const hass = this._hass;
     const vac = this._config && this._config.vacuum;
     if (!hass || !vac) return;
-    const slug = vac.split(".")[1] || "";
-    const am = hass.states[`sensor.${slug}_active_map`];
+    const amId = this._resolveSiblingEntity("sensor", "_active_map");
+    const am = amId && hass.states[amId];
     const token = am ? am.state : null;
     if (token == null || token === "unknown" || token === "unavailable" || token === "") {
       this._frameUngrounded = false; // no active-map signal -> nothing to reason about
@@ -768,7 +791,7 @@ class EufyCleanCard extends HTMLElement {
     const lock = () => {
       this._frameUngrounded = true;
       this._frameAck = false;
-      this._poseAtSwitch = this._readPose(slug);
+      this._poseAtSwitch = this._readPose();
       this._zones = []; // old-map frame — drop drawn zones so nothing stale dispatches
       this._drag = null;
       if (this._built) this._renderOverlay();
@@ -793,7 +816,7 @@ class EufyCleanCard extends HTMLElement {
     if (this._frameUngrounded && !this._frameAck) {
       const vs = hass.states[vac];
       const moving = vs && (vs.state === "cleaning" || vs.state === "returning");
-      const now = this._readPose(slug);
+      const now = this._readPose();
       const p0 = this._poseAtSwitch;
       const moved = now && p0 && Math.hypot(now.x - p0.x, now.y - p0.y) > POSE_MOVE_THRESHOLD;
       if (moving || moved) this._frameUngrounded = false;
