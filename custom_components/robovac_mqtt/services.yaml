@@ -78,3 +78,30 @@ map_load:
         number:
           min: 0
           mode: box
+
+forget_map:
+  name: Forget map
+  description: >-
+    Remove a saved map from the "Switch Map" list. The list is learn-as-seen — the
+    integration remembers every map the robot has reported and never drops one, because
+    the device gives no authoritative list of its current maps to reconcile against. So
+    a map deleted in the app, or wiped by a factory reset, keeps showing in the selector
+    forever. Use this to prune it. Local only: nothing is sent to the robot, and the
+    map on the device is untouched. The ACTIVE map cannot be forgotten (it would
+    immediately re-appear); forgetting an id that isn't in the list does nothing.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    cloud_mapid:
+      name: Cloud map id
+      description: >-
+        The id of the saved map to forget, as shown in the "Switch Map" select entity
+        ("Map (ID: <id>)").
+      required: true
+      example: 7
+      selector:
+        number:
+          min: 1
+          mode: box

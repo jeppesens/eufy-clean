@@ -984,3 +984,19 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             len(self.last_seen_maps),
             self.device_name,
         )
+
+    async def async_forget_map(self, cloud_mapid: int) -> bool:
+        """Drop a map id from ``last_seen_maps``, persist, and refresh listeners so the
+        Switch Map selector stops offering it.
+
+        For maps that no longer exist on the device — deleted in the app or wiped by a
+        factory reset — which otherwise linger forever: the list is learn-as-seen and the
+        device exposes no authoritative map list to auto-reconcile against. Local only;
+        nothing is sent to the robot. Returns True if a map was removed.
+        """
+        if self.last_seen_maps.pop(cloud_mapid, None) is None:
+            return False
+        await self.async_save_maps()
+        self.async_update_listeners()
+        _LOGGER.debug("Forgot map %d for %s", cloud_mapid, self.device_name)
+        return True

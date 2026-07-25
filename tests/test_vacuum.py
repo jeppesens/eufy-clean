@@ -378,4 +378,28 @@ async def test_map_load_empty_command_raises(mock_coordinator, mock_config_entry
 
     with pytest.raises(HomeAssistantError):
         await entity.async_map_load(6)
+
+
+@pytest.mark.asyncio
+async def test_forget_map_delegates_to_coordinator(mock_coordinator, mock_config_entry):
+    """Forgetting a non-active map delegates to the coordinator prune (local-only)."""
+    mock_coordinator.data.map_id = 11
+    mock_coordinator.async_forget_map = AsyncMock(return_value=True)
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    await entity.async_forget_map(6)
+
+    mock_coordinator.async_forget_map.assert_awaited_once_with(6)
+
+
+@pytest.mark.asyncio
+async def test_forget_map_active_raises(mock_coordinator, mock_config_entry):
+    """The active map cannot be forgotten (it would immediately re-seed)."""
+    mock_coordinator.data.map_id = 11
+    mock_coordinator.async_forget_map = AsyncMock()
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    with pytest.raises(HomeAssistantError):
+        await entity.async_forget_map(11)
+    mock_coordinator.async_forget_map.assert_not_called()
     mock_coordinator.async_send_command.assert_not_called()

@@ -227,6 +227,34 @@ def test_remember_map_id_seeds_and_dedupes(mock_hass, mock_login):
     assert coordinator.async_save_maps.call_count == 1
 
 
+@pytest.mark.asyncio
+async def test_async_forget_map_prunes_and_persists(mock_hass, mock_login):
+    """forget_map drops a known id, persists, and refreshes listeners so the Switch Map
+    selector stops offering it; an unknown id is a no-op (returns False, no extra work)."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.last_seen_maps = {6: "Home", 7: "Spare", 11: ""}
+    coordinator.async_save_maps = AsyncMock()
+    coordinator.async_update_listeners = MagicMock()
+
+    removed = await coordinator.async_forget_map(6)
+    assert removed is True
+    assert coordinator.last_seen_maps == {7: "Spare", 11: ""}
+    coordinator.async_save_maps.assert_awaited_once()
+    coordinator.async_update_listeners.assert_called_once()
+
+    # Unknown id -> no removal, no extra save/refresh.
+    removed = await coordinator.async_forget_map(99)
+    assert removed is False
+    assert coordinator.last_seen_maps == {7: "Spare", 11: ""}
+    coordinator.async_save_maps.assert_awaited_once()
+    coordinator.async_update_listeners.assert_called_once()
+
+
 def test_handle_mqtt_message_seeds_startup_map(mock_hass, mock_login):
     """The map active at STARTUP is persisted even though it never arrives as a
     map_id 'change' — regression for the selector dropping it after a switch."""
