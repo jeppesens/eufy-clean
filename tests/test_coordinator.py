@@ -10,7 +10,10 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.robovac_mqtt.api.map_stream import MapData
-from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
+from custom_components.robovac_mqtt.coordinator import (
+    _ERROR_LOG_MAX,
+    EufyCleanCoordinator,
+)
 from custom_components.robovac_mqtt.models import VacuumState
 
 
@@ -659,3 +662,114 @@ async def test_cloud_poll_backoff_caps_at_max(mock_hass, mock_login):
         await coordinator._async_update_data()
 
     assert coordinator.update_interval <= timedelta(minutes=5)
+
+
+# ---------------------------------------------------------------------------
+# Persisted error/warn history (the errors eufy-clean used to throw away)
+# ---------------------------------------------------------------------------
+
+
+def _make_error_coordinator(mock_hass, mock_login):
+    """A novel coordinator with the error store stubbed out (no real I/O)."""
+    device_info = {
+        "deviceId": "err_dev",
+        "deviceModel": "T2118",
+        "deviceName": "Err Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    # Don't touch the real Store; just record that a save was requested.
+    coordinator._async_save_error_log = MagicMock()
+    coordinator.data = VacuumState()
+    return coordinator
+
+
+def test_log_error_event_records_fresh_fault(mock_hass, mock_login):
+    """A fresh fault is appended to the history, newest-first, and saved."""
+    coordinator = _make_error_coordinator(mock_hass, mock_login)
+
+    new_state = VacuumState(
+        error_code=177, error_codes=[177], warn_codes=[],
+        new_error_codes=[177], error_message="STATION DIRTY",
+    )
+    coordinator._log_error_event(
+        new_state, {"error_code": 177, "new_error_codes": [177]}
+    )
+
+    assert len(new_state.error_log) == 1
+    assert new_state.error_log[0]["error_code"] == 177
+    assert new_state.error_log[0]["error_message"] == "STATION DIRTY"
+    assert coordinator._async_save_error_log.call_count == 1
+
+
+def test_log_error_event_dedupes_ongoing_fault(mock_hass, mock_login):
+    """The same fault re-reported on later updates is NOT re-logged.
+
+    In the scalar path ``new_error_codes`` carries forward on the state but is
+    absent from ``changes`` once the fault stops being fresh — the guard must
+    read ``changes``, not the carried-forward state field.
+    """
+    coordinator = _make_error_coordinator(mock_hass, mock_login)
+
+    s1 = VacuumState(error_code=177, error_codes=[177], new_error_codes=[177])
+    coordinator._log_error_event(s1, {"error_code": 177, "new_error_codes": [177]})
+    assert len(s1.error_log) == 1
+
+    # Advance: the fault is now the current (previous) state.
+    coordinator.data = s1
+    # Same fault still active — new_error_codes carried forward on the state,
+    # but changes only carries error_code (unchanged value).
+    s2 = VacuumState(
+        error_code=177, error_codes=[177], new_error_codes=[177],
+        error_log=list(s1.error_log),
+    )
+    coordinator._log_error_event(s2, {"error_code": 177})
+    assert len(s2.error_log) == 1  # not re-logged
+    assert coordinator._async_save_error_log.call_count == 1  # only the first
+
+
+def test_log_error_event_legacy_transition_backstop(mock_hass, mock_login):
+    """Legacy has no new_code: a clear->fault transition is still logged."""
+    coordinator = _make_error_coordinator(mock_hass, mock_login)
+
+    new_state = VacuumState(error_code=106, error_codes=[106])
+    coordinator._log_error_event(new_state, {"error_code": 106})  # no new_error_codes
+    assert len(new_state.error_log) == 1
+    assert new_state.error_log[0]["error_code"] == 106
+
+
+def test_log_error_event_records_obstacle_and_battery(mock_hass, mock_login):
+    """Obstacle (poop) reminders and battery swaps are logged even with no fault."""
+    coordinator = _make_error_coordinator(mock_hass, mock_login)
+
+    obstacle = {"type": 0, "type_name": "poop", "photo_id": "p1",
+                "accuracy": 90, "map_id": 2, "x": 100, "y": 200}
+    new_state = VacuumState(
+        obstacle_reminders=[obstacle], battery_restored=True,
+    )
+    coordinator._log_error_event(
+        new_state,
+        {"obstacle_reminders": [obstacle], "battery_restored": True},
+    )
+    assert len(new_state.error_log) == 1
+    entry = new_state.error_log[0]
+    assert entry["obstacle_reminders"][0]["type_name"] == "poop"
+    assert entry["battery_restored"] is True
+
+
+def test_log_error_event_caps_history(mock_hass, mock_login):
+    """The rolling history is capped at _ERROR_LOG_MAX, newest-first."""
+    coordinator = _make_error_coordinator(mock_hass, mock_login)
+    log: list = []
+    for code in range(_ERROR_LOG_MAX + 10):
+        state = VacuumState(
+            error_code=code + 1, error_codes=[code + 1],
+            new_error_codes=[code + 1], error_log=log,
+        )
+        coordinator._log_error_event(
+            state, {"error_code": code + 1, "new_error_codes": [code + 1]}
+        )
+        log = state.error_log
+
+    assert len(log) == _ERROR_LOG_MAX
+    # Newest entry (highest code) is first.
+    assert log[0]["error_code"] == _ERROR_LOG_MAX + 10
