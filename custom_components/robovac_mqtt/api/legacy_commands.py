@@ -78,8 +78,6 @@ def _build_clean_spot(**kwargs: Any) -> dict[str, Any]:
 
 
 def _build_room_clean(**kwargs: Any) -> dict[str, Any]:
-    """Legacy room clean — no room IDs supported, just sets mode."""
-
     if kwargs.get("room_ids"):
         payload_dict = {
             "method": "selectRoomsClean",
@@ -101,7 +99,10 @@ def _build_room_clean(**kwargs: Any) -> dict[str, Any]:
             LEGACY_DPS_MAP["PLAY_PAUSE"]: True,
             LEGACY_DPS_MAP["WORK_MODE"]: "room",
         }
-    return {}
+    return {
+        LEGACY_DPS_MAP["PLAY_PAUSE"]: True,
+        LEGACY_DPS_MAP["WORK_MODE"]: "room",
+    }
 
 
 def _build_edge_clean(**kwargs: Any) -> dict[str, Any]:
