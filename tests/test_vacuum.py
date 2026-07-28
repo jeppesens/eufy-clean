@@ -364,6 +364,7 @@ async def test_app_segment_clean_raises_on_multiple_scenes(
     with pytest.raises(HomeAssistantError):
         await entity.async_send_command("app_segment_clean", params=["1", "2"])
 
+
 @pytest.mark.asyncio
 async def test_async_clean_segments_uses_scene_clean_when_no_rooms(
     mock_coordinator, mock_config_entry
@@ -381,6 +382,7 @@ async def test_async_clean_segments_uses_scene_clean_when_no_rooms(
     mock_coordinator.async_send_command.assert_called_once_with({"cmd": "val"})
     mock_coordinator.set_active_scene.assert_called_with(2, "Living Room Scene")
 
+
 @pytest.mark.asyncio
 async def test_async_clean_segments_raises_on_multiple_scenes(
     mock_coordinator, mock_config_entry
@@ -397,7 +399,6 @@ async def test_async_clean_segments_raises_on_multiple_scenes(
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
     with pytest.raises(HomeAssistantError):
         await entity.async_clean_segments(["1", "2"])
-
 
 
 def test_get_segments_falls_back_to_scenes(mock_coordinator, mock_config_entry):
