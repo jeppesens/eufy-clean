@@ -41,6 +41,10 @@
 const MAX_ZONES = 10;
 const MIN_FRAC = 0.012; // reject degenerate drags smaller than ~1% of the map in either axis
 const TAP_FRAC = 0.03; // a press that moves less than this counts as a tap (rooms mode)
+// Raw-position delta (device units) beyond which the robot is treated as having moved ->
+// re-localized onto the newly switched map. The docked pose is stable (no jitter), so any
+// genuine move clears the post-switch draw pause; a docked robot stays paused.
+const POSE_MOVE_THRESHOLD = 5;
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
 
 // --- per-room setting vocabularies: [display label, command value] -------------------------
@@ -95,6 +99,17 @@ class EufyCleanCard extends HTMLElement {
     this._built = false;
     this._dispatching = false; // in-flight send guard (prevents double-dispatch)
     this._lastImgSrc = "";
+    // map switch + post-switch coordinate-frame gate (card-side detection). After a
+    // map switch the frame stays on the old map until the robot MOVES and re-localizes,
+    // so zone drawing + map-tap room select would land wrong until then.
+    this._mapSwitchEntity = null; // resolved Switch Map select entity id (or null)
+    this._mapSwitchSig = null; // Switch Map option-list signature (rebuild guard)
+    this._mapSwitchPending = null; // target label of an in-flight switch (debounce)
+    this._mapSwitchPendingAt = 0; // Date.now() of that switch (timeout fallback)
+    this._lastActiveMap = null; // last-seen Active Map sensor value (switch detector)
+    this._frameUngrounded = false; // true during the un-grounded window after a switch
+    this._poseAtSwitch = null; // {x,y} raw pose captured at the switch
+    this._frameAck = false; // power-user override, until the next switch re-arms it
   }
 
   // ROOMS for eufy-clean-card; the zone-clean-card alias overrides this to ZONES.
@@ -122,6 +137,9 @@ class EufyCleanCard extends HTMLElement {
     this._drag = null;
     this._sel = [];
     this._roomPins = {};
+    this._lastActiveMap = null; // re-evaluate the frame gate for the (possibly new) vacuum
+    this._frameStore = undefined;
+    this._mapSwitchPending = null;
     if (this._built) {
       this._selectsKey = null; // rebuild zone selects on next sync
       this._roomIdKey = null; // rebuild room list on next sync
@@ -206,6 +224,28 @@ class EufyCleanCard extends HTMLElement {
         .overlay[hidden] { display: none; }
         .nomap { padding: 40px 12px; text-align: center; color: var(--secondary-text-color); font-size: 0.9rem; }
 
+        /* Switch Map picker (surfaces the fork's select.<slug>_switch_map) */
+        .mapbar { align-items: center; gap: 8px; margin-bottom: 8px; }
+        .mapbar[hidden] { display: none; }
+        .mapbar:not([hidden]) { display: flex; }
+        .mapbar-label { font-size: 0.7rem; color: var(--secondary-text-color); text-transform: uppercase; letter-spacing: 0.03em; }
+        .mapbar select { flex: 0 1 240px; padding: 6px 8px; border-radius: 6px; border: 1px solid var(--divider-color);
+                         background: var(--card-background-color); color: var(--primary-text-color); font-size: 0.88rem; }
+
+        /* Post-switch safety banner — the coordinate frame is un-grounded until the robot
+           re-localizes, so drawing/tap-select is paused. Floats over the map. */
+        .gate { position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%); z-index: 2;
+                display: flex; align-items: center; gap: 10px; max-width: calc(100% - 20px);
+                padding: 8px 12px; border-radius: 8px; font-size: 0.8rem; line-height: 1.35;
+                color: var(--primary-text-color);
+                background: color-mix(in srgb, var(--card-background-color) 92%, transparent);
+                border: 1px solid var(--warning-color, #d97706); box-shadow: 0 2px 10px rgba(0, 0, 0, 0.3); }
+        .gate[hidden] { display: none; }
+        .gate-msg { flex: 1 1 auto; }
+        .gate-ack { flex: 0 0 auto; white-space: nowrap; font: inherit; font-size: 0.8rem; padding: 5px 10px;
+                    border-radius: 6px; border: 1px solid var(--divider-color); cursor: pointer;
+                    background: transparent; color: var(--primary-text-color); }
+
         /* rooms */
         .rooms { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
         .rooms .empty { padding: 28px 12px; text-align: center; color: var(--secondary-text-color); font-size: 0.9rem; }
@@ -257,10 +297,18 @@ class EufyCleanCard extends HTMLElement {
           <button class="mode-rooms" type="button">Rooms</button>
           <button class="mode-zones" type="button">Zones</button>
         </div>
+        <div class="mapbar" hidden>
+          <label class="mapbar-label">Map</label>
+          <select class="mapswitch"></select>
+        </div>
         <div class="map-wrap">
           <img class="map" alt="vacuum map" />
           <svg class="overlay" preserveAspectRatio="none"></svg>
           <div class="nomap" hidden>Waiting for the map… run a clean once (or edit the map in the app) so it renders.</div>
+          <div class="gate" hidden>
+            <span class="gate-msg"></span>
+            <button class="gate-ack" type="button">Enable drawing anyway</button>
+          </div>
         </div>
         <div class="rooms"></div>
         <div class="settings" hidden></div>
@@ -280,10 +328,15 @@ class EufyCleanCard extends HTMLElement {
       modebar: this.shadowRoot.querySelector(".modebar"),
       modeRooms: this.shadowRoot.querySelector(".mode-rooms"),
       modeZones: this.shadowRoot.querySelector(".mode-zones"),
+      mapbar: this.shadowRoot.querySelector(".mapbar"),
+      mapswitch: this.shadowRoot.querySelector(".mapswitch"),
       mapWrap: this.shadowRoot.querySelector(".map-wrap"),
       img: this.shadowRoot.querySelector("img.map"),
       overlay: this.shadowRoot.querySelector("svg.overlay"),
       nomap: this.shadowRoot.querySelector(".nomap"),
+      gate: this.shadowRoot.querySelector(".gate"),
+      gateMsg: this.shadowRoot.querySelector(".gate-msg"),
+      gateAck: this.shadowRoot.querySelector(".gate-ack"),
       rooms: this.shadowRoot.querySelector(".rooms"),
       settings: this.shadowRoot.querySelector(".settings"),
       passes: this.shadowRoot.querySelector(".passes"),
@@ -298,6 +351,32 @@ class EufyCleanCard extends HTMLElement {
     this._els.modeRooms.addEventListener("click", () => this._setMode("rooms"));
     this._els.modeZones.addEventListener("click", () => this._setMode("zones"));
 
+    // Switch Map picker -> fire the fork's select.<slug>_switch_map (=> map_load). Debounced:
+    // disable until the active map reflects the pick, so a rapid second switch can't fire
+    // mid-transition (that produces the fork's merged-map ghost).
+    this._els.mapswitch.addEventListener("change", () => {
+      if (!this._hass || !this._mapSwitchEntity) return;
+      const target = this._els.mapswitch.value;
+      this._mapSwitchPending = target;
+      this._mapSwitchPendingAt = Date.now();
+      this._els.mapswitch.disabled = true;
+      this._hass.callService("select", "select_option", {
+        entity_id: this._mapSwitchEntity,
+        option: target,
+      });
+    });
+
+    // Override: re-enable drawing/tap-select in the un-grounded window (and remember it,
+    // so a reload doesn't re-lock the map the user just confirmed).
+    this._els.gateAck.addEventListener("click", () => {
+      this._frameAck = true;
+      this._frameUngrounded = false;
+      if (this._lastActiveMap != null) {
+        this._saveFrameStore(this._config.vacuum, { map: this._lastActiveMap, grounded: true });
+      }
+      this._applyGate();
+    });
+
     // overlay pointer handlers (mouse + touch): draw boxes in zones, tap-to-pick in rooms
     const ov = this._els.overlay;
     const toFrac = (e) => {
@@ -306,6 +385,7 @@ class EufyCleanCard extends HTMLElement {
     };
     ov.addEventListener("pointerdown", (e) => {
       if (!this._els.nomap.hidden) return; // no map yet
+      if (this._frameUngrounded) return; // paused after a map switch until re-localized
       if (this._mode === "zones") {
         ov.setPointerCapture(e.pointerId);
         const p = toFrac(e);
@@ -397,6 +477,7 @@ class EufyCleanCard extends HTMLElement {
     this._els.rooms.hidden = !rooms;
     this._els.settings.hidden = !zones; // global setting selects belong to zones
     this._els.passes.hidden = !zones; // single passes input belongs to zones
+    this._applyGate(); // the post-switch pause owns the cursor + banner when active
     this._renderOverlay(); // repaint the correct overlay content for the mode
   }
 
@@ -409,7 +490,7 @@ class EufyCleanCard extends HTMLElement {
     const slug = this._config.vacuum.split(".")[1] || "";
     if (!slug) return [];
     return Object.keys(this._hass.states)
-      .filter((e) => e.startsWith(`select.${slug}_`))
+      .filter((e) => e.startsWith(`select.${slug}_`) && !e.endsWith("_switch_map"))
       .sort();
   }
 
@@ -587,7 +668,7 @@ class EufyCleanCard extends HTMLElement {
   // Resolve a tap on the live map to a room (server-side hit-test against the room mask) and
   // toggle it. No client-side geometry needed — the integration owns the mask + transforms.
   async _resolveRoomTap(nx, ny) {
-    if (!this._hass) return;
+    if (!this._hass || this._frameUngrounded) return;
     let rid = 0;
     try {
       const r = await this._hass.callService(
@@ -629,10 +710,213 @@ class EufyCleanCard extends HTMLElement {
     }
   }
 
+  // --- map switch + post-switch frame gate ---------------------------------------------------
+  // Resolve a per-vacuum sensor by DEVICE SIBLING (same device as the vacuum), then fall back to
+  // the slug-based id — the same robustness as _resolveMapSwitchEntity(). Without this the gate's
+  // active-map + pose lookups were slug-only, so a renamed / area-prefixed setup showed a working
+  // Switch Map picker while the post-switch safety gate silently no-op'd (found no active_map
+  // sensor by slug and cleared itself). Returns an entity id, or null.
+  _resolveSiblingEntity(domain, suffix) {
+    const hass = this._hass;
+    const vac = this._config && this._config.vacuum;
+    if (!hass || !vac) return null;
+    const ents = hass.entities || {};
+    const devId = ents[vac] && ents[vac].device_id;
+    if (devId) {
+      for (const [eid, e] of Object.entries(ents)) {
+        if (e && e.device_id === devId && eid.startsWith(`${domain}.`) && eid.endsWith(suffix)) return eid;
+      }
+    }
+    const slug = vac.split(".")[1] || "";
+    const guess = `${domain}.${slug}${suffix}`;
+    return hass.states && hass.states[guess] ? guess : null;
+  }
+
+  // Raw robot pose from the fork's coordinate sensors (device-sibling resolved), or null.
+  _readPose() {
+    const st = this._hass && this._hass.states;
+    if (!st) return null;
+    const xid = this._resolveSiblingEntity("sensor", "_robot_position_x_raw");
+    const yid = this._resolveSiblingEntity("sensor", "_robot_position_y_raw");
+    const xs = xid && st[xid];
+    const ys = yid && st[yid];
+    if (!xs || !ys) return null;
+    const x = Number(xs.state);
+    const y = Number(ys.state);
+    if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+    return { x, y };
+  }
+
+  // localStorage-backed grounding memory (per vacuum) so the un-grounded state survives a
+  // card reload / HA restart: a switch made while the card was closed still re-locks the map
+  // on reopen until the robot re-localizes. Best-effort — no-ops if storage is unavailable.
+  _frameKey(vac) {
+    return `eufy-clean-card:frame:${vac}`;
+  }
+  _loadFrameStore(vac) {
+    try {
+      return JSON.parse(localStorage.getItem(this._frameKey(vac))) || {};
+    } catch (e) {
+      return {};
+    }
+  }
+  _saveFrameStore(vac, store) {
+    try {
+      localStorage.setItem(this._frameKey(vac), JSON.stringify(store));
+    } catch (e) {
+      /* private mode / quota — best effort */
+    }
+    this._frameStore = store;
+  }
+
+  // Track whether the coordinate frame is grounded on the ACTIVE map (card-side mirror of the
+  // integration's server-side gate). After a switch the frame stays on the old map until the
+  // robot MOVES and re-localizes, so drawing a zone / tapping a room lands wrong. Detect a
+  // switch off the Active Map sensor (numeric id -> rename-proof); clear on a pose move past
+  // the threshold, a cleaning/returning state, or the override. The grounded conclusion is
+  // PERSISTED per vacuum, so a switch while the card was closed re-locks on the next load.
+  _updateFrameGate() {
+    const hass = this._hass;
+    const vac = this._config && this._config.vacuum;
+    if (!hass || !vac) return;
+    const amId = this._resolveSiblingEntity("sensor", "_active_map");
+    const am = amId && hass.states[amId];
+    const token = am ? am.state : null;
+    if (token == null || token === "unknown" || token === "unavailable" || token === "") {
+      this._frameUngrounded = false; // no active-map signal -> nothing to reason about
+      return;
+    }
+    if (this._frameStore === undefined) this._frameStore = this._loadFrameStore(vac);
+
+    const lock = () => {
+      this._frameUngrounded = true;
+      this._frameAck = false;
+      this._poseAtSwitch = this._readPose();
+      this._zones = []; // old-map frame — drop drawn zones so nothing stale dispatches
+      this._drag = null;
+      if (this._built) this._renderOverlay();
+    };
+
+    if (this._lastActiveMap == null) {
+      // First evaluation this session — reconcile against the persisted grounded map.
+      const store = this._frameStore || {};
+      if (store.map === undefined) {
+        this._frameUngrounded = false; // brand-new card: trust the docked robot's current map
+      } else if (store.map === token && store.grounded) {
+        this._frameUngrounded = false; // same map we last confirmed grounded on
+      } else {
+        lock(); // active map differs from the last confirmed grounding (maybe while closed)
+      }
+    } else if (token !== this._lastActiveMap) {
+      lock(); // live switch while the card is open
+    }
+    this._lastActiveMap = token;
+
+    // Clear once the robot has re-localized (moved / cleaning) or the user overrode.
+    if (this._frameUngrounded && !this._frameAck) {
+      const vs = hass.states[vac];
+      const moving = vs && (vs.state === "cleaning" || vs.state === "returning");
+      const now = this._readPose();
+      const p0 = this._poseAtSwitch;
+      const moved = now && p0 && Math.hypot(now.x - p0.x, now.y - p0.y) > POSE_MOVE_THRESHOLD;
+      if (moving || moved) this._frameUngrounded = false;
+    }
+    if (this._frameAck) this._frameUngrounded = false;
+
+    // Persist the current grounded conclusion for this map (write only on change).
+    const grounded = !this._frameUngrounded;
+    const cur = this._frameStore || {};
+    if (cur.map !== token || cur.grounded !== grounded) {
+      this._saveFrameStore(vac, { map: token, grounded });
+    }
+  }
+
+  // Reflect the gate: show/hide the banner + neutralize the overlay cursor while paused.
+  _applyGate() {
+    if (!this._built) return;
+    const gated = !!this._frameUngrounded;
+    this._els.gate.hidden = !gated;
+    if (gated) {
+      this._drag = null;
+      this._els.gateMsg.textContent =
+        "Map not localized yet — drawing and tap-select are paused. Move the robot or run a clean.";
+      this._els.overlay.style.cursor = "not-allowed";
+    } else {
+      const zones = this._mode === "zones" && this._hasCamera();
+      this._els.overlay.style.cursor = zones ? "crosshair" : "pointer";
+    }
+  }
+
+  // Resolve the fork's per-vacuum Switch Map select. Naming is NOT reliable (the select's
+  // entity_id slug can differ from the vacuum's — e.g. an area-prefixed camera/device), so
+  // prefer the registry device-sibling (same device as the vacuum, like the VA backend),
+  // then fall back to a slug guess, then to a lone select.*_switch_map if there is exactly one.
+  _resolveMapSwitchEntity() {
+    const hass = this._hass;
+    if (!hass) return null;
+    const vac = this._config.vacuum;
+    const ents = hass.entities || {};
+    const vreg = ents[vac];
+    const devId = vreg && vreg.device_id;
+    if (devId) {
+      for (const [eid, e] of Object.entries(ents)) {
+        if (!e || e.device_id !== devId || !eid.startsWith("select.")) continue;
+        if (eid.endsWith("_switch_map")) return eid;
+        const st = hass.states[eid];
+        const fn = st && st.attributes && st.attributes.friendly_name;
+        if (fn && /switch map/i.test(fn)) return eid;
+      }
+    }
+    const slug = (vac || "").split(".")[1] || "";
+    if (slug && hass.states[`select.${slug}_switch_map`]) return `select.${slug}_switch_map`;
+    const all = Object.keys(hass.states).filter((e) => e.startsWith("select.") && e.endsWith("_switch_map"));
+    return all.length === 1 ? all[0] : null;
+  }
+
+  // Surface the fork's per-vacuum Switch Map select as a compact picker; shown only when it
+  // resolves, is available, and offers >1 map. Picking it fires select.select_option (the
+  // fork turns that into a map_load).
+  _syncMapSwitch() {
+    const hass = this._hass;
+    const eid = this._resolveMapSwitchEntity();
+    const st = eid && hass.states[eid];
+    const opts = (st && st.attributes && st.attributes.options) || [];
+    const avail = !!st && st.state !== "unknown" && st.state !== "unavailable";
+    if (!st || !avail || opts.length < 2) {
+      this._mapSwitchEntity = null;
+      this._mapSwitchPending = null;
+      this._els.mapswitch.disabled = false;
+      this._els.mapbar.hidden = true;
+      return;
+    }
+    this._mapSwitchEntity = eid;
+    this._els.mapbar.hidden = false;
+    const sig = opts.join("\n");
+    if (sig !== this._mapSwitchSig) {
+      this._els.mapswitch.innerHTML = opts.map((o) => `<option value="${esc(o)}">${esc(o)}</option>`).join("");
+      this._mapSwitchSig = sig;
+    }
+    // Debounce: while a pick is in flight, keep the dropdown disabled + showing the target
+    // until the active map reflects it (or an 8s timeout), then resume live-syncing its value.
+    if (this._mapSwitchPending != null) {
+      const settled = st.state === this._mapSwitchPending || Date.now() - this._mapSwitchPendingAt > 8000;
+      if (!settled) {
+        this._els.mapswitch.disabled = true;
+        if (this._els.mapswitch.value !== this._mapSwitchPending) this._els.mapswitch.value = this._mapSwitchPending;
+        return;
+      }
+      this._mapSwitchPending = null;
+      this._els.mapswitch.disabled = false;
+    }
+    if (this._els.mapswitch.value !== st.state) this._els.mapswitch.value = st.state;
+  }
+
   // --- per-hass-update sync (image, rooms, zones selects, status) ----------------------------
   _syncDynamic() {
     const hass = this._hass;
     if (!hass || !this._built) return;
+
+    this._updateFrameGate();
 
     // backdrop — show/hide + an INSTANT refresh whenever the camera entity changes (last_updated)
     // or on first paint. Between those, _startPolling keeps it fresh.
@@ -682,6 +966,8 @@ class EufyCleanCard extends HTMLElement {
     if (this._mode === "zones" && this._hasCamera()) this._syncZoneSelects();
 
     this._syncControls();
+    this._syncMapSwitch();
+    this._applyGate();
   }
 
   _syncControls() {
@@ -770,7 +1056,7 @@ class EufyCleanCard extends HTMLElement {
   }
 
   async _cleanZones() {
-    if (!this._hass || this._zones.length === 0) return;
+    if (!this._hass || this._frameUngrounded || this._zones.length === 0) return;
     const zones = this._zones.map((z) => [z.x0, z.y0, z.x1, z.y1]);
     const n = zones.length;
     this._dispatching = true;
@@ -965,11 +1251,34 @@ class EufyCleanCardEditor extends HTMLElement {
 }
 customElements.define("eufy-clean-card-editor", EufyCleanCardEditor);
 
+// True when `entityId` is a robovac_mqtt vacuum — used to auto-suggest this card in HA
+// 2026.6+'s entity-first card picker. Prefer the frontend entity registry's platform;
+// fall back to the fork's characteristic companion entities (the map camera / Active Map
+// sensor on the same slug) so a stock vacuum on someone else's setup is never suggested.
+function isForkVacuum(hass, entityId) {
+  if (!hass || typeof entityId !== "string" || !entityId.startsWith("vacuum.")) return false;
+  const reg = hass.entities && hass.entities[entityId];
+  if (reg && reg.platform) return reg.platform === "robovac_mqtt";
+  const slug = entityId.split(".")[1] || "";
+  const st = hass.states || {};
+  return !!(st[`camera.${slug}_map`] || st[`sensor.${slug}_active_map`]);
+}
+
 window.customCards = window.customCards || [];
 window.customCards.push({
   type: "eufy-clean-card",
   name: "Eufy Clean Card",
   description: "Clean rooms with per-room settings (tap them on the map), or draw zones (Eufy — jeppesens/eufy-clean).",
+  // HA 2026.6+ "By entity" card picker: suggest this card (pre-filled with the vacuum +
+  // its map camera when present) for a robovac_mqtt vacuum. Ignored on older HA.
+  getEntitySuggestion: (hass, entityId) => {
+    if (!isForkVacuum(hass, entityId)) return null;
+    const slug = entityId.split(".")[1] || "";
+    const cam = `camera.${slug}_map`;
+    const config = { type: "custom:eufy-clean-card", vacuum: entityId };
+    if (hass.states && hass.states[cam]) config.camera = cam;
+    return { config };
+  },
 });
 console.info(
   "%c EUFY-CLEAN-CARD %c rooms + zones ",
