@@ -6,7 +6,10 @@ Only a subset of novel commands are supported.
 
 from __future__ import annotations
 
+import base64
+import json
 import logging
+import time
 from typing import Any
 
 from ..const import LEGACY_CLEAN_SPEEDS, LEGACY_DPS_MAP
@@ -75,12 +78,27 @@ def _build_clean_spot(**kwargs: Any) -> dict[str, Any]:
 
 
 def _build_room_clean(**kwargs: Any) -> dict[str, Any]:
-    """Legacy room clean — no room IDs supported, just sets mode."""
     if kwargs.get("room_ids"):
+        payload_dict = {
+            "method": "selectRoomsClean",
+            "data": {
+                "roomIds": kwargs["room_ids"],
+                "count": 1
+            },
+            "timestamp": round(time.time() * 1000),
+        }
+
+        payload_json = json.dumps(payload_dict, separators=(",", ":"))
+        base64_str = base64.b64encode(payload_json.encode("utf8")).decode("utf8")
+
         _LOGGER.warning(
-            "room_clean: room_ids parameter is not supported on legacy devices; "
-            "starting full room clean instead"
+            "room_clean: room_ids parameter may not be supported on legacy devices."
         )
+        return {
+            LEGACY_DPS_MAP["CLEAN_ROOM"]: base64_str,
+            LEGACY_DPS_MAP["PLAY_PAUSE"]: True,
+            LEGACY_DPS_MAP["WORK_MODE"]: "room",
+        }
     return {
         LEGACY_DPS_MAP["PLAY_PAUSE"]: True,
         LEGACY_DPS_MAP["WORK_MODE"]: "room",

@@ -744,6 +744,7 @@ LEGACY_DPS_MAP = {
     "FIND_ROBOT": "103",
     "BATTERY_LEVEL": "104",
     "ERROR_CODE": "106",
+    "CLEAN_ROOM": "124",
 }
 
 # Reverse lookup: DPS number string -> key name

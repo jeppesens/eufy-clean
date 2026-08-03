@@ -5,6 +5,7 @@ import logging
 import pytest
 
 from custom_components.robovac_mqtt.api.legacy_commands import build_legacy_command
+from custom_components.robovac_mqtt.const import LEGACY_DPS_MAP
 
 # ── Basic commands ──────────────────────────────────────────────────
 
@@ -102,27 +103,24 @@ def test_edge_clean():
     assert result == {"2": True, "5": "Edge"}
 
 
-# ── Room clean with room_ids warning ──────────────────────────────
+# ── Room clean with room_ids ──────────────────────────────
 
 
-def test_room_clean_with_room_ids_logs_warning(caplog):
-    """room_clean should warn when room_ids are passed (unsupported on legacy)."""
-    with caplog.at_level(logging.WARNING):
-        result = build_legacy_command("room_clean", room_ids=[1, 2, 3])
+def test_room_clean_with_room_ids():
+    """room_clean should return the room ids in the encoded payload."""
+    import base64
+    import json
 
-    # Command should still work (full room clean)
+    room_ids = [1,2,3]
+    result = build_legacy_command("room_clean", room_ids=room_ids)
+
+    # result should contain the base64 encoded room_ids
+    assert LEGACY_DPS_MAP["CLEAN_ROOM"] in result
+    room_command_str = base64.decodebytes(result.pop(LEGACY_DPS_MAP["CLEAN_ROOM"]).encode()).decode()
+    room_command_dict = json.loads(room_command_str)
+
+    assert room_command_dict["data"]["roomIds"] == room_ids
     assert result == {"2": True, "5": "room"}
-    assert "room_ids parameter is not supported on legacy devices" in caplog.text
-
-
-def test_room_clean_without_room_ids_no_warning(caplog):
-    """room_clean without room_ids should not warn."""
-    with caplog.at_level(logging.WARNING):
-        result = build_legacy_command("room_clean")
-
-    assert result == {"2": True, "5": "room"}
-    assert "room_ids" not in caplog.text
-
 
 # ── Unsupported commands ────────────────────────────────────────────
 
