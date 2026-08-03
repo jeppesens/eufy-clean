@@ -82,6 +82,16 @@ async def async_setup_entry(
                 state_class=None,
                 icon="mdi:alert-circle-outline",
                 category=EntityCategory.DIAGNOSTIC,
+                # Full mined ErrorCode data + persisted history as attributes.
+                extra_state_attributes_fn=lambda s: {
+                    "error_code": s.error_code,
+                    "error_codes": s.error_codes,
+                    "warn_codes": s.warn_codes,
+                    "last_error_time": s.last_error_time,
+                    "obstacle_reminders": s.obstacle_reminders,
+                    "battery_restored": s.battery_restored,
+                    "history": s.error_log,
+                },
             ),
             # Task Status Sensor
             RoboVacSensor(

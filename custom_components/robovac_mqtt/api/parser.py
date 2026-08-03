@@ -50,6 +50,9 @@ _LOGGER = logging.getLogger(__name__)
 
 _OFF_PEAK_RESPONSE_FIELD_NUM = 23  # UnisettingResponse field 23 = OffPeakCharging (undocumented)
 
+# ErrorCode.ObstacleReminder.Type enum -> human name (proto: POOP = 0).
+_OBSTACLE_TYPE_NAMES: dict[int, str] = {0: "poop"}
+
 
 def _extract_off_peak_charging(raw_b64: str) -> dict[str, int | bool] | None:
     """Extract off-peak charging config from raw UnisettingResponse bytes (field 23).
@@ -475,16 +478,43 @@ def _process_other_dps(
             elif key == DPS_MAP["ERROR_CODE"]:
                 error_proto = decode(ErrorCode, value)
                 _LOGGER.debug("Decoded ErrorCode: %s", error_proto)
-                # Repeated Scalar Field (warn) acts like a list
-                if len(error_proto.warn) > 0:
-                    code = error_proto.warn[0]
-                    changes["error_code"] = code
-                    changes["error_message"] = EUFY_CLEAN_ERROR_CODES.get(
-                        code, "Unknown Error"
-                    )
-                else:
-                    changes["error_code"] = 0
-                    changes["error_message"] = ""
+                # Capture the FULL proto. The old code read only warn[0] and NEVER
+                # read error[] — so real errors, simultaneous codes, timestamps,
+                # obstacle/poop reminders, and battery swaps were all discarded.
+                errors = list(error_proto.error)
+                warns = list(error_proto.warn)
+                changes["error_codes"] = errors
+                changes["warn_codes"] = warns
+                changes["last_error_time"] = int(error_proto.last_time)
+                # new_code: what the device flags as freshly reported this update
+                # (drives the coordinator's persisted error_log).
+                changes["new_error_codes"] = list(error_proto.new_code.error)
+                changes["new_warn_codes"] = list(error_proto.new_code.warn)
+                # Primary code + message: a real error[] takes priority over a warn[].
+                code = errors[0] if errors else (warns[0] if warns else 0)
+                changes["error_code"] = code
+                changes["error_message"] = (
+                    EUFY_CLEAN_ERROR_CODES.get(code, f"Unknown Error ({code})")
+                    if code
+                    else ""
+                )
+                if error_proto.battery.restored:
+                    changes["battery_restored"] = True
+                if len(error_proto.obstacle_reminder) > 0:
+                    changes["obstacle_reminders"] = [
+                        {
+                            "type": int(o.type),
+                            "type_name": _OBSTACLE_TYPE_NAMES.get(
+                                int(o.type), str(int(o.type))
+                            ),
+                            "photo_id": o.photo_id,
+                            "accuracy": o.accuracy,
+                            "map_id": o.map_id,
+                            "x": o.point.x,
+                            "y": o.point.y,
+                        }
+                        for o in error_proto.obstacle_reminder
+                    ]
 
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug("Received ACCESSORIES_STATUS: %s", value)

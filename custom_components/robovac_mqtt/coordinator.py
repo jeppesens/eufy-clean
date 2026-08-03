@@ -27,6 +27,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_send
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .api.client import EufyCleanClient
 from .api.cloud import EufyLogin
@@ -61,6 +62,7 @@ _LOGGER = logging.getLogger(__name__)
 _CLOUD_POLL_INTERVAL = timedelta(seconds=30)
 _MAX_BACKOFF_INTERVAL = timedelta(minutes=5)
 _FAILURE_THRESHOLD = 5  # Raise UpdateFailed after this many consecutive failures
+_ERROR_LOG_MAX = 50  # Rolling error/warn history depth (persisted per device)
 
 
 def _px_dist(a: tuple[int, int], b: tuple[int, int]) -> float:
@@ -146,6 +148,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         # frames on the biz/ stream and persisted; backs the Active Map selector.
         self.last_seen_maps: dict[int, str] = {}
         self._store = Store(hass, 1, f"{DOMAIN}.{self.device_id}")
+        # Separate store for the persisted error/warn history (the maps store
+        # clobbers to a single key on save, so errors get their own store).
+        self._error_store = Store(hass, 1, f"{DOMAIN}.{self.device_id}.errors")
         self._map_data_chan_id: int | None = None
         self._map_data: MapData | None = None
         self._robot_pixel: tuple[int, int] | None = None
@@ -319,6 +324,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 # Calculate new state based on connection
                 prev_activity = self.data.activity
                 new_state, changes = self._parse_dps(dps)
+
+                # Mine the errors we used to throw away: log fresh error/warn/
+                # obstacle/battery events to the persisted history.
+                if changes.keys() & {
+                    "error_code", "new_error_codes", "new_warn_codes",
+                    "obstacle_reminders", "battery_restored",
+                }:
+                    self._log_error_event(new_state, changes)
 
                 if "error_code" in changes:
                     if new_state.error_code != 0:
@@ -726,6 +739,51 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._last_notified_error_code = 0
         pn_async_dismiss(self.hass, notification_id=f"{DOMAIN}_{self.device_id}_error")
 
+    def _log_error_event(self, new_state: VacuumState, changes: dict[str, Any]) -> None:
+        """Append a fresh error/warn event to the persisted rolling history.
+
+        "Fresh" is judged from ``changes`` (this update's delta), NOT from
+        ``new_state`` fields — the list fields carry forward across the dataclass
+        replace(), so an ongoing fault would otherwise re-log on every update.
+        Fresh means: the device flagged new_code this update (novel/scalar), the
+        primary error_code changed to a (different) non-zero fault — the backstop
+        that also covers legacy, which has no new_code — or a fresh
+        obstacle-reminder / battery-swap arrived. ``self.data`` is still the
+        PREVIOUS state here (it is reassigned later in the update cycle).
+        Mutates ``new_state.error_log`` (carried forward across updates) and
+        persists to the error store.
+        """
+        fresh = (
+            bool(changes.get("new_error_codes") or changes.get("new_warn_codes"))
+            or (
+                "error_code" in changes
+                and new_state.error_code != 0
+                and new_state.error_code != self.data.error_code
+            )
+            or "obstacle_reminders" in changes
+            or "battery_restored" in changes
+        )
+        if not fresh:
+            return
+        entry: dict[str, Any] = {
+            "time": dt_util.utcnow().isoformat(),
+            "error_code": new_state.error_code,
+            "error_message": new_state.error_message,
+            "error_codes": list(new_state.error_codes),
+            "warn_codes": list(new_state.warn_codes),
+            "device_time": new_state.last_error_time,
+        }
+        if new_state.obstacle_reminders:
+            entry["obstacle_reminders"] = new_state.obstacle_reminders
+        if new_state.battery_restored:
+            entry["battery_restored"] = True
+        new_state.error_log = ([entry] + list(new_state.error_log))[:_ERROR_LOG_MAX]
+        self.hass.async_create_task(self._async_save_error_log(list(new_state.error_log)))
+
+    async def _async_save_error_log(self, log: list[dict[str, Any]]) -> None:
+        """Persist the error history to its own store."""
+        await self._error_store.async_save({"error_log": log})
+
     def async_shutdown_timers(self) -> None:
         """Cancel active debounce timers (call before teardown)."""
         if self._dock_idle_cancel:
@@ -865,6 +923,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     async def async_load_storage(self) -> None:
         """Load data from storage."""
+        # Persisted error/warn history (its own store).
+        if edata := await self._error_store.async_load():
+            self.data.error_log = list(edata.get("error_log") or [])
+            _LOGGER.debug(
+                "Loaded %d error-log entries for %s",
+                len(self.data.error_log),
+                self.device_name,
+            )
         if data := await self._store.async_load():
             self.last_seen_segments = data.get("last_seen_segments")
             _LOGGER.debug(

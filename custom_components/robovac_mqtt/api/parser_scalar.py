@@ -121,11 +121,17 @@ def process_scalar_dps(
                 code = _g_int(value)
                 if code:  # non-zero fault wins (106 and 177 are both candidates)
                     changes["error_code"] = code
+                    changes["error_codes"] = [code]  # keep state shape uniform
                     changes["error_message"] = EUFY_CLEAN_ERROR_CODES.get(
                         code, "Unknown Error"
                     )
+                    # Scalar has no proto new_code: treat a changed fault as fresh so
+                    # the coordinator logs it to the persisted error_log.
+                    if code != state.error_code:
+                        changes["new_error_codes"] = [code]
                 elif "error_code" not in changes:  # clear only if nothing set yet
                     changes["error_code"] = 0
+                    changes["error_codes"] = []
                     changes["error_message"] = ""
 
             elif key == SCALAR_DPS["AUTO_RETURN"]:
