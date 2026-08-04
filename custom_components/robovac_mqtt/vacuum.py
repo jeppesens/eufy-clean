@@ -3,8 +3,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-
 import voluptuous as vol
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
     VacuumActivity,
@@ -234,17 +234,36 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                 )
 
     def _get_room_segments(self) -> list[Segment]:
-        """Return segments derived from the latest mapped rooms."""
+        """Return segments derived from the latest mapped rooms or scenes.
+
+        Some devices do not expose native room/segment data but do support
+        named cleaning scenes. Those scenes can be treated as segments for Home
+        Assistant room mapping and segment cleaning.
+        """
         rooms = self.coordinator.data.rooms or []
+        if rooms:
+            return [
+                Segment(
+                    id=str(room["id"]), name=room.get("name") or f"Room {room['id']}"
+                )
+                for room in rooms
+                if "id" in room
+            ]
+
+        scenes = self.coordinator.data.scenes or []
         return [
-            Segment(id=str(room["id"]), name=room.get("name") or f"Room {room['id']}")
-            for room in rooms
-            if "id" in room
+            Segment(
+                id=str(scene["id"]), name=scene.get("name") or f"Scene {scene['id']}"
+            )
+            for scene in scenes
+            if "id" in scene
         ]
 
     def _get_extra_room_attributes(self) -> list[dict[str, str]]:
         """Return room attributes derived from current segments."""
-        return _rooms_to_attributes(self.coordinator.data.rooms)
+        return _rooms_to_attributes(
+            self.coordinator.data.rooms or self.coordinator.data.scenes
+        )
 
     def _get_extra_segment_attributes(self) -> list[dict[str, Any]]:
         """Return segment attributes derived from current segments."""
@@ -456,6 +475,30 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         self.coordinator.set_active_cleaning_targets(zone_count=len(quads_cm))
         await self.coordinator.async_send_command(command)
 
+    async def _async_handle_scene_clean(self, scene_ids: list[int]) -> None:
+        """Handle cleaning scenes when no native rooms are available."""
+        if not scene_ids:
+            return
+
+        if len(scene_ids) > 1:
+            raise HomeAssistantError(
+                "Multiple scene-based segments selected; device supports cleaning only a single scene-based segment"
+            )
+
+        scene_lookup = {
+            scene["id"]: scene.get("name")
+            for scene in self.coordinator.data.scenes
+            if "id" in scene
+        }
+
+        scene_id = scene_ids[0]
+        scene_name = scene_lookup.get(scene_id)
+        command = self.coordinator.build_device_command("scene_clean", scene_id=scene_id)
+        if command:
+            await self.coordinator.async_send_command(command)
+            self.coordinator.set_active_scene(scene_id, scene_name)
+
+
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
         """Clean specific segments with current custom parameters."""
         room_ids = [
@@ -463,6 +506,10 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         ]
 
         if not room_ids:
+            return
+
+        if not self.coordinator.data.rooms and self.coordinator.data.scenes:
+            await self._async_handle_scene_clean(room_ids)
             return
 
         # Use the same room_clean handling logic that supports custom parameters
@@ -689,6 +736,9 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                 except (ValueError, TypeError):
                     pass
             if room_ids:
+                if not self.coordinator.data.rooms and self.coordinator.data.scenes:
+                    await self._async_handle_scene_clean(room_ids)
+                    return
                 await self._async_handle_room_clean({"room_ids": room_ids})
                 return
             return
