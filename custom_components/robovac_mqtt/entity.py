@@ -1,27 +1,19 @@
 """Shared helpers for protocol-dependent entity support.
 
-Devices speak one of two DPS protocols (see api/parser.update_state):
-"scalar" (plain Tuya-style int/JSON, e.g. T2210/G50) or "novel" (Anker
-length-prefixed protobuf, the default for everything else, including
-"legacy"/"unknown" api types).
-
-Entities declare which protocols they support via a ``supported_api_types``
-attribute — a tuple of protocol names, or ``None`` (the default) for
-universal entities. Platform setups pass their candidate entities through
-:func:`filter_supported_entities` so unsupported entities are never added
-to the registry (e.g. no scalar-only switches on X-series devices).
+Entities declare the DPS protocols they support via ``supported_api_types``, a
+tuple of protocol names or ``None`` (the default) for universal entities.
 """
 
 from __future__ import annotations
 
-from typing import TypeVar
+from typing import TYPE_CHECKING, TypeVar
 
 from homeassistant.helpers.entity import Entity
 
-from .coordinator import EufyCleanCoordinator
+from .const import API_TYPE_NOVEL, API_TYPE_SCALAR
 
-API_TYPE_NOVEL = "novel"
-API_TYPE_SCALAR = "scalar"
+if TYPE_CHECKING:
+    from .coordinator import EufyCleanCoordinator
 
 _EntityT = TypeVar("_EntityT", bound=Entity)
 
@@ -29,10 +21,22 @@ _EntityT = TypeVar("_EntityT", bound=Entity)
 def effective_api_type(api_type: str) -> str:
     """Map a cloud-reported api type onto the two supported DPS protocols.
 
-    Anything that is not scalar (novel, legacy, unknown, ...) is parsed and
-    commanded as novel, mirroring api/parser.update_state dispatch.
+    Anything not scalar (novel, legacy, unknown) is treated as novel, mirroring
+    api/parser.update_state dispatch.
     """
     return API_TYPE_SCALAR if api_type == API_TYPE_SCALAR else API_TYPE_NOVEL
+
+
+def has_firmware_api(coordinator: EufyCleanCoordinator) -> bool:
+    """Whether firmware status and OTA calls can reach the Tuya Thing API.
+
+    The calls address the Tuya ``devId``, so the device must be on the account's
+    Tuya device list; an MQTT robot's id is not one.
+    """
+    login = getattr(coordinator, "eufy_login", None)
+    if getattr(login, "tuya_thing_client", None) is None:
+        return False
+    return coordinator.device_id in getattr(login, "tuya_device_ids", ())
 
 
 def filter_supported_entities(

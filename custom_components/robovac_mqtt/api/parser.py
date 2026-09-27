@@ -6,6 +6,7 @@ from dataclasses import replace
 from typing import Any
 
 from google.protobuf.json_format import MessageToDict
+from google.protobuf.message import Message
 
 from ..const import (
     CARPET_STRATEGY_NAMES,
@@ -24,9 +25,6 @@ from ..const import (
     STATION_WATER_LEVEL_NAMES,
     TRIGGER_SOURCE_NAMES,
     WORK_MODE_NAMES,
-    CleaningMode,
-    MopWaterLevel,
-    TriggerSource,
 )
 from ..models import AccessoryState, VacuumState, track_received_field
 from ..proto.cloud.app_device_info_pb2 import DeviceInfo
@@ -49,15 +47,55 @@ from .parser_scalar import process_scalar_dps
 
 _LOGGER = logging.getLogger(__name__)
 
+# Proto fields that identify the user, the device or the home; cleared before a
+# decoded message is debug-logged (users attach debug logs to public issues).
+_DEVICE_INFO_PRIVATE = (
+    "video_sn", "device_mac", "wifi_name", "wifi_ip", "last_user_id",
+)
+_UNISETTING_PRIVATE = ("wifi_data",)
+_WORK_STATUS_PRIVATE = ("current_scene.name",)
+
+# Enum values already reported as unknown, so each is logged once per process.
+_UNKNOWN_ENUM_VALUES: set[tuple[str, int]] = set()
+
+
+def _debug_proto(label: str, message: Message, *private: str) -> None:
+    """Debug-log a decoded proto with the ``private`` (dotted) fields cleared."""
+    if not _LOGGER.isEnabledFor(logging.DEBUG):
+        return
+    if private:
+        shown = type(message)()
+        shown.CopyFrom(message)
+        for path in private:
+            *parents, leaf = path.split(".")
+            target = shown
+            for name in parents:
+                if not target.HasField(name):
+                    break
+                target = getattr(target, name)
+            else:
+                target.ClearField(leaf)
+        message = shown
+    _LOGGER.debug("Decoded %s: %s", label, message)
+
+
+def _enum_name(names: dict[Any, str], value: int, label: str, default: str) -> str:
+    """``names[value]`` for an int-keyed enum table; ``default`` for a value the
+    firmware added after this table, logged once per value at debug."""
+    name = names.get(value)
+    if name is not None:
+        return name
+    if (label, value) not in _UNKNOWN_ENUM_VALUES:
+        _UNKNOWN_ENUM_VALUES.add((label, value))
+        _LOGGER.debug("Unknown %s value %s; using %r", label, value, default)
+    return default
+
+
 _OFF_PEAK_RESPONSE_FIELD_NUM = 23  # UnisettingResponse field 23 = OffPeakCharging (undocumented)
 
 
 def _extract_off_peak_charging(raw_b64: str) -> dict[str, int | bool] | None:
-    """Extract off-peak charging config from raw UnisettingResponse bytes (field 23).
-
-    Field 23 is not in the compiled proto, so we parse the raw bytes directly.
-    Structure: {enable: Switch, begin: TimePoint{hour,minute}, end: TimePoint{hour,minute}}
-    """
+    """Extract off-peak charging from raw UnisettingResponse bytes (not in the proto)."""
     raw = base64.b64decode(raw_b64)
     if not raw:
         return None
@@ -135,11 +173,7 @@ def _decode_off_peak_sub(data: bytes) -> dict[str, int | bool]:
 
 
 def _decode_raw_varints(data: bytes) -> dict[int, int | bytes]:
-    """Decode raw protobuf fields from bytes (no schema needed).
-
-    Returns a dict of field_number -> value (int for varints, bytes for
-    length-delimited fields).
-    """
+    """Decode schema-less protobuf into {field_number: int varint | bytes}."""
     fields: dict[int, int | bytes] = {}
     i = 0
     while i < len(data):
@@ -158,23 +192,15 @@ def _decode_raw_varints(data: bytes) -> dict[int, int | bytes]:
 
 
 def _parse_robot_telemetry(value: str) -> dict[str, Any] | None:
-    """Parse DPS 179 robot telemetry (no proto definition available).
+    """Parse DPS 179 telemetry (no proto): field 2 -> 7 -> {4: map x, 5: map y}.
 
-    Wire format: varint-length-prefixed message containing:
-      field 2 (bytes) -> sub-message with field 7 (bytes) -> inner message:
-        field 1: uint32  Unix timestamp
-        field 2: uint32  battery percentage
-        field 3: uint32  unknown (slowly increasing value)
-        field 4: uint32  map X coordinate
-        field 5: uint32  map Y coordinate
-        field 6: bytes   additional data (2 packed varints)
-
-    See docs/DPS_179_TELEMETRY.md for detailed format documentation.
+    Field 7 carries {1: epoch seconds, 2: battery, 4: x, 5: y}; the coordinates
+    are zigzag-encoded sint32 in an unknown origin frame.
     """
     try:
         raw = base64.b64decode(value)
     except Exception:
-        _LOGGER.debug("Failed to decode DPS 179 base64: %.50s", value)
+        _LOGGER.debug("Failed to decode DPS 179 base64 (%d chars)", len(str(value)))
         return None
     _length, pos = decode_varint(raw, 0)
     outer = _decode_raw_varints(raw[pos:])
@@ -194,35 +220,27 @@ def _parse_robot_telemetry(value: str) -> dict[str, Any] | None:
 def update_state(
     state: VacuumState, dps: dict[str, Any]
 ) -> tuple[VacuumState, dict[str, Any]]:
-    """Update VacuumState with new DPS data.
+    """Update VacuumState from DPS data.
 
-    Returns:
-        A tuple of (new_state, changes_dict) where changes_dict contains
-        only the fields that were explicitly set from this DPS message.
-        This allows callers to distinguish between a field being actively
-        set vs inherited from previous state.
+    Returns (new_state, changes); changes holds only the fields this message set,
+    so callers can tell "actively set" from "inherited".
     """
     changes: dict[str, Any] = {}
 
-    # Always update raw_dps
     new_raw_dps = state.raw_dps.copy()
     new_raw_dps.update(dps)
     changes["raw_dps"] = new_raw_dps
 
-    # Dispatch on the DPS protocol, classified cloud-side at init by
-    # EufyLogin.checkApiType and carried on state.api_type.
+    # api_type comes from EufyLogin.checkApiType: scalar = plain Tuya-style DPS,
+    # novel = Anker length-prefixed protobuf ("legacy"/"unknown" land here too)
     if state.api_type == "scalar":
-        # Plain int/JSON Tuya-style DPS (e.g. T2210/G50), no protobuf.
         process_scalar_dps(state, dps, changes)
     else:
-        # Novel: Anker length-prefixed protobuf DPS (X-series; also the
-        # default for "legacy"/"unknown", which have no parser of their own).
         _process_station_status(state, dps, changes)
         _process_work_status(state, dps, changes)
         _process_play_pause(state, dps, changes)
         _process_other_dps(state, dps, changes)
 
-    # Log received_fields for debugging sensor availability
     if "received_fields" in changes:
         _LOGGER.debug("Received fields now: %s", changes["received_fields"])
 
@@ -239,9 +257,9 @@ def _process_station_status(
     value = dps[DPS_MAP["STATION_STATUS"]]
     try:
         station = decode(StationResponse, value)
-        _LOGGER.debug("Decoded StationResponse: %s", station)
+        _debug_proto("StationResponse", station)
         new_dock_status = _map_dock_status(station)
-        # Debouncing is handled in coordinator, not here
+        # debounced in the coordinator, not here
         changes["dock_status"] = new_dock_status
         track_received_field(state, changes, "dock_status")
 
@@ -261,7 +279,6 @@ def _process_station_status(
             )
             track_received_field(state, changes, "station_dirty_water")
 
-        # Auto Empty Config
         if station.HasField("auto_cfg_status"):
             changes["dock_auto_cfg"] = MessageToDict(
                 station.auto_cfg_status, preserving_proto_field_name=True
@@ -280,30 +297,25 @@ def _process_work_status(
     value = dps[DPS_MAP["WORK_STATUS"]]
     try:
         work_status = decode(WorkStatus, value)
-        _LOGGER.debug("Decoded WorkStatus: %s", work_status)
+        _debug_proto("WorkStatus", work_status, *_WORK_STATUS_PRIVATE)
         changes["activity"] = _map_work_status(work_status)
         changes["status_code"] = work_status.state
 
-        # Use current or updated dock status
         current_dock_status = changes.get("dock_status", state.dock_status)
         changes["task_status"] = _map_task_status(work_status, current_dock_status)
 
-        # Check for charging status
-        # If the charging sub-message exists, we trust it regardless of main state
+        # the charging sub-message wins over the main state when present
         if work_status.HasField("charging"):
             # Charging.State.DOING is 0
             changes["charging"] = work_status.charging.state == 0
         else:
             changes["charging"] = False
 
-        # Check for trigger source
         trigger_source = "unknown"
         if work_status.HasField("trigger"):
             trigger_source = _map_trigger_source(work_status.trigger.source)
 
-        # Infer trigger source from Work Mode if unknown
-        # Many robots (like X10 Pro Omni) do not send trigger field
-        # for specific cleaning modes
+        # some models (X10 Pro Omni) omit the trigger field for certain modes
         if trigger_source == "unknown" and work_status.HasField("mode"):
             mode_val = work_status.mode.value
             if mode_val in EUFY_CLEAN_APP_TRIGGER_MODES:
@@ -311,29 +323,22 @@ def _process_work_status(
 
         changes["trigger_source"] = trigger_source
 
-        # Extract Work Mode
         if work_status.HasField("mode"):
             mode_val = work_status.mode.value
             changes["work_mode"] = WORK_MODE_NAMES.get(mode_val, "unknown")
             track_received_field(state, changes, "work_mode")
         elif state.work_mode == "unknown" and changes.get("activity") == "cleaning":
-            # If we don't know the mode yet but we are cleaning, default to Auto
             changes["work_mode"] = "Auto"
 
-        # Fallback/Override if cleaning.scheduled_task is explicit
         if work_status.HasField("cleaning") and work_status.cleaning.scheduled_task:
             changes["trigger_source"] = "schedule"
 
-        # Update dock_status from WorkStatus if available
-        # This helps clear "stuck" states (like Drying) if StationResponse
-        # stops updating but WorkStatus continues to report (e.g. as Charging/Idle).
+        # clears a dock status stuck on e.g. Drying when StationResponse goes quiet
         if work_status.HasField("station"):
             st = work_status.station
 
-            # Track if any dock activity is detected in this message
             has_dock_activity = False
 
-            # Washing / Drying
             if st.HasField("washing_drying_system"):
                 has_dock_activity = True
                 # 0=WASHING, 1=DRYING
@@ -342,13 +347,10 @@ def _process_work_status(
                 else:
                     changes["dock_status"] = "Washing"
 
-            # Dust Collection
             if st.HasField("dust_collection_system"):
                 has_dock_activity = True
-                # 0=EMPTYING
                 changes["dock_status"] = "Emptying dust"
 
-            # Water Injection
             if st.HasField("water_injection_system"):
                 has_dock_activity = True
                 # 0=ADDING, 1=EMPTYING
@@ -357,21 +359,17 @@ def _process_work_status(
                 else:
                     changes["dock_status"] = "Recycling waste water"
 
-            # Reset to Idle if station field is present but no activity
             if not has_dock_activity:
                 current_dock = changes.get("dock_status", state.dock_status)
                 if current_dock in DOCK_ACTIVITY_STATES:
                     changes["dock_status"] = "Idle"
 
         else:
-            # No station field - if charging and was in dock activity, reset to Idle
             if work_status.state == 3:  # CHARGING
                 current_dock = changes.get("dock_status", state.dock_status)
                 if current_dock in DOCK_ACTIVITY_STATES:
                     changes["dock_status"] = "Idle"
 
-        # Process Current Scene
-        # 1. If explicit scene info provided, use it.
         if work_status.HasField("current_scene"):
             changes["current_scene_id"] = work_status.current_scene.id
             changes["current_scene_name"] = work_status.current_scene.name
@@ -384,21 +382,17 @@ def _process_work_status(
                 changes["active_room_names"] = ""
                 changes["active_zone_count"] = 0
 
-        # 2. If explicit Mode provided and it's NOT Scene (8), clear it.
-        # 8 = SCENE mode
+        # mode 8 = SCENE
         elif work_status.HasField("mode") and work_status.mode.value != 8:
             changes["current_scene_id"] = 0
             changes["current_scene_name"] = None
 
-        # 3. If State is explicitly Charging (3) or Go Home (7), clear it.
-        # We avoid clearing on 0 (Standby) because partial updates might default to 0.
+        # 3=charging, 7=go home; not 0 (standby), which partial updates default to
         elif work_status.state in [3, 7]:
             changes["current_scene_id"] = 0
             changes["current_scene_name"] = None
 
-        # Clear active cleaning targets when the task is actually over.
-        # Docked can also mean an in-progress wash/dry cycle, so rely on the
-        # derived task_status instead of duplicating that interpretation here.
+        # docked can mean an in-progress wash/dry, so key off task_status too
         activity = changes.get("activity")
         task_status = changes.get("task_status")
         should_clear_targets = (
@@ -428,7 +422,7 @@ def _process_play_pause(
     value = dps[DPS_MAP["PLAY_PAUSE"]]
     try:
         mode_ctrl = decode(ModeCtrlRequest, value)
-        _LOGGER.debug("Decoded ModeCtrlRequest: %s", mode_ctrl)
+        _debug_proto("ModeCtrlRequest", mode_ctrl)
 
         if mode_ctrl.HasField("select_rooms_clean"):
             room_ids = [r.id for r in mode_ctrl.select_rooms_clean.rooms]
@@ -456,8 +450,7 @@ def _process_play_pause(
             changes["current_scene_name"] = None
             track_received_field(state, changes, "active_room_ids")
 
-        # Scene: intentionally skipped (already tracked via WorkStatus.current_scene)
-        # Control commands (pause/resume/stop): no Param oneof, naturally ignored
+        # scene comes from WorkStatus.current_scene; control commands have no Param
 
     except Exception as e:
         _LOGGER.warning("Error parsing Play/Pause DPS: %s", e, exc_info=True)
@@ -468,7 +461,6 @@ def _process_other_dps(
 ) -> None:
     """Process other DPS items."""
     for key, value in dps.items():
-        # Specialized keys are handled in their respective functions
         if key in (
             DPS_MAP["WORK_STATUS"],
             DPS_MAP["STATION_STATUS"],
@@ -487,7 +479,7 @@ def _process_other_dps(
 
             elif key == DPS_MAP["ERROR_CODE"]:
                 error_proto = decode(ErrorCode, value)
-                _LOGGER.debug("Decoded ErrorCode: %s", error_proto)
+                _debug_proto("ErrorCode", error_proto)
                 # Codes arrive in two lists; prefer `error` so a standing
                 # warning can't mask a fault, and expose both in full.
                 errors = [int(c) for c in error_proto.error]
@@ -505,16 +497,15 @@ def _process_other_dps(
                     changes["error_message"] = ""
 
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
-                _LOGGER.debug("Received ACCESSORIES_STATUS: %s", value)
                 changes["accessories"] = _parse_accessories(state.accessories, value)
                 track_received_field(state, changes, "accessories")
 
             elif key == DPS_MAP["CLEANING_STATISTICS"]:
                 stats = decode(CleanStatistics, value)
-                _LOGGER.debug("Decoded CleanStatistics: %s", stats)
+                _debug_proto("CleanStatistics", stats)
                 if stats.HasField("single"):
                     changes["cleaning_time"] = stats.single.clean_duration
-                    # Only update area when > 0 so the last run value persists after docking
+                    # keep the last run's area: the device reports 0 after docking
                     if stats.single.clean_area > 0:
                         changes["cleaning_area"] = stats.single.clean_area
                     track_received_field(state, changes, "cleaning_stats")
@@ -525,11 +516,9 @@ def _process_other_dps(
                     track_received_field(state, changes, "cleaning_totals")
 
             elif key == DPS_MAP["SCENE_INFO"]:
-                _LOGGER.debug("Received SCENE_INFO: %s", value)
                 changes["scenes"] = _parse_scene_info(value)
 
             elif key == DPS_MAP["MAP_DATA"]:
-                _LOGGER.debug("Received MAP_DATA: %s", value)
                 map_info = _parse_map_data(value)
                 if map_info:
                     changes["map_id"] = map_info.get("map_id", 0)
@@ -537,7 +526,6 @@ def _process_other_dps(
                     track_received_field(state, changes, "map_id")
 
             elif key == DPS_MAP["CLEANING_PARAMETERS"]:
-                _LOGGER.debug("Received CLEANING_PARAMETERS: %s", value)
                 _process_cleaning_parameters(state, value, changes)
 
             elif key == DPS_MAP["FIND_ROBOT"]:
@@ -549,19 +537,16 @@ def _process_other_dps(
 
             elif key == DPS_MAP["VOICE_LANGUAGE"]:
                 lang = decode(LanguageResponse, value)
-                _LOGGER.debug("Decoded LanguageResponse: %s", lang)
+                _debug_proto("LanguageResponse", lang)
                 if lang.current_id > 0:
                     changes["voice_set_id"] = lang.current_id
                     track_received_field(state, changes, "voice")
 
             elif key == DPS_MAP["MAP_MANAGE"]:
-                # DPS 169 carries DeviceInfo proto (not map data despite the name).
-                # Contains firmware version, WiFi SSID/IP, station firmware, MAC.
-                # Firmware version is already in the HA device registry via
-                # coordinator.device_info (sw_version from cloud API), so we
-                # only extract network info here.
+                # DPS 169 is DeviceInfo despite the name; firmware already comes
+                # from the cloud API
                 info = decode(DeviceInfo, value)
-                _LOGGER.debug("Decoded DeviceInfo: %s", info)
+                _debug_proto("DeviceInfo", info, *_DEVICE_INFO_PRIVATE)
                 if info.product_name:
                     changes["product_name"] = info.product_name
                 if info.device_mac:
@@ -580,12 +565,11 @@ def _process_other_dps(
                 if value is None:
                     _LOGGER.debug("DPS 172: None value (initial state)")
                 else:
-                    _LOGGER.debug("Received MULTI_MAP_MANAGE (DPS 172): %.100s", value)
                     _parse_multi_map_response(value)
 
             elif key == DPS_MAP["UNSETTING"]:
                 settings = decode(UnisettingResponse, value)
-                _LOGGER.debug("Decoded UnisettingResponse: %s", settings)
+                _debug_proto("UnisettingResponse", settings, *_UNISETTING_PRIVATE)
                 # Device reports 0-100%, approximate to dBm for HA convention
                 changes["wifi_signal"] = (settings.ap_signal_strength / 2) - 100
                 track_received_field(state, changes, "wifi_signal")
@@ -604,7 +588,7 @@ def _process_other_dps(
 
             elif key == DPS_MAP["UNDISTURBED"]:
                 undisturbed = decode(UndisturbedResponse, value)
-                _LOGGER.debug("Decoded UndisturbedResponse: %s", undisturbed)
+                _debug_proto("UndisturbedResponse", undisturbed)
                 if undisturbed.HasField("undisturbed"):
                     changes["dnd_enabled"] = undisturbed.undisturbed.sw.value
                     if undisturbed.undisturbed.HasField("begin"):
@@ -619,11 +603,7 @@ def _process_other_dps(
 
             elif key == DPS_ROBOT_TELEMETRY:
                 pos = _parse_robot_telemetry(value)
-                _LOGGER.debug(
-                    "DPS 179 telemetry: parsed=%s, raw_b64=%.60s...",
-                    pos,
-                    value,
-                )
+                _LOGGER.debug("DPS 179 telemetry: parsed=%s", pos is not None)
                 if pos:
                     raw_x, raw_y = pos["x"], pos["y"]
                     changes["robot_position_x"] = raw_x
@@ -632,13 +612,13 @@ def _process_other_dps(
 
             elif key in KNOWN_UNPROCESSED_DPS:
                 _LOGGER.debug(
-                    "Known unprocessed DPS %s: %s (value stored in raw_dps)",
-                    key,
-                    value,
+                    "Known unprocessed DPS %s (value stored in raw_dps)", key
                 )
 
             else:
-                _LOGGER.debug("Received unhandled DPS %s: %s", key, value)
+                _LOGGER.debug(
+                    "Received unhandled DPS %s (%s)", key, type(value).__name__
+                )
 
         except Exception as e:
             _LOGGER.warning("Error parsing DPS %s: %s", key, e, exc_info=True)
@@ -648,7 +628,7 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
     """Map WorkStatus to detailed task status."""
     s = status.state
 
-    # Check for specific Wash/Dry states first (usually inside Cleaning state 5)
+    # wash/dry sits inside cleaning state 5, so check it first
     if status.HasField("go_wash"):
         # GoWash.Mode: NAVIGATION=0, WASHING=1, DRYING=2
         gw_mode = status.go_wash.mode
@@ -659,8 +639,7 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
         if gw_mode == 0 and s == 5:
             return "Returning to Wash"
 
-    # Check for Breakpoint (Recharge & Resume)
-    # Usually State 7 (Returning) or 3 (Charging)
+    # breakpoint.state 0 = an interrupted clean is resumable after recharge
     is_resumable = False
     if status.HasField("breakpoint") and status.breakpoint.state == 0:
         is_resumable = True
@@ -669,9 +648,7 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
         if is_resumable:
             return "Charging (Resume)"
 
-        # Check if this is a mid-cleaning wash pause vs post-cleaning
-        # If cleaning field exists with PAUSED state while dock is washing,
-        # this is a mid-cleaning pause, not task completion
+        # cleaning PAUSED while the dock washes = mid-clean pause, not completion
         if status.HasField("cleaning") and status.cleaning.state == 1:  # PAUSED
             if dock_status in (
                 "Washing",
@@ -681,7 +658,6 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
                 return "Washing Mop"
             return "Paused"
 
-        # If not resumable and cleaning field is absent, the task is complete
         if status.HasField("station") and status.station.HasField(
             "dust_collection_system"
         ):
@@ -689,8 +665,7 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
         return "Completed"
 
     if s == 7:  # Returning / Go Home
-        # Distinguish between "Finished" and "Recharge needed"
-        # However, GoHome mode 0 is "COMPLETE_TASK" and 1 is "COLLECT_DUST"
+        # GoHome.mode: 0=COMPLETE_TASK, 1=COLLECT_DUST
         if is_resumable:
             return "Returning to Charge"
         if status.HasField("go_home"):
@@ -717,10 +692,9 @@ def _map_task_status(status: WorkStatus, dock_status: str | None = None) -> str:
     if s == 6:
         return "Remote Control"
 
-    if s == 15:  # Stop / Pause?
+    if s == 15:  # Stop / Pause
         return "Paused"
 
-    # Fallback mappings from basic map
     return _map_work_status(status).title()
 
 
@@ -736,19 +710,14 @@ def _map_work_status(status: WorkStatus) -> str:
     if s == 4:  # Positioning
         return "cleaning"
     if s == 5:  # Active clean / station wash+dry
-        # go_wash.mode: 0=NAVIGATION, 1=WASHING, 2=DRYING
-        # When washing or drying (modes 1, 2), the vacuum is physically docked at the station
-        # Users expect "docked" status during station-based activities, not "cleaning"
-        # "cleaning" implies the device is moving around cleaning floors
-        # This aligns with HA's vacuum state model where "docked" includes station activities
+        # go_wash.mode 1=WASHING, 2=DRYING happen on the dock; HA calls that docked
         if status.HasField("go_wash") and status.go_wash.mode in (1, 2):
             return "docked"
         if status.HasField("station") and status.station.HasField(
             "washing_drying_system"
         ):
             return "docked"
-        # User-initiated pause: cleaning sub-state is PAUSED and robot is NOT
-        # navigating back to the dock for a wash (go_wash absent).
+        # user pause: PAUSED without go_wash (go_wash means heading in to wash)
         if (
             status.HasField("cleaning")
             and status.cleaning.state == 1  # PAUSED
@@ -769,16 +738,8 @@ def _map_work_status(status: WorkStatus) -> str:
 
 
 def _map_trigger_source(value: int) -> str:
-    """Map Trigger.Source to string.
-
-    0: UNKNOWN
-    1: APP
-    2: KEY
-    3: TIMING
-    4: ROBOT
-    5: REMOTE_CTRL
-    """
-    return TRIGGER_SOURCE_NAMES.get(TriggerSource(value), "unknown")
+    """Map Trigger.Source to string."""
+    return _enum_name(TRIGGER_SOURCE_NAMES, value, "Trigger.Source", "unknown")
 
 
 def _map_clean_speed(value: Any) -> str:
@@ -837,7 +798,7 @@ def _parse_scene_info(value: Any) -> list[dict[str, Any]]:
     """Parse SceneResponse from DPS."""
     try:
         scene_response = decode(SceneResponse, value, has_length=True)
-        _LOGGER.debug("Decoded SceneResponse: %s", scene_response)
+        _LOGGER.debug("Decoded SceneResponse: %d scenes", len(scene_response.infos))
         if not scene_response or not scene_response.infos:
             return []
 
@@ -853,15 +814,12 @@ def _parse_scene_info(value: Any) -> list[dict[str, Any]]:
                 )
         return scenes
     except Exception as e:
-        _LOGGER.debug("Error parsing scene info: %s | Raw: %s", e, value)
+        _LOGGER.debug("Error parsing scene info: %s", e)
         return []
 
 
 def _deduplicate_room_names(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Ensure room names are unique by appending a suffix to duplicates.
-
-    e.g. two rooms named "Kitchen" become "Kitchen" and "Kitchen (2)".
-    """
+    """Suffix duplicate room names: two "Kitchen" become "Kitchen", "Kitchen (2)"."""
     names = [room["name"] for room in rooms]
     deduped = deduplicate_names(names)
     return [{**room, "name": name} for room, name in zip(rooms, deduped)]
@@ -869,11 +827,14 @@ def _deduplicate_room_names(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]
 
 def _parse_map_data(value: Any) -> dict[str, Any] | None:
     """Parse Map Data (Universal or RoomParams) from DPS."""
-    # UniversalDataResponse
     try:
         universal_data = decode(UniversalDataResponse, value, has_length=True)
         if universal_data:
-            _LOGGER.debug("Decoded UniversalDataResponse: %s", universal_data)
+            _LOGGER.debug(
+                "Decoded UniversalDataResponse: map %d, %d rooms",
+                universal_data.cur_map_room.map_id,
+                len(universal_data.cur_map_room.data),
+            )
         if universal_data and (
             universal_data.cur_map_room.map_id or universal_data.cur_map_room.data
         ):
@@ -888,11 +849,14 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
     except Exception as e:
         _LOGGER.debug("UniversalDataResponse parse failed: %s", e)
 
-    # RoomParams
     try:
         room_params = decode(RoomParams, value, has_length=True)
         if room_params:
-            _LOGGER.debug("Decoded RoomParams: %s", room_params)
+            _LOGGER.debug(
+                "Decoded RoomParams: map %d, %d rooms",
+                room_params.map_id,
+                len(room_params.rooms),
+            )
         if room_params and (room_params.map_id or room_params.rooms):
             rooms = []
             for rm in room_params.rooms:
@@ -905,17 +869,12 @@ def _parse_map_data(value: Any) -> dict[str, Any] | None:
     except Exception as e:
         _LOGGER.debug("RoomParams parse failed: %s", e)
 
-    _LOGGER.debug("Failed to parse map data. Raw: %s", value)
+    _LOGGER.debug("Failed to parse map data (%d chars)", len(str(value)))
     return None
 
 
 def _parse_multi_map_response(value: Any) -> dict[str, Any] | None:
-    """Parse MultiMapsManageResponse from DPS 172.
-
-    Note: MAP_GET_ALL/MAP_GET_ONE responses with pixel data are only
-    delivered via P2P, not cloud MQTT. This handler logs the response
-    metadata for diagnostics but currently cannot extract pixel data.
-    """
+    """Log DPS 172 response metadata; pixel data only arrives over P2P, not MQTT."""
     try:
         resp = decode(MultiMapsManageResponse, value)
         _LOGGER.debug(
@@ -933,7 +892,7 @@ def _parse_accessories(current_state: AccessoryState, value: Any) -> AccessorySt
     """Parse ConsumableResponse from DPS."""
     try:
         response = decode(ConsumableResponse, value)
-        _LOGGER.debug("Decoded ConsumableResponse: %s", response)
+        _debug_proto("ConsumableResponse", response)
         if not response.HasField("runtime"):
             return current_state
 
@@ -970,7 +929,6 @@ def _process_cleaning_parameters(
     state: VacuumState, value: Any, changes: dict[str, Any]
 ) -> None:
     """Process Cleaning Parameters DPS (154)."""
-    # Try decoding as Response first, then Request
     clean_param = None
     try:
         response = decode(CleanParamResponse, value, has_length=True)
@@ -997,15 +955,13 @@ def _process_cleaning_parameters(
         _LOGGER.debug("Could not decode Cleaning Parameters from DPS 154")
         return
 
-    # Extract Cleaning Mode
     if clean_param.HasField("clean_type"):
         mode_val = clean_param.clean_type.value
-        changes["cleaning_mode"] = CLEANING_MODE_NAMES.get(
-            CleaningMode(mode_val), "Vacuum"
+        changes["cleaning_mode"] = _enum_name(
+            CLEANING_MODE_NAMES, mode_val, "CleanType", "Vacuum"
         )
         track_received_field(state, changes, "cleaning_mode")
 
-    # Extract Fan Speed (available on newer devices in DPS 154)
     if clean_param.HasField("fan"):
         fan_val = clean_param.fan.suction
         changes["fan_speed"] = FAN_SUCTION_NAMES.get(fan_val, "Standard")
@@ -1014,11 +970,10 @@ def _process_cleaning_parameters(
             "DPS 154: Extracted fan speed %s (value: %s)", changes["fan_speed"], fan_val
         )
 
-    # Extract Mop Water Level
     if clean_param.HasField("mop_mode"):
         level_val = clean_param.mop_mode.level
-        changes["mop_water_level"] = MOP_WATER_LEVEL_NAMES.get(
-            MopWaterLevel(level_val), "Medium"
+        changes["mop_water_level"] = _enum_name(
+            MOP_WATER_LEVEL_NAMES, level_val, "MopMode.level", "Medium"
         )
         track_received_field(state, changes, "mop_water_level")
         _LOGGER.debug(
@@ -1029,7 +984,6 @@ def _process_cleaning_parameters(
     else:
         _LOGGER.debug("DPS 154: mop_mode not present in cleaning parameters")
 
-    # Extract Corner Cleaning Mode
     if clean_param.HasField("mop_mode"):
         corner_val = clean_param.mop_mode.corner_clean
         changes["corner_cleaning"] = CORNER_CLEANING_NAMES.get(corner_val, "Normal")
@@ -1040,7 +994,6 @@ def _process_cleaning_parameters(
             corner_val,
         )
 
-    # Extract Cleaning Intensity
     if clean_param.HasField("clean_extent"):
         extent_val = clean_param.clean_extent.value
         changes["cleaning_intensity"] = CLEANING_INTENSITY_NAMES.get(
@@ -1053,7 +1006,6 @@ def _process_cleaning_parameters(
             extent_val,
         )
 
-    # Extract Carpet Strategy
     if clean_param.HasField("clean_carpet"):
         carpet_val = clean_param.clean_carpet.strategy
         changes["carpet_strategy"] = CARPET_STRATEGY_NAMES.get(carpet_val, "Auto Raise")
@@ -1064,7 +1016,6 @@ def _process_cleaning_parameters(
             carpet_val,
         )
 
-    # Extract Smart Mode Switch
     if clean_param.HasField("smart_mode_sw"):
         changes["smart_mode"] = clean_param.smart_mode_sw.value
         track_received_field(state, changes, "smart_mode")

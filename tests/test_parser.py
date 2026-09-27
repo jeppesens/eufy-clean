@@ -490,7 +490,7 @@ def test_work_mode_names_mapping():
 
 # ── G-series scalar/JSON protocol (e.g. T2210/G50) ───────────────────
 # These devices send plain int/JSON DPS on different DPS numbers and emit no
-# WorkStatus (153). Captured from a real G50 — see docs/g50_capture/FINDINGS.md.
+# WorkStatus (153). Taken from a real G50.
 
 _G50_DPS = {
     "15": 5,  # state -> docked/charging

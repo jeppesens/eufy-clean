@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from custom_components.robovac_mqtt.api import local_tuya as lt
 from custom_components.robovac_mqtt.api.local_tuya import (
     LocalTuyaClient,
     LocalTuyaError,
@@ -174,6 +175,21 @@ def _make_sleep_recorder(sleeps: list[float]):
     return fake_sleep
 
 
+def _silence_keepalive(client: LocalTuyaClient) -> None:
+    """Drop the keepalive task for tests about the LISTEN loop.
+
+    The heartbeat sleeps on the same patched ``asyncio.sleep`` the backoff
+    assertions read, and its interval collides with a legitimate backoff value
+    (both 10 s), so filtering by duration would hide a real regression. These
+    tests are about reconnect behaviour; the keepalive has its own test.
+    """
+
+    async def _no_keepalive() -> None:
+        return
+
+    client._heartbeat_loop = _no_keepalive  # type: ignore[method-assign]  # noqa: SLF001
+
+
 async def _drive_until(done: asyncio.Event, client: LocalTuyaClient) -> None:
     """Wait for the scripted packets to drain, then tear the client down."""
     try:
@@ -219,6 +235,8 @@ async def test_listener_ignores_timeout_error(patch_tinytuya, fake_dev):
     )
     client.set_on_message(lambda _b: None)
 
+    _silence_keepalive(client)
+
     sleeps: list[float] = []
     with patch(
         "custom_components.robovac_mqtt.api.local_tuya.asyncio.sleep",
@@ -244,6 +262,8 @@ async def test_listener_reconnects_on_error_with_backoff(patch_tinytuya, fake_de
         device_id="dev1", local_key="k" * 16, host="1.2.3.4"
     )
     client.set_on_message(lambda _b: None)
+
+    _silence_keepalive(client)
 
     sleeps: list[float] = []
     with patch(
@@ -291,6 +311,8 @@ async def test_listener_reconnects_on_exception_and_resets_backoff(
 
     client.set_on_message(on_msg)
 
+    _silence_keepalive(client)
+
     sleeps: list[float] = []
     with patch(
         "custom_components.robovac_mqtt.api.local_tuya.asyncio.sleep",
@@ -331,6 +353,8 @@ async def test_reconnect_refetches_status(patch_tinytuya, fake_dev):
         seen.append(json.loads(json.loads(payload.decode())["payload"]))
 
     client.set_on_message(on_msg)
+
+    _silence_keepalive(client)
 
     sleeps: list[float] = []
     with patch(
@@ -373,6 +397,32 @@ def test_dispatch_ignores_non_dps_payloads(payload, patch_tinytuya):
     assert not fired
 
 
+def test_dispatch_hands_a_dps_callback_the_plain_dict(patch_tinytuya):
+    """A DPS callback gets the dict itself; no JSON envelope is built."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    enveloped: list[bytes] = []
+    plain: list[dict] = []
+    client.set_on_message(enveloped.append)
+    client.set_on_dps(plain.append)
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya.json.dumps"
+    ) as dumps:
+        client._dispatch({"dps": {"104": 87}})
+    dumps.assert_not_called()
+    assert plain == [{"104": 87}]
+    assert not enveloped
+
+
+def test_unreachable_error_omits_the_address(patch_tinytuya):
+    """The message reaches a WARNING in the coordinator; the LAN host stays out."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="192.168.1.77")
+    client._dev = MagicMock()
+    client._dev.status.return_value = {"Error": "Network Error: Unable to Connect", "Err": "901"}
+    with patch.object(client, "_open_device"), pytest.raises(LocalTuyaError) as err:
+        asyncio.run(client.connect())
+    assert "192.168.1.77" not in str(err.value)
+
+
 def test_dispatch_without_callback_is_noop(patch_tinytuya):
     """_dispatch with a valid payload but no callback registered is a no-op."""
     client = LocalTuyaClient(
@@ -389,3 +439,231 @@ def test_receive_with_timeout_guards_none_dev(patch_tinytuya):
     )
     assert client._dev is None
     assert client._receive_with_timeout() is None
+
+
+@pytest.mark.asyncio
+async def test_write_is_followed_by_a_status_re_read(patch_tinytuya, fake_dev):
+    """A write must be followed by a fresh status(), or its effect can go unseen.
+
+    The transport is push-only, and the device announces what it chooses to
+    announce. A consumable reset (DPS 116) applies on the device and is never
+    pushed, so without this the counter kept its old value in Home Assistant
+    until the next reconnect — indistinguishable, from the dashboard, from a
+    reset that did nothing at all.
+    """
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    received: list[bytes] = []
+    client.set_on_message(received.append)
+    await client.connect()
+    try:
+        fake_dev.status.return_value = {"dps": {"116": "eyJyZXNldCI6MH0="}}
+        with patch.object(lt, "_POST_WRITE_REFETCH_DELAY", 0):
+            await client.send_command({"116": "eyJjb25zdW1hYmxlIjp7fX0="})
+            await asyncio.sleep(0.05)
+    finally:
+        await client.disconnect()
+
+    payloads = [json.loads(json.loads(b.decode())["payload"])["data"] for b in received]
+    assert {"116": "eyJyZXNldCI6MH0="} in payloads
+
+
+@pytest.mark.asyncio
+async def test_a_burst_of_writes_costs_one_re_read(patch_tinytuya, fake_dev):
+    """Several writes in a row coalesce into a single status() call."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client.set_on_message(lambda _b: None)
+    await client.connect()
+    fake_dev.status.reset_mock()
+    try:
+        with patch.object(lt, "_POST_WRITE_REFETCH_DELAY", 0.02):
+            await client.send_command({"102": "Quiet"})
+            await client.send_command({"103": True})
+            await client.send_command({"105": "Mid"})
+            await asyncio.sleep(0.08)
+    finally:
+        await client.disconnect()
+    assert fake_dev.status.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_teardown_cancels_a_pending_re_read(patch_tinytuya, fake_dev):
+    """A queued re-read must not reach for the socket after disconnect()."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client.set_on_message(lambda _b: None)
+    await client.connect()
+    fake_dev.status.reset_mock()
+    with patch.object(lt, "_POST_WRITE_REFETCH_DELAY", 5):
+        await client.send_command({"102": "Quiet"})
+    await client.disconnect()
+    await asyncio.sleep(0.05)
+    assert fake_dev.status.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_the_keepalive_holds_the_session_open(patch_tinytuya, fake_dev):
+    """Without it the device closes the idle socket every ~30 s.
+
+    tinytuya then reports the EOF as ERR_PAYLOAD 904 ("Unexpected Payload from
+    Device", which describes something else entirely) and silently re-dials,
+    redoing the whole 3.5 session-key negotiation — measured 124 times in one
+    hour on a T2266, none of which refreshed any state.
+    """
+    done = asyncio.Event()
+    fake_dev.receive.side_effect = _scripted_receive([None, None, None], done)
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client.set_on_message(lambda _b: None)
+
+    # Fire the keepalive immediately instead of waiting out its real interval.
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya._HEARTBEAT_INTERVAL", 0.01
+    ):
+        await client.connect()
+        await _drive_until(done, client)
+
+    assert fake_dev.heartbeat.called, "the socket is never kept alive"
+    # nowait: the reply is an empty payload the listen loop already ignores, and
+    # waiting for it here would read from the socket the listener owns.
+    assert all(c.kwargs.get("nowait") is True for c in fake_dev.heartbeat.call_args_list)
+    # ...and it stops with the client, rather than poking a closed socket.
+    assert client._heartbeat_task is None
+
+
+@pytest.mark.parametrize("connected", [True, False])
+def test_the_keepalive_never_dials_a_closed_socket(connected):
+    """tinytuya opens a socket for any send when none is open; reconnecting
+    belongs to the listen loop's backoff."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    dev = MagicMock()
+    dev.socket = MagicMock() if connected else None
+    client._dev = dev
+    client._send_heartbeat()
+    assert dev.heartbeat.called is connected
+
+
+@pytest.mark.asyncio
+async def test_a_failing_keepalive_is_not_fatal(patch_tinytuya, fake_dev):
+    """A heartbeat that cannot be sent is the listen loop's problem to notice."""
+    done = asyncio.Event()
+    fake_dev.heartbeat.side_effect = OSError("broken pipe")
+    fake_dev.receive.side_effect = _scripted_receive([{"dps": {"1": True}}], done)
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    seen: list[bytes] = []
+    client.set_on_message(seen.append)
+
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya._HEARTBEAT_INTERVAL", 0.01
+    ):
+        await client.connect()
+        await _drive_until(done, client)
+
+    assert seen, "the listener kept working through the failing keepalive"
+
+
+# ---------------------------------------------------------------------------
+# "Benign" is per-read, not per-session
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_one_benign_payload_error_keeps_the_session(patch_tinytuya, fake_dev):
+    """904 on a single read is an empty/unparsable frame, not a dead socket."""
+    done = asyncio.Event()
+    fake_dev.receive.side_effect = _scripted_receive(
+        [{"Error": "Unexpected Payload from Device", "Err": 904}], done
+    )
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client.set_on_message(lambda _b: None)
+    _silence_keepalive(client)
+
+    sleeps: list[float] = []
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya.asyncio.sleep",
+        new=_make_sleep_recorder(sleeps),
+    ):
+        await client.connect()
+        await _drive_until(done, client)
+
+    assert patch_tinytuya.Device.call_count == 1
+    assert not sleeps
+
+
+@pytest.mark.asyncio
+async def test_a_run_of_benign_errors_backs_off_instead_of_spinning(
+    patch_tinytuya, fake_dev
+):
+    """Back-to-back 904s are a dead transport, and must not be re-read at full speed.
+
+    tinytuya reports EOF as ERR_PAYLOAD after closing the socket, so a rotated
+    localKey — or the eufy app holding the device's single local slot — gives one
+    on every dial. Handled as "one bad read" that is a connect/EOF/reconnect spin
+    with `sleep(0)` between attempts, pegging an executor thread indefinitely.
+    """
+    done = asyncio.Event()
+    payload_err = {"Error": "Unexpected Payload from Device", "Err": 904}
+    fake_dev.receive.side_effect = _scripted_receive([payload_err] * 12, done)
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client.set_on_message(lambda _b: None)
+    _silence_keepalive(client)
+
+    sleeps: list[float] = []
+    with patch(
+        "custom_components.robovac_mqtt.api.local_tuya.asyncio.sleep",
+        new=_make_sleep_recorder(sleeps),
+    ):
+        await client.connect()
+        await _drive_until(done, client)
+
+    # 10 free reads, then the 11th is treated as a broken session: one real
+    # backoff and one reconnect, not twelve immediate re-dials.
+    assert sleeps == [5.0]
+    assert patch_tinytuya.Device.call_count == 2
+
+
+# ---------------------------------------------------------------------------
+# Version probing / unreachable devices
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_unreachable_device_raises_instead_of_pretending_to_connect(
+    patch_tinytuya, fake_dev
+):
+    """The socket never opened, so connect() must fail and let cloud take over.
+
+    tinytuya returns that as a value, not an exception; swallowing it left the
+    coordinator holding a local client that could never deliver anything.
+    """
+    fake_dev.status.return_value = {"Error": "Device Unreachable", "Err": 905}
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client.set_on_message(lambda _b: None)
+
+    with pytest.raises(LocalTuyaError):
+        await client.connect()
+    await client.disconnect()
+
+    # ...and no protocol version was probed: no version can open a socket, and
+    # at 10 s a try that turned one dead device into ~40 s of blocked setup.
+    assert fake_dev.status.call_count == 1
+    assert fake_dev.set_version.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_protocol_version_is_still_probed(patch_tinytuya, fake_dev):
+    """A socket that opens but cannot decrypt IS the case the probe exists for."""
+    results = [
+        {"Error": "Check device key or version", "Err": 914},  # configured 3.3
+        {"dps": {"104": 87}},                                   # 3.5 answers
+    ]
+    fake_dev.status.side_effect = results
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4", version=3.3
+    )
+    client.set_on_message(lambda _b: None)
+    _silence_keepalive(client)
+
+    await client.connect()
+    await client.disconnect()
+
+    assert client.version == 3.5
+    # Probed with the short timeout, and the ordinary one restored afterwards.
+    assert [c.args[0] for c in fake_dev.set_socketTimeout.call_args_list] == [3.0, 10.0]

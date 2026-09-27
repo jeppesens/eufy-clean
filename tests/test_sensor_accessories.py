@@ -2,8 +2,9 @@ from unittest.mock import MagicMock
 
 from homeassistant.core import HomeAssistant
 
-from custom_components.robovac_mqtt.const import ACCESSORY_MAX_LIFE, DOMAIN
+from custom_components.robovac_mqtt.const import DOMAIN
 from custom_components.robovac_mqtt.models import AccessoryState, VacuumState
+from custom_components.robovac_mqtt.profiles import get_device_profile
 from custom_components.robovac_mqtt.sensor import async_setup_entry
 
 
@@ -16,6 +17,15 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
     coordinator.device_name = "RoboVac"
     coordinator.device_id = "test_device"
     coordinator.device_info = {}
+    coordinator.device_model = "T2266"
+    coordinator.api_type = "novel"
+    # sensor.py prefers coordinator.profile when it is a real DeviceProfile;
+    # a MagicMock is not, so it falls back to get_device_profile(model, api_type).
+    coordinator.profile = None
+    profile = get_device_profile("T2266", "novel")
+    accessory_max = {
+        attr: spec.max_life_hours for attr, spec in profile.accessories.items()
+    }
 
     # Mock state with some usage
     acc_state = AccessoryState(
@@ -38,7 +48,7 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
     rb_sensor = next(
         e for e in added_entities if e._attr_name == "Rolling Brush Remaining"
     )
-    max_main = ACCESSORY_MAX_LIFE["main_brush_usage"]
+    max_main = accessory_max["main_brush_usage"]
     assert rb_sensor.native_value == max_main - 100
     assert rb_sensor.extra_state_attributes["usage_hours"] == 100
     assert rb_sensor.extra_state_attributes["total_life_hours"] == max_main
@@ -47,7 +57,7 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
     sb_sensor = next(
         e for e in added_entities if e._attr_name == "Side Brush Remaining"
     )
-    max_side = ACCESSORY_MAX_LIFE["side_brush_usage"]
+    max_side = accessory_max["side_brush_usage"]
     assert sb_sensor.native_value == max_side - 50
 
     # Verify negative handling (over usage)

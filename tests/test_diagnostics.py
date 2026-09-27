@@ -54,8 +54,28 @@ async def test_diagnostics_output():
 
     # Check password is redacted
     assert result["entry_data"]["password"] == "**REDACTED**"
-    # Username should be visible (not in REDACT_KEYS)
-    assert result["entry_data"]["username"] == "user@example.com"
+    # The username is an email address, so diagnostics redacts it alongside the password.
+    assert result["entry_data"]["username"] == "**REDACTED**"
+    # User-chosen names are personal data too.
+    assert device["device_name"] == "**REDACTED**"
+
+
+@pytest.mark.asyncio
+async def test_diagnostics_redacts_legacy_room_names():
+    """Room names kept in entry.data before migration are redacted."""
+    hass = MagicMock()
+    entry = MagicMock()
+    entry.entry_id = "legacy_entry"
+    entry.data = {
+        "username": "user@example.com",
+        "password": "pass",
+        "last_seen_segments": [{"id": 1, "name": "Room A"}],
+    }
+    hass.data = {"robovac_mqtt": {"legacy_entry": {"coordinators": []}}}
+
+    result = await async_get_config_entry_diagnostics(hass, entry)
+
+    assert result["entry_data"]["last_seen_segments"] == "**REDACTED**"
 
 
 @pytest.mark.asyncio

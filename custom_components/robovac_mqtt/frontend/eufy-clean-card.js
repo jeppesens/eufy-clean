@@ -669,7 +669,7 @@ class EufyCleanCard extends HTMLElement {
   // toggle it. No client-side geometry needed — the integration owns the mask + transforms.
   async _resolveRoomTap(nx, ny) {
     if (!this._hass || this._frameUngrounded) return;
-    let rid = 0;
+    let rid = null;
     try {
       const r = await this._hass.callService(
         "robovac_mqtt",
@@ -687,14 +687,15 @@ class EufyCleanCard extends HTMLElement {
         resp[this._config.vacuum] ||
         (resp.room_id !== undefined ? resp : Object.values(resp)[0]) ||
         {};
-      rid = Number(entry.room_id) || 0;
+      // A miss is null; 0 is a real room id (legacy robots number rooms from 0).
+      const raw = entry.room_id;
+      rid = raw === null || raw === undefined || raw === "" ? null : Number(raw);
     } catch (err) {
       this._setStatus(`Tap lookup failed: ${err && err.message ? err.message : err}`);
       return;
     }
-    // Only real, listed rooms are selectable; background/unmapped pixels (rid 0 or the
-    // mask's background id) resolve to nothing.
-    const room = rid ? this._lastRooms.find((r) => r.id === rid) : null;
+    // Only real, listed rooms are selectable; a miss or an unlisted id resolves to nothing.
+    const room = Number.isFinite(rid) ? this._lastRooms.find((r) => r.id === rid) : null;
     if (!room) {
       this._setStatus("No room there — tap inside a room.");
       return;
