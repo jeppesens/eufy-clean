@@ -12,13 +12,9 @@ from custom_components.robovac_mqtt.api import cloud as cloud_mod
 from custom_components.robovac_mqtt.api.cloud import (
     EufyLogin,
     EufyLoginError,
-    EufyLoginRateLimitedError,
 )
 from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
-from custom_components.robovac_mqtt.auth_store import (
-    LOGIN_HOLD_OFF_DEFAULT,
-    AuthCache,
-)
+from custom_components.robovac_mqtt.auth_store import AuthCache
 
 
 def _make_login(
@@ -471,37 +467,6 @@ async def test_login_stores_user_id():
     await login.login({"mqtt": True})
 
     assert login._eufy_user_id == "eu_123"
-
-
-@pytest.mark.asyncio
-async def test_login_sends_nothing_during_the_hold_off():
-    login = _make_login()
-    login.auth_cache = AuthCache()
-    login.auth_cache.hold_off_logins(300)
-
-    with pytest.raises(EufyLoginRateLimitedError) as err:
-        await login.login({"mqtt": True})
-
-    login.eufyApi.login.assert_not_awaited()
-    assert 290 < err.value.retry_after <= 300
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("retry_after", "expected"), [(120.0, 120.0), (None, LOGIN_HOLD_OFF_DEFAULT)]
-)
-async def test_a_rate_limited_login_starts_the_hold_off(retry_after, expected):
-    """Retry-After sets the hold-off; without one the default applies."""
-    login = _make_login()
-    login.auth_cache = AuthCache()
-    login.eufyApi.login = AsyncMock(
-        side_effect=EufyLoginRateLimitedError("HTTP 429", retry_after=retry_after)
-    )
-
-    with pytest.raises(EufyLoginRateLimitedError):
-        await login.login({"mqtt": True})
-
-    assert expected - 10 < login.auth_cache.login_hold_off_left() <= expected
 
 
 # ── Cloud device discovery ──────────────────────────────────────────

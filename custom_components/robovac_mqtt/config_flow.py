@@ -17,7 +17,13 @@ from voluptuous import In
 from voluptuous import Optional as VOptional
 from voluptuous import Required, Schema
 
-from .api.cloud import EufyLogin, EufyLoginError, EufyLoginTransientError
+from .api.cloud import (
+    EufyLogin,
+    EufyLoginChallengeError,
+    EufyLoginError,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+)
 from .auth_store import AuthCache, AuthStore
 from .const import (
     CONF_LOCAL_DEVICES,
@@ -184,15 +190,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         """
         store = AuthStore(self.hass, entry.entry_id)
         cached = await store.async_load()
-        # Identity and probe memos only: the old tokens are what failed.
+        # Identity, probe memos and the login budget: the old tokens are what
+        # failed, and a successful login here clears the session-replaced latch.
         cache = AuthCache(
             openudid=cached.openudid,
             login_label=cached.login_label,
             tuya_region=cached.tuya_region,
+            throttle=cached.throttle,
         )
         title, errors = await self._login_and_get_title(username, password, cache)
         if not errors:
             await store.async_save(cache)
+        else:
+            # Keep the stored tokens, but count the attempt and any hold-off.
+            cached.throttle = cache.throttle
+            await store.async_save(cached)
         return title, errors
 
     async def _login_and_get_title(
@@ -226,9 +238,15 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
                 )
             else:
                 errors["base"] = "no_devices"
+        except EufyLoginChallengeError as e:
+            _LOGGER.debug("Eufy login needs a challenge answer: %s", e)
+            errors["base"] = "login_challenge"
         except EufyLoginError as e:
             _LOGGER.debug("Eufy login rejected: %s", e)
             errors["base"] = "invalid_auth"
+        except EufyLoginRateLimitedError as e:
+            _LOGGER.debug("Eufy login held off: %s", e)
+            errors["base"] = "rate_limited"
         except (EufyLoginTransientError, aiohttp.ClientError, TimeoutError) as e:
             _LOGGER.debug("Eufy login unavailable: %s", e)
             errors["base"] = "cannot_connect"

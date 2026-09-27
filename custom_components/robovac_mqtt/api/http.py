@@ -19,28 +19,23 @@ from ..const import (
     EUFY_API_MQTT_INFO,
     EUFY_API_USER_INFO,
 )
+from .errors import (
+    EufyLoginChallengeError,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+)
+from .throttle import (
+    CHALLENGE_CODES,
+    CREDENTIAL_CODES,
+    SESSION_REPLACED_CODE,
+    TOKEN_INVALID_CODE,
+    CloudThrottle,
+    body_code,
+)
 
 _REQUEST_TIMEOUT = aiohttp.ClientTimeout(total=30)
 
 _LOGGER = logging.getLogger(__name__)
-
-
-class EufyLoginTransientError(Exception):
-    """The login could not be decided: rate limit, server error or network.
-
-    Not a credential rejection; the caller retries later and keeps its tokens.
-    """
-
-
-class EufyLoginRateLimitedError(EufyLoginTransientError):
-    """The cloud answered HTTP 429, or a login hold-off refuses the login locally.
-
-    ``retry_after`` is the number of seconds to wait, None when unknown.
-    """
-
-    def __init__(self, message: str, retry_after: float | None = None) -> None:
-        super().__init__(message)
-        self.retry_after = retry_after
 
 
 def _is_transient_status(status: int) -> bool:
@@ -69,12 +64,12 @@ def _retry_after(response: Any) -> float | None:
     return max(when.timestamp() - time.time(), 0.0)
 
 
-def _raise_if_rate_limited(response: Any, where: str) -> None:
-    """Raise EufyLoginRateLimitedError for an HTTP 429 answer."""
-    if response.status == 429:
-        raise EufyLoginRateLimitedError(
-            f"{where}: HTTP 429", retry_after=_retry_after(response)
-        )
+async def _read_json(response: Any) -> Any:
+    """The body as JSON, or None when it is not JSON."""
+    try:
+        return await response.json(content_type=None)
+    except (aiohttp.ContentTypeError, ValueError, TypeError):
+        return None
 
 
 # Tried in order; accounts on the unified Eufy app reject the legacy config.
@@ -105,6 +100,7 @@ class EufyHTTPClient:
         password: str,
         openudid: str,
         websession: aiohttp.ClientSession,
+        throttle: CloudThrottle | None = None,
     ) -> None:
         self.username = username
         self.password = password
@@ -119,6 +115,9 @@ class EufyHTTPClient:
         self.auth_error: bool = False
         # A 408/5xx on an authenticated call: an outage, not a dead token.
         self.transient_error: bool = False
+        # Body code 26084: the session was ended (seen after another login).
+        self.session_replaced: bool = False
+        self.throttle = throttle if throttle is not None else CloudThrottle()
 
     async def login(self, validate_only: bool = False) -> dict[str, Any]:
         """Log in, preferring a token that yields a user_center id.
@@ -131,15 +130,23 @@ class EufyHTTPClient:
         Returns {} when every config rejected the credentials. Raises
         EufyLoginTransientError when a config could not be decided (5xx,
         unreadable body, network error) and none yielded a user_center token,
-        and EufyLoginRateLimitedError at the first HTTP 429.
+        EufyLoginRateLimitedError at the first throttle answer, during a
+        hold-off or once the login budget is spent (before any request), and
+        EufyLoginChallengeError when the account needs a verification code or
+        captcha.
         """
+        # One login() is one attempt against the budget, whichever configs it
+        # tries; counted before the first request, as a timeout may still land.
+        self.throttle.check_login()
+        self.throttle.note_login()
         fallback_session: dict[str, Any] | None = None
         transient: BaseException | None = None
         for config in self._ordered_login_configs():
             try:
                 session = await self._attempt_login(config)
-            except EufyLoginRateLimitedError:
-                # the other config would only add to the rate limit
+            except (EufyLoginRateLimitedError, EufyLoginChallengeError):
+                # the other config would only extend the hold-off or hit the
+                # same challenge
                 raise
             except (EufyLoginTransientError, aiohttp.ClientError, TimeoutError) as err:
                 _LOGGER.debug("Login via %s undecided: %s", config["label"], err)
@@ -197,18 +204,40 @@ class EufyHTTPClient:
         _LOGGER.error("All login attempts were rejected")
         return {}
 
-    def _note_auth_status(self, response: Any, where: str) -> None:
+    def _before_request(self) -> None:
+        """Refuse locally while a request hold-off runs."""
+        self.throttle.check_request()
+
+    def _raise_if_rate_limited(self, response: Any, body: Any, where: str) -> None:
+        """Raise EufyLoginRateLimitedError for a throttle answer (HTTP 429 or a
+        throttle body code), recording its hold-off."""
+        err = self.throttle.throttled(
+            body_code(body), response.status, _retry_after(response), where
+        )
+        if err is not None:
+            _LOGGER.warning("%s", err)
+            raise err
+
+    def _note_auth_status(self, response: Any, where: str, body: Any) -> None:
         """Classify an authenticated call's answer.
 
-        Raises EufyLoginRateLimitedError on HTTP 429. Records a rejected token
-        (``auth_error``) and a server-side failure (``transient_error``), which
-        says nothing about the token.
+        Raises EufyLoginRateLimitedError for a throttle. Records a rejected
+        token (``auth_error``), a session ended by another login
+        (``session_replaced``) and a server-side failure (``transient_error``),
+        which says nothing about the token.
         """
         status = response.status
-        _raise_if_rate_limited(response, where)
-        if status in (401, 403):
+        self._raise_if_rate_limited(response, body, where)
+        code = body_code(body)
+        if code == SESSION_REPLACED_CODE:
+            self.session_replaced = True
             self.auth_error = True
-            _LOGGER.debug("Eufy rejected the session on %s (HTTP %s)", where, status)
+            _LOGGER.debug("Eufy ended the session on %s (code %s)", where, code)
+        elif status in (401, 403) or code == TOKEN_INVALID_CODE:
+            self.auth_error = True
+            _LOGGER.debug(
+                "Eufy rejected the session on %s (HTTP %s, code %s)", where, status, code
+            )
         elif _is_transient_status(status):
             self.transient_error = True
             _LOGGER.debug("Eufy %s failed on the server side (HTTP %s)", where, status)
@@ -241,6 +270,7 @@ class EufyHTTPClient:
         self.login_label = login_label
         self.auth_error = False
         self.transient_error = False
+        self.session_replaced = False
 
     async def _attempt_login(
         self, config: dict[str, str]
@@ -248,7 +278,8 @@ class EufyHTTPClient:
         """POST a single credential set; return the session JSON or None.
 
         None means the server answered and rejected the credentials. Raises
-        EufyLoginRateLimitedError for HTTP 429, EufyLoginTransientError for
+        EufyLoginRateLimitedError for a throttle, EufyLoginChallengeError when
+        the account needs a code or a captcha, and EufyLoginTransientError for
         another transient status or an unreadable 200.
         """
         _LOGGER.debug(
@@ -274,13 +305,17 @@ class EufyHTTPClient:
                 "client_secret": config["client_secret"],
             },
         ) as response:
-            response_json = None
-            try:
-                response_json = await response.json()
-            except (aiohttp.ContentTypeError, ValueError):
-                pass
-
-            _raise_if_rate_limited(response, f"{config['label']} login")
+            response_json = await _read_json(response)
+            self._raise_if_rate_limited(
+                response, response_json, f"{config['label']} login"
+            )
+            code = body_code(response_json)
+            if code in CHALLENGE_CODES:
+                raise EufyLoginChallengeError(
+                    f"{config['label']} login needs a verification code or captcha "
+                    f"(code {code})",
+                    code=code,
+                )
             if _is_transient_status(response.status):
                 raise EufyLoginTransientError(
                     f"{config['label']} login: HTTP {response.status}"
@@ -295,6 +330,15 @@ class EufyHTTPClient:
                 and response_json.get("access_token")
             ):
                 return response_json
+
+            if code is not None and code not in CREDENTIAL_CODES and code != 0:
+                # Unclassified: still read as a rejection, logged so it can be classified.
+                _LOGGER.info(
+                    "%s login refused with unclassified code %s (HTTP %s)",
+                    config["label"],
+                    code,
+                    response.status,
+                )
 
             # Only the status and the API's own error fields: the full body can
             # echo account details back into the log.
@@ -317,12 +361,14 @@ class EufyHTTPClient:
     async def get_user_info(self) -> dict[str, Any] | None:
         """Get User details; None when the session has no user_center.
 
-        Raises EufyLoginTransientError on a transient HTTP status
-        (EufyLoginRateLimitedError for 429).
+        Raises EufyLoginTransientError on a transient HTTP status or a 200
+        whose body is not a JSON object (EufyLoginRateLimitedError for a
+        throttle).
         """
         if not self.session:
             return None
 
+        self._before_request()
         session = self._websession
         async with session.get(
             EUFY_API_USER_INFO,
@@ -336,13 +382,17 @@ class EufyHTTPClient:
                 "clienttype": "2",
             },
         ) as response:
-            self._note_auth_status(response, "get_user_info")
+            user_info = await _read_json(response)
+            self._note_auth_status(response, "get_user_info", user_info)
             if _is_transient_status(response.status):
                 raise EufyLoginTransientError(f"user info: HTTP {response.status}")
             if response.status == 200:
-                user_info = await response.json()
+                if not isinstance(user_info, dict):
+                    # An error page is not the fallback signal: only a JSON
+                    # object without a user_center_id is.
+                    raise EufyLoginTransientError("user info: unreadable response body")
                 # Expected for fallback-session accounts; login() handles it.
-                if not isinstance(user_info, dict) or not user_info.get("user_center_id"):
+                if not user_info.get("user_center_id"):
                     _LOGGER.debug("No user_center_id in the user info")
                     self.user_info = None
                     return None
@@ -364,6 +414,7 @@ class EufyHTTPClient:
             _LOGGER.debug("Skipping the AIOT device list: no user_center")
             return []
 
+        self._before_request()
         session = self._websession
         async with session.post(
             EUFY_API_DEVICE_LIST,
@@ -380,10 +431,10 @@ class EufyHTTPClient:
             },
             json={"attribute": 3},
         ) as response:
-            self._note_auth_status(response, "get_device_list")
-            if response.status == 200:
-                data = await response.json()
-                devices = data.get("data", {}).get("devices")
+            data = await _read_json(response)
+            self._note_auth_status(response, "get_device_list", data)
+            if response.status == 200 and isinstance(data, dict):
+                devices = (data.get("data") or {}).get("devices")
                 if not devices:
                     return []
                 return [d["device"] for d in devices if "device" in d]
@@ -414,6 +465,7 @@ class EufyHTTPClient:
 
     async def _get_cloud_device_list_legacy(self) -> list[dict[str, Any]]:
         """Get cloud device list from api.eufylife.com/v1/device/v2."""
+        self._before_request()
         session = self._websession
         async with session.get(
             EUFY_API_DEVICE_V2,
@@ -427,10 +479,10 @@ class EufyHTTPClient:
                 "clienttype": "2",
             },
         ) as response:
-            self._note_auth_status(response, "_get_cloud_device_list_legacy")
-            if response.status == 200:
-                data = await response.json()
-                return data.get("devices", [])
+            data = await _read_json(response)
+            self._note_auth_status(response, "_get_cloud_device_list_legacy", data)
+            if response.status == 200 and isinstance(data, dict):
+                return data.get("devices") or []
             _LOGGER.debug(
                 "Cloud device list (legacy) failed: status=%s", response.status
             )
@@ -438,6 +490,7 @@ class EufyHTTPClient:
 
     async def _get_home_device_list(self) -> list[dict[str, Any]]:
         """Get device list from home-api.eufylife.com (unified Eufy app endpoint)."""
+        self._before_request()
         session = self._websession
         async with session.get(
             EUFY_API_DEVICE_LIST_HOME,
@@ -447,9 +500,9 @@ class EufyHTTPClient:
                 "token": self.session["access_token"],  # type: ignore
             },
         ) as response:
-            self._note_auth_status(response, "_get_home_device_list")
+            data = await _read_json(response)
+            self._note_auth_status(response, "_get_home_device_list", data)
             if response.status == 200:
-                data = await response.json()
                 _LOGGER.debug(
                     "Home-api device list raw response keys: %s",
                     list(data.keys())
@@ -475,6 +528,7 @@ class EufyHTTPClient:
             _LOGGER.error("Cannot get MQTT credentials: user_info is None")
             return None
 
+        self._before_request()
         session = self._websession
         async with session.post(
             EUFY_API_MQTT_INFO,
@@ -490,11 +544,12 @@ class EufyHTTPClient:
                 "gtoken": self.user_info["gtoken"],
             },
         ) as response:
-            self._note_auth_status(response, "get_mqtt_credentials")
+            data = await _read_json(response)
+            self._note_auth_status(response, "get_mqtt_credentials", data)
             if _is_transient_status(response.status):
                 raise EufyLoginTransientError(
                     f"MQTT credentials: HTTP {response.status}"
                 )
-            if response.status == 200:
-                return (await response.json()).get("data")
+            if response.status == 200 and isinstance(data, dict):
+                return data.get("data")
             return None

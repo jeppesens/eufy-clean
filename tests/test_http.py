@@ -9,14 +9,18 @@ from unittest.mock import AsyncMock, MagicMock
 import aiohttp
 import pytest
 
+from custom_components.robovac_mqtt.api.errors import (
+    EufyLoginChallengeError,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+)
 from custom_components.robovac_mqtt.api.http import (
     _LOGIN_CONFIGS,
     _REQUEST_TIMEOUT,
     EufyHTTPClient,
-    EufyLoginRateLimitedError,
-    EufyLoginTransientError,
     _retry_after,
 )
+from custom_components.robovac_mqtt.api.throttle import REQUEST_HOLD_OFF
 
 
 def _mock_websession(mock_response: AsyncMock) -> MagicMock:
@@ -413,12 +417,21 @@ async def test_login_success_after_transient_config_is_kept():
 
 
 @pytest.mark.asyncio
-async def test_login_user_info_5xx_is_transient_not_fallback():
-    """A 5xx on user info must not demote the account to a fallback session."""
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(503, None), (200, None), (200, ValueError("html")), (200, ["not", "an object"])],
+    ids=["5xx", "200-null", "200-not-json", "200-list"],
+)
+async def test_login_unusable_user_info_is_transient_not_fallback(status, body):
+    """A 5xx or a 200 that is not a JSON object on user info must not demote the
+    account to a fallback session; only an object without user_center_id does."""
     login_ok = _login_response(200, "tok")
     user_5xx = AsyncMock()
-    user_5xx.status = 503
-    user_5xx.json = AsyncMock(return_value=None)
+    user_5xx.status = status
+    if isinstance(body, Exception):
+        user_5xx.json = AsyncMock(side_effect=body)
+    else:
+        user_5xx.json = AsyncMock(return_value=body)
 
     def _ctx(resp):
         c = MagicMock()
@@ -450,27 +463,58 @@ async def test_get_user_info_without_user_center_logs_debug_only(caplog):
     assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")]
 
 
-# --- HTTP 429 ---
+# --- body codes, throttles and the login budget ---
 
 
-def _rate_limited(retry_after: str | None = None) -> AsyncMock:
-    r = _login_response(429)
-    r.headers = {} if retry_after is None else {"Retry-After": retry_after}
+def _body_response(status: int, body: dict | None, retry_after: str | None = None) -> AsyncMock:
+    r = AsyncMock()
+    r.status = status
+    r.json = AsyncMock(return_value=body)
+    r.headers = {"Retry-After": retry_after} if retry_after is not None else {}
     return r
 
 
+def _rate_limited(retry_after: str | None = None) -> AsyncMock:
+    return _body_response(429, None, retry_after)
+
+
 @pytest.mark.asyncio
-async def test_login_429_stops_at_the_first_config_with_its_retry_after():
-    """A rate-limited login does not go on to the next config."""
+async def test_login_throttle_code_stops_every_config_and_holds_off():
+    """A login throttle (100028) raises at once; the next login() sends nothing."""
     mock_session = _mock_websession_sequence(
-        _rate_limited("120"), _login_response(200, "tok_v1")
+        _body_response(200, {"res_code": 100028, "message": "too many"})
+    )
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginRateLimitedError) as err:
+        await client.login()
+    assert err.value.code == 100028
+    assert mock_session.post.call_count == 1
+
+    with pytest.raises(EufyLoginRateLimitedError):
+        await client.login()
+    assert mock_session.post.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retry_after", "held"),
+    [(None, REQUEST_HOLD_OFF), ("120", REQUEST_HOLD_OFF), ("7200", 7200.0)],
+    ids=["none", "short", "long"],
+)
+async def test_login_429_stops_at_the_first_config_and_holds_off(retry_after, held):
+    """HTTP 429 on a login does not go on to the next config and holds off
+    requests for at least an hour, longer when Retry-After says so."""
+    mock_session = _mock_websession_sequence(
+        _rate_limited(retry_after), _login_response(200, "tok_v1")
     )
     client = _make_client(websession=mock_session)
 
     with pytest.raises(EufyLoginRateLimitedError) as err:
         await client.login()
 
-    assert err.value.retry_after == 120
+    assert err.value.retry_after == pytest.approx(held, abs=5)
+    assert client.throttle.held_off("requests") == pytest.approx(held, abs=5)
     assert mock_session.post.call_count == 1
 
 
@@ -486,7 +530,7 @@ async def test_login_user_info_429_is_a_rate_limit_not_a_fallback():
     with pytest.raises(EufyLoginRateLimitedError) as err:
         await client.login()
 
-    assert err.value.retry_after is None
+    assert err.value.retry_after == pytest.approx(REQUEST_HOLD_OFF, abs=5)
     assert mock_session.post.call_count == 1
 
 
@@ -546,13 +590,95 @@ async def test_device_list_429_raises_a_rate_limit():
     with pytest.raises(EufyLoginRateLimitedError) as err:
         await client.get_cloud_device_list()
 
-    assert err.value.retry_after == 60
+    assert err.value.retry_after == pytest.approx(REQUEST_HOLD_OFF, abs=5)
     # the home-api fallback is not tried during a rate limit
     assert mock_session.get.call_count == 1
 
 
 def test_restore_clears_the_recorded_failures():
     client = _make_client()
-    client.auth_error = client.transient_error = True
+    client.auth_error = client.transient_error = client.session_replaced = True
     client.restore({"access_token": "t"}, None)
-    assert (client.auth_error, client.transient_error) == (False, False)
+    assert (client.auth_error, client.transient_error, client.session_replaced) == (
+        False,
+        False,
+        False,
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("code", [26052, 100032])
+async def test_login_challenge_code_raises_challenge(code):
+    """A verification code or captcha is not a credential rejection."""
+    mock_session = _mock_websession_sequence(_body_response(200, {"res_code": code}))
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginChallengeError) as err:
+        await client.login()
+    assert err.value.code == code
+    assert mock_session.post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_login_credential_code_is_a_rejection():
+    """A credential code on both configs is a plain rejection ({}), no hold-off."""
+    rejected = {"res_code": 26006, "message": "wrong password"}
+    mock_session = _mock_websession_sequence(
+        _body_response(200, rejected), _body_response(200, rejected)
+    )
+    client = _make_client(websession=mock_session)
+
+    assert await client.login() == {}
+    assert client.throttle.held_off("login") is None
+
+
+@pytest.mark.asyncio
+async def test_login_budget_refuses_before_any_request():
+    """Once the budget is spent, login() raises without contacting the cloud."""
+    mock_session = MagicMock()
+    client = _make_client(websession=mock_session)
+    for _ in range(3):
+        client.throttle.note_login()
+
+    with pytest.raises(EufyLoginRateLimitedError):
+        await client.login()
+    mock_session.post.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_login_counts_one_attempt_for_all_configs():
+    """Trying v2 then v1 is one login against the budget."""
+    mock_session = _mock_websession_sequence(
+        _login_response(401), _login_response(401)
+    )
+    client = _make_client(websession=mock_session)
+
+    await client.login()
+
+    assert len(client.throttle.recent_logins()) == 1
+
+
+@pytest.mark.asyncio
+async def test_session_replaced_code_is_flagged():
+    """Body code 26084 on an authenticated call marks the session as replaced."""
+    resp = _body_response(401, {"res_code": 26084, "message": "kicked out"})
+    client = _make_client(websession=_mock_websession(resp))
+    client.session = {"access_token": "tok"}
+
+    await client.get_cloud_device_list()
+
+    assert client.session_replaced is True
+    assert client.auth_error is True
+
+
+@pytest.mark.asyncio
+async def test_request_hold_off_blocks_authenticated_calls():
+    """While requests are held off, no authenticated call reaches the cloud."""
+    mock_session = MagicMock()
+    client = _make_client(websession=mock_session)
+    client.session = {"access_token": "tok"}
+    client.throttle.hold_off("requests", 600)
+
+    with pytest.raises(EufyLoginRateLimitedError):
+        await client.get_cloud_device_list()
+    mock_session.get.assert_not_called()

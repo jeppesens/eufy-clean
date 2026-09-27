@@ -15,10 +15,13 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufyLogin,
     EufyLoginRateLimitedError,
     EufyLoginTransientError,
+    EufySessionReplacedError,
+)
+from custom_components.robovac_mqtt.api.throttle import (
+    LOGIN_BUDGET,
+    SESSION_REPLACED_WINDOW,
 )
 from custom_components.robovac_mqtt.auth_store import (
-    LOGIN_HOLD_OFF_DEFAULT,
-    LOGIN_HOLD_OFF_MAX,
     AuthCache,
     certificate_not_after,
     mqtt_credentials_fresh,
@@ -154,13 +157,16 @@ def test_clear_tokens_keeps_identity_and_probe_memos():
         session={"access_token": "t"},
         user_info={"x": 1},
         mqtt_credentials={"a": 1},
-        login_hold_until=123.0,
+        throttle={"logins": [1.0], "hold_off": {"login": 2.0}},
+        replaced_relogin_at=3.0,
+        session_replaced_at=4.0,
     )
     cache.clear_tokens()
     assert cache.openudid == "stable"
     assert cache.login_label == "v1 (Eufy Clean app)"
     assert cache.tuya_region == "US"
-    assert cache.login_hold_until == 123.0
+    assert cache.throttle == {"logins": [1.0], "hold_off": {"login": 2.0}}
+    assert (cache.replaced_relogin_at, cache.session_replaced_at) == (3.0, 4.0)
     assert cache.session is None and cache.user_info is None
     assert cache.mqtt_credentials is None
 
@@ -169,33 +175,19 @@ def test_new_openudid_is_random():
     assert new_openudid() != new_openudid()
 
 
-def test_hold_off_logins_uses_retry_after_else_the_default():
-    cache = AuthCache()
-    assert cache.login_hold_off_left() is None
-    cache.hold_off_logins(120)
-    assert 110 < cache.login_hold_off_left() <= 120
-    cache = AuthCache()
-    cache.hold_off_logins(None)
-    assert LOGIN_HOLD_OFF_DEFAULT - 10 < cache.login_hold_off_left() <= LOGIN_HOLD_OFF_DEFAULT
-
-
-def test_hold_off_logins_is_capped_and_never_shortened():
-    cache = AuthCache()
-    cache.hold_off_logins(10 * LOGIN_HOLD_OFF_MAX)
-    assert cache.login_hold_off_left() <= LOGIN_HOLD_OFF_MAX
-    cache = AuthCache()
-    cache.hold_off_logins(600)
-    cache.hold_off_logins(60)
-    assert cache.login_hold_off_left() > 590
-
-
-def test_an_expired_hold_off_allows_logins():
-    assert AuthCache(login_hold_until=time.time() - 1).login_hold_off_left() is None
+def test_cache_from_dict_moves_a_stored_login_hold_until_into_the_throttle():
+    until = time.time() + 600
+    cache = AuthCache.from_dict({"login_hold_until": until})
+    assert cache.throttle == {"hold_off": {"login": until}}
+    assert not hasattr(cache, "login_hold_until")
+    # a store that has a throttle already wrote the hold-off there
+    kept = {"hold_off": {"requests": until}}
+    assert AuthCache.from_dict({"login_hold_until": 1.0, "throttle": kept}).throttle == kept
 
 
 @pytest.mark.parametrize("value", ["soon", True, None, [1]])
-def test_cache_from_dict_drops_a_bad_hold_off(value):
-    assert AuthCache.from_dict({"login_hold_until": value}).login_hold_until is None
+def test_cache_from_dict_drops_a_bad_login_hold_until(value):
+    assert not AuthCache.from_dict({"login_hold_until": value}).throttle
 
 
 # ---------------------------------------------------------------------------
@@ -298,7 +290,7 @@ async def test_init_captures_refreshed_tokens_into_the_cache():
     assert cache.session == {"access_token": "new"}
     assert cache.login_label == "v1 (Eufy Clean app)"
     assert cache.mqtt_credentials == {"certificate_pem": "x"}
-    assert cache.login_hold_until is None
+    assert login.throttle.held_off("login") is None
 
 
 @pytest.mark.asyncio
@@ -317,7 +309,6 @@ async def test_a_rate_limit_after_the_login_keeps_the_fresh_tokens():
         await login.init()
 
     assert cache.session == {"access_token": "new", "user_id": "uid"}
-    assert 20 < cache.login_hold_off_left() <= 30
 
 
 @pytest.mark.asyncio
@@ -332,7 +323,6 @@ async def test_a_rate_limited_cached_run_keeps_the_session_without_a_login():
 
     login.login.assert_not_awaited()
     assert cache.session == session
-    assert cache.login_hold_off_left() is not None
 
 
 @pytest.mark.asyncio
@@ -399,7 +389,7 @@ async def test_a_fallback_session_with_mqtt_robots_logs_in_once():
     login.login.side_effect = still_fallback
     await login.init()
     login.login.assert_awaited_once()
-    assert cache.login_hold_off_left() is not None
+    assert login.throttle.held_off("login") is not None
 
     # the next setup reuses the session instead of logging in again
     again = _login_with_cache(cache)
@@ -411,6 +401,42 @@ async def test_a_fallback_session_with_mqtt_robots_logs_in_once():
     await again.init()
     again.login.assert_not_awaited()
     assert again.mqtt_devices == [{"deviceId": "d1"}]
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_session_is_reused_while_the_login_budget_is_spent():
+    cache = _fallback_cache(throttle={"logins": [time.time() - 60] * LOGIN_BUDGET})
+    login = _login_with_cache(cache)
+
+    async def discover():
+        login.mqtt_devices = [{"deviceId": "d1"}]
+
+    login.getDevices.side_effect = discover
+    await login.init()
+
+    login.login.assert_not_awaited()
+    assert cache.session == {"access_token": "t", "user_id": "uid"}
+
+
+@pytest.mark.asyncio
+async def test_a_fallback_session_survives_a_failed_login_for_mqtt_credentials():
+    """The proved session stays stored when that login fails, so the next
+    setup can still serve the Tuya devices with it."""
+    cache = _fallback_cache()
+    login = _login_with_cache(cache)
+
+    async def discover():
+        login.mqtt_devices = [{"deviceId": "d1"}]
+        login.cloud_devices = [{"deviceId": "tuya1"}]
+
+    login.getDevices.side_effect = discover
+    login.login.side_effect = EufyLoginTransientError("HTTP 503")
+
+    with pytest.raises(EufyLoginTransientError):
+        await login.init()
+
+    assert cache.session == {"access_token": "t", "user_id": "uid"}
+    assert cache.can_skip_login
 
 
 @pytest.mark.asyncio
@@ -604,7 +630,9 @@ def test_cache_round_trips_through_json():
         session={"access_token": "t", "user_id": "i"},
         session_expires_at=time.time() + 99,
         user_info={"gtoken": "g"}, mqtt_credentials={"certificate_pem": "p"},
-        login_hold_until=time.time() + 60,
+        throttle={"logins": [1.0], "hold_off": {"login": 2.0}},
+        replaced_relogin_at=3.0,
+        session_replaced_at=4.0,
     )
     restored = AuthCache.from_dict(json.loads(json.dumps(cache.to_dict())))
     assert restored == cache
@@ -747,3 +775,129 @@ async def test_stale_cache_actually_clears_the_cached_tokens():
     assert seen.get("after_reset") is None, "tokens were not cleared before re-login"
     assert cache.openudid == "stable", "identity must survive a token reset"
     assert cache.session != {"access_token": original_token}
+
+
+# ---------------------------------------------------------------------------
+# Session-replaced latch and throttle persistence
+# ---------------------------------------------------------------------------
+
+
+def _kicked_out_login(cache, *, replaced=True, fresh_rejected=False):
+    """A login whose cached run is rejected (26084, else a plain 401)."""
+    login = _login_with_cache(cache)
+    runs = []
+
+    async def discover():
+        runs.append(1)
+        if len(runs) > 1 and not fresh_rejected:
+            login.mqtt_devices = [{"deviceId": "d1"}]
+            return
+        login.eufyApi.auth_error = True
+        login.eufyApi.session_replaced = replaced
+
+    async def fresh_login(_config):
+        login.eufyApi.session = {"access_token": "new", "user_id": "uid"}
+
+    login.getDevices.side_effect = discover
+    login.login.side_effect = fresh_login
+    return login
+
+
+@pytest.mark.asyncio
+async def test_a_first_kick_out_logs_in_once_like_an_expired_token():
+    """26084 on the cached run: one login, remembered, no latch."""
+    cache = _usable_cache()
+    login = _kicked_out_login(cache)
+
+    await login.init()
+
+    login.login.assert_awaited_once()
+    assert cache.session_replaced_at is None
+    assert cache.replaced_relogin_at == pytest.approx(time.time(), abs=5)
+    assert cache.session == {"access_token": "new", "user_id": "uid"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replaced", [True, False], ids=["26084", "401"])
+async def test_a_rejection_soon_after_the_kick_out_login_latches(replaced):
+    """26084 or a 401 on the session the kick-out login made, within the
+    window: no login, the latch is set, the tokens dropped."""
+    cache = _usable_cache()
+    cache.replaced_relogin_at = time.time() - SESSION_REPLACED_WINDOW + 60
+    login = _kicked_out_login(cache, replaced=replaced)
+
+    with pytest.raises(EufySessionReplacedError):
+        await login.init()
+
+    login.login.assert_not_awaited()
+    assert cache.session_replaced_at is not None
+    assert cache.session is None
+
+
+@pytest.mark.asyncio
+async def test_a_rejection_of_the_fresh_session_right_after_the_kick_out_login_latches():
+    cache = _usable_cache()
+    login = _kicked_out_login(cache, fresh_rejected=True)
+
+    with pytest.raises(EufySessionReplacedError):
+        await login.init()
+
+    login.login.assert_awaited_once()
+    assert cache.session_replaced_at is not None
+    assert cache.session is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("replaced", [True, False], ids=["26084", "401"])
+async def test_a_rejection_after_the_window_logs_in_again(replaced):
+    cache = _usable_cache()
+    cache.replaced_relogin_at = time.time() - SESSION_REPLACED_WINDOW - 60
+    login = _kicked_out_login(cache, replaced=replaced)
+
+    await login.init()
+
+    login.login.assert_awaited_once()
+    assert cache.session_replaced_at is None
+    if replaced:
+        assert cache.replaced_relogin_at == pytest.approx(time.time(), abs=5)
+
+
+@pytest.mark.asyncio
+async def test_a_kick_out_login_is_capped_by_the_login_budget():
+    """With the budget spent, a 26084 sends no login and latches nothing; the
+    rejected tokens are dropped so the next setup goes straight to the refusal."""
+    cache = _usable_cache()
+    login = _kicked_out_login(cache)
+    del login.login  # the real login(), refused by the budget before any request
+    for _ in range(LOGIN_BUDGET):
+        login.throttle.note_login()
+
+    with pytest.raises(EufyLoginRateLimitedError):
+        await login.init()
+
+    login._websession.post.assert_not_called()
+
+    assert cache.session_replaced_at is None
+    assert cache.replaced_relogin_at is None
+    assert cache.session is None
+    assert not cache.can_skip_login
+
+
+@pytest.mark.asyncio
+async def test_a_latched_cache_refuses_before_any_request():
+    cache = _usable_cache()
+    cache.session_replaced_at = time.time()
+    login = _login_with_cache(cache)
+
+    with pytest.raises(EufySessionReplacedError):
+        await login.init()
+
+    login.getDevices.assert_not_awaited()
+    login.login.assert_not_awaited()
+
+
+def test_the_login_throttle_state_lives_in_the_cache():
+    cache = AuthCache()
+    login = EufyLogin("u", "p", "udid", websession=MagicMock(), auth_cache=cache)
+    login.throttle.note_login()
+    assert len(cache.throttle["logins"]) == 1

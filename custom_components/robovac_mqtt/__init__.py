@@ -20,6 +20,7 @@ from homeassistant.core import Event, HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
@@ -27,9 +28,11 @@ from homeassistant.setup import async_when_setup
 
 from .api.cloud import (
     EufyLogin,
+    EufyLoginChallengeError,
     EufyLoginError,
     EufyLoginRateLimitedError,
     EufyLoginTransientError,
+    EufySessionReplacedError,
 )
 from .auth_store import AuthStore
 from .const import (
@@ -184,6 +187,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     auth_cache = await auth_store.async_load()
 
     session = async_get_clientsession(hass)
+    issue_id = f"session_replaced_{entry.entry_id}"
     # Constructed inside the try: it restores the persisted cache, and a corrupt
     # store must degrade to the retried ConfigEntryNotReady, not SETUP_ERROR.
     try:
@@ -195,25 +199,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             auth_cache=auth_cache,
         )
         await eufy_login.init()
+    except EufySessionReplacedError as e:
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=ir.IssueSeverity.ERROR,
+            translation_key="session_replaced",
+            translation_placeholders={"account": username},
+        )
+        # Reauth is the user's explicit decision to take the session back.
+        raise ConfigEntryAuthFailed(str(e)) from e
+    except EufyLoginChallengeError as e:
+        raise ConfigEntryAuthFailed(
+            f"Eufy asks for a verification code or captcha; sign in once in the "
+            f"Eufy app, then reauthenticate: {e}"
+        ) from e
     except EufyLoginError as e:
         # Bad credentials invalidate every cached token; do not keep serving them.
         auth_cache.clear_tokens()
-        await auth_store.async_save(auth_cache)
         raise ConfigEntryAuthFailed(f"Invalid Eufy credentials: {e}") from e
+    except EufyLoginRateLimitedError as e:
+        raise ConfigEntryNotReady(f"Eufy cloud rate limit: {e}") from e
+    except EufyLoginTransientError as e:
+        # 5xx or network: the cached tokens may still be good.
+        raise ConfigEntryNotReady(f"Eufy servers unavailable: {e}") from e
+    except (aiohttp.ClientError, TimeoutError, OSError) as e:
+        raise ConfigEntryNotReady(f"Cannot reach Eufy servers: {e}") from e
     except Exception as e:
-        # The retry must reuse the openudid and see any login hold-off.
-        await auth_store.async_save(auth_cache)
-        if isinstance(e, EufyLoginRateLimitedError):
-            raise ConfigEntryNotReady(f"Eufy cloud rate limit: {e}") from e
-        if isinstance(e, EufyLoginTransientError):
-            # 5xx or network: the cached tokens may still be good.
-            raise ConfigEntryNotReady(f"Eufy servers unavailable: {e}") from e
-        if isinstance(e, (aiohttp.ClientError, TimeoutError, OSError)):
-            raise ConfigEntryNotReady(f"Cannot reach Eufy servers: {e}") from e
         raise ConfigEntryNotReady(f"Unexpected setup error: {e}") from e
-
-    # Persist refreshed tokens, or just the probe memos if the cache was reused.
-    await auth_store.async_save(auth_cache)
+    finally:
+        # Every outcome: the openudid and the login budget and hold-offs for the
+        # retry, fresh tokens, and the tokens a rejected cached run cleared.
+        await auth_store.async_save(auth_cache)
+    ir.async_delete_issue(hass, DOMAIN, issue_id)
 
     coordinators = []
 
@@ -320,6 +340,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             # initialize() may have written the MQTT cert/key files or started a
             # transport before failing; each setup retry would leak another set.
             await coordinator.async_teardown()
+
+    # A coordinator's checkLogin() may have spent a login or fetched credentials.
+    await auth_store.async_save(auth_cache)
 
     if not coordinators:
         raise ConfigEntryNotReady("No Eufy Clean devices could be initialized")

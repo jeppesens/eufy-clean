@@ -28,7 +28,9 @@
       "invalid_auth": "Invalid credentials",
       "unknown": "Unexpected error",
       "username_mismatch": "Username cannot be changed",
-      "cannot_connect": "Failed to connect"
+      "cannot_connect": "Failed to connect",
+      "rate_limited": "Eufy is limiting logins for this account. Wait an hour or two, then try again.",
+      "login_challenge": "Eufy asks for a verification code or captcha. Sign in once in the Eufy app, then try again."
     },
     "abort": {
       "already_configured": "Already configured",
@@ -100,6 +102,10 @@
     "segments_changed": {
       "title": "Vacuum segments have changed",
       "description": "The segments (rooms) for **{device_name}** have changed since the last known configuration. If you use this vacuum with the Matter Hub, re-sync the area mapping so automations continue to work correctly."
+    },
+    "session_replaced": {
+      "title": "Eufy session ended by another login",
+      "description": "Another app or integration keeps logging in with **{account}** and ending Home Assistant's session, so Home Assistant stopped logging in: two clients on one account log each other out until Eufy locks it. Reauthenticate to take the session back on this account, or remove this entry and add the integration again with another Eufy account the robot is shared to."
     }
   }
 }

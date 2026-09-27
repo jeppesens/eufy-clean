@@ -3,8 +3,8 @@
 Holds bearer tokens and an X.509 client key in ``.storage``; never logged.
 Staleness is guarded by the session expiry, the certificate ``notAfter``, and
 finally by use — ``EufyLogin.init()`` discards the cache and re-logs in if a
-cached run yields no devices. The login hold-off (after HTTP 429, or after a
-login whose session cannot serve the MQTT robots) is kept here too.
+cached run yields no devices. The login budget and hold-offs
+(api/throttle.py) and the session-replaced state are kept here too.
 """
 from __future__ import annotations
 
@@ -31,11 +31,6 @@ _CERT_EXPIRY_SKEW = timedelta(hours=12)
 
 # same, for the bearer session (issued for ~30 days)
 _SESSION_EXPIRY_SKEW = timedelta(days=1)
-
-# login hold-off when no Retry-After sets one
-LOGIN_HOLD_OFF_DEFAULT = 15 * 60.0
-# upper bound for a server-supplied Retry-After
-LOGIN_HOLD_OFF_MAX = 24 * 3600.0
 
 # the only login-response fields the code reads; the rest (refresh token,
 # account data) is deliberately not persisted
@@ -130,8 +125,12 @@ class AuthCache:
     session_expires_at: float | None = None
     user_info: dict[str, Any] | None = None
     mqtt_credentials: dict[str, Any] | None = None
-    # POSIX time before which no Eufy login is sent; outlives clear_tokens()
-    login_hold_until: float | None = None
+    # Login budget and hold-offs (api/throttle.py); outlives clear_tokens().
+    throttle: dict[str, Any] = field(default_factory=dict)
+    # When the login a body code 26084 caused was made (see init()).
+    replaced_relogin_at: float | None = None
+    # When the session-replaced latch was set; set, no automatic login.
+    session_replaced_at: float | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> AuthCache:
@@ -157,10 +156,21 @@ class AuthCache:
             if isinstance(value, dict):
                 setattr(cache, name, value)
         cache.user_info = trim_user_info(cache.user_info)
-        for name in ("session_expires_at", "login_hold_until"):
+        for name in ("session_expires_at", "replaced_relogin_at", "session_replaced_at"):
             value = data.get(name)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 setattr(cache, name, float(value))
+        throttle = data.get("throttle")
+        if isinstance(throttle, dict):
+            cache.throttle = throttle
+        # A store without a throttle kept its login hold-off as login_hold_until.
+        hold_until = data.get("login_hold_until")
+        if (
+            not cache.throttle
+            and isinstance(hold_until, (int, float))
+            and not isinstance(hold_until, bool)
+        ):
+            cache.throttle = {"hold_off": {"login": float(hold_until)}}
         return cache
 
     def to_dict(self) -> dict[str, Any]:
@@ -188,23 +198,9 @@ class AuthCache:
             return self.user_info is None and self.mqtt_credentials is None
         return mqtt_credentials_fresh(self.mqtt_credentials)
 
-    def login_hold_off_left(self) -> float | None:
-        """Seconds left on the login hold-off, or None when logins are allowed."""
-        if self.login_hold_until is None:
-            return None
-        left = self.login_hold_until - time.time()
-        return left if left > 0 else None
-
-    def hold_off_logins(self, seconds: float | None) -> None:
-        """Start or extend the login hold-off; None means the default length."""
-        if seconds is None:
-            seconds = LOGIN_HOLD_OFF_DEFAULT
-        seconds = min(max(seconds, 0.0), LOGIN_HOLD_OFF_MAX)
-        self.login_hold_until = max(self.login_hold_until or 0.0, time.time() + seconds)
-
     def clear_tokens(self) -> None:
-        """Drop the credentials but keep the identity, the probe memos and the
-        login hold-off.
+        """Drop the credentials but keep the identity, the probe memos, the
+        throttle state and the session-replaced state.
 
         The openudid must survive: rotating it invalidates the account's tokens
         and re-registers the device.
