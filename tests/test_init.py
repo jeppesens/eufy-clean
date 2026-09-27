@@ -18,6 +18,7 @@ from homeassistant.setup import async_setup_component
 from packaging.requirements import Requirement
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+import custom_components.robovac_mqtt as robovac_init
 from custom_components.robovac_mqtt import (
     _int_keyed,
     async_remove_config_entry_device,
@@ -180,8 +181,24 @@ async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
         mock_add_js.assert_not_called()  # nothing registered until frontend is up
 
         # Frontend becomes ready -> the card registers once, with a cache-bust URL.
-        await register_cb(hass, "frontend")
+        with patch.object(
+            hass.http, "async_register_static_paths", AsyncMock()
+        ) as mock_static, patch(
+            "custom_components.robovac_mqtt._card_cache_key",
+            wraps=robovac_init._card_cache_key,
+        ) as mock_key:
+            await register_cb(hass, "frontend")
         assert hass.data[DOMAIN]["card_registered"] is True
+        # The renderer the card imports is served from the card's URL directory,
+        # and an edit to it changes the card's cache key.
+        assert {cfg.url_path for cfg in mock_static.call_args.args[0]} == {
+            "/robovac_mqtt/eufy-clean-card.js",
+            "/robovac_mqtt/eufy-map-renderer.js",
+        }
+        assert {path.name for path in mock_key.call_args.args[0]} == {
+            "eufy-clean-card.js",
+            "eufy-map-renderer.js",
+        }
         mock_add_js.assert_called_once()
         registered_url = mock_add_js.call_args.args[1]
         # A content hash, not the bare version a missing frontend file falls back to.

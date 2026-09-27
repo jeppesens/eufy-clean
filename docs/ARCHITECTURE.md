@@ -3,9 +3,9 @@
 > **Audience**: contributors, and anyone reviewing or extending this integration.
 >
 > Companion documents: [`MAP.md`](MAP.md) (how the floor map is obtained and drawn),
-> [`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md) (the map websocket wire format). End-user
-> documentation — entities, services, configuration — is in the top-level
-> [`README.md`](../README.md).
+> [`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md) (the map websocket wire format),
+> [`CARD.md`](CARD.md) (the bundled Lovelace card). End-user documentation — entities,
+> services, configuration — is in the top-level [`README.md`](../README.md).
 
 ---
 
@@ -419,7 +419,7 @@ custom_components/robovac_mqtt/
 │   ├── local_tuya.py      Tuya LAN transport
 │   ├── map_stream.py      map decoding and PNG rendering
 │   └── map_geometry.py    map websocket payload builder
-├── frontend/              the bundled Lovelace card
+├── frontend/              the bundled Lovelace card and map renderer (CARD.md)
 └── proto/cloud/           protobuf schemas and pre-compiled modules
 ```
 
@@ -431,4 +431,5 @@ are not generated at build or install time.
 ## Tests
 
 `tests/` holds the pytest suite (pytest + asyncio, `pytest-homeassistant-custom-component`),
-one file per module under test. Run everything with `python run_tests.py`.
+one file per module under test, plus a jsdom-based behavioural suite for the card under
+`tests/frontend/`. Run everything with `python run_tests.py`.

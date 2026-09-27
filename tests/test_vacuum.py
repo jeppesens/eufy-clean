@@ -83,6 +83,17 @@ def test_vacuum_attributes(mock_coordinator, mock_config_entry):
     assert attrs["work_mode"] == "Room"
 
 
+@pytest.mark.parametrize("supported", [True, False])
+def test_vacuum_attributes_say_whether_nogo_zones_can_be_saved(
+    mock_coordinator, mock_config_entry, supported
+):
+    """The card offers No-go and Wall only when this is exactly ``True``."""
+    mock_coordinator.nogo_zones_supported = supported
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    assert entity.extra_state_attributes["nogo_zones_supported"] is supported
+
+
 @pytest.mark.asyncio
 async def test_vacuum_commands(mock_coordinator, mock_config_entry):
     """Test vacuum commands."""

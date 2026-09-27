@@ -876,6 +876,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             "rooms": rooms,
             "segments": segments,
             "room_clean_options": self._room_clean_options,
+            # The card offers no-go and wall drawing only where they can be saved.
+            "nogo_zones_supported": self.coordinator.nogo_zones_supported,
         }
 
     async def async_return_to_base(self, **kwargs: Any) -> None:

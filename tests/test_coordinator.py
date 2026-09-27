@@ -2486,9 +2486,20 @@ async def test_set_nogo_zones_requires_a_map(mock_hass, mock_login):
 
 
 @pytest.mark.asyncio
-async def test_set_nogo_zones_is_legacy_only(mock_hass, mock_login):
+@pytest.mark.parametrize(
+    ("api_type", "supported"), [("legacy", True), ("novel", False), ("scalar", False)]
+)
+async def test_set_nogo_zones_is_legacy_only(
+    mock_hass, mock_login, api_type, supported
+):
+    """``nogo_zones_supported`` is the rule the write itself enforces."""
     coordinator, _md = _legacy_coordinator_with_geometry(mock_hass, mock_login)
-    coordinator.api_type = "novel"
+    coordinator.api_type = api_type
+    assert coordinator.nogo_zones_supported is supported
+    if supported:
+        await coordinator.async_set_nogo_zones(add_forbidden=[(0.1, 0.1, 0.3, 0.3)])
+        coordinator.async_send_command.assert_awaited_once()
+        return
     with pytest.raises(HomeAssistantError, match="not supported"):
         await coordinator.async_set_nogo_zones(add_forbidden=[(0.1, 0.1, 0.3, 0.3)])
     coordinator.async_send_command.assert_not_awaited()

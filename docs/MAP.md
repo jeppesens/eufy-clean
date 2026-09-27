@@ -4,7 +4,8 @@ How the integration obtains a floor map, what it decodes it into, how the live r
 position and cleaning trail are tracked, and how all of that reaches a dashboard.
 
 Companion documents: [`ARCHITECTURE.md`](ARCHITECTURE.md) for the transports,
-and [`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md) for the websocket wire format.
+[`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md) for the websocket wire format, and
+[`CARD.md`](CARD.md) for the card that draws it.
 
 ---
 
@@ -236,17 +237,20 @@ The PNG is displayed **flipped** relative to the source grid: row 0 of the array
 bottom of the image. Positions stored in `MapData` are always in the *unflipped* source
 frame, and the renderer flips them at draw time.
 
-### Websocket geometry
+### Client-side canvas
 
-Instead of re-fetching a ~208 KiB image every couple of seconds, a client can fetch
+Instead of re-fetching a ~208 KiB image every couple of seconds, a dashboard can fetch
 one compact geometry snapshot and then receive pose and trail deltas over a websocket
-subscription. `api/map_geometry.py` builds the payload and `websocket_api.py` serves it.
+subscription. `api/map_geometry.py` builds the payload, `websocket_api.py` serves it, and
+`frontend/eufy-map-renderer.js` draws it.
 
 `coordinator.map_geometry_revision` — distinct from `map_revision` — bumps only when the
 map's own geometry changes, gated on a content signature, so viewers re-fetch the
 snapshot only when there is something new in it. The full wire format, the coordinate
 rules and the reasons the two grids are shipped separately are in
 [`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md).
+
+This is the default; `client_render: false` in the card config pins the PNG.
 
 ---
 
@@ -260,6 +264,7 @@ rules and the reasons the two grids are shipped separately are in
 | Frame decode, `MapData`, PNG | `api/map_stream.py` |
 | Websocket payload | `api/map_geometry.py` |
 | Websocket commands | `websocket_api.py` |
+| Browser renderer | `frontend/eufy-map-renderer.js` |
 | Map/trail state, freshness, re-projection | `coordinator.py` |
 | Map edit commands | `api/legacy_commands.py`, `api/commands.py` |
 | Camera entity | `camera.py` |

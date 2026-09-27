@@ -2736,6 +2736,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return px, py
         return None
 
+    @property
+    def nogo_zones_supported(self) -> bool:
+        """Whether ``async_set_nogo_zones`` can write to this device."""
+        return self.api_type == "legacy"
+
     async def async_set_nogo_zones(
         self,
         *,
@@ -2761,7 +2766,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         geometry, in world cm; a move is ``{"index", "dx" cm, "dy" cm, "rotate"
         radians}``. ``expect_revision`` refuses the write if geometry moved on.
         """
-        if self.api_type != "legacy":
+        if not self.nogo_zones_supported:
             raise HomeAssistantError(
                 f"Editing no-go zones is not supported on {self.device_name}"
             )
