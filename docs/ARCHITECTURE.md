@@ -2,8 +2,9 @@
 
 > **Audience**: contributors, and anyone reviewing or extending this integration.
 >
-> Companion document: [`MAP.md`](MAP.md) (how the floor map is obtained and drawn).
-> End-user documentation — entities, services, configuration — is in the top-level
+> Companion documents: [`MAP.md`](MAP.md) (how the floor map is obtained and drawn),
+> [`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md) (the map websocket wire format). End-user
+> documentation — entities, services, configuration — is in the top-level
 > [`README.md`](../README.md).
 
 ---
@@ -63,7 +64,7 @@ Model → name and capability metadata live in `const.py:EUFY_CLEAN_DEVICES` and
    - builds an `EufyLogin` and calls `init()` — HTTP login, then device discovery;
    - creates one `EufyCleanCoordinator` per discovered vacuum and calls `initialize()`;
    - stores them in `hass.data[DOMAIN][entry.entry_id]`;
-   - serves the frontend card;
+   - registers the map websocket commands and serves the frontend card;
    - forwards setup to every platform in `PLATFORMS`.
 3. **`api/cloud.py:EufyLogin.init()`**
    - `api/http.py` authenticates against the Eufy user API and fetches the device list;
@@ -398,6 +399,7 @@ custom_components/robovac_mqtt/
 ├── profiles.py            per-model capability metadata
 ├── utils.py               protobuf and varint codec helpers
 ├── diagnostics.py         redacted diagnostics dump
+├── websocket_api.py       map websocket commands (MAP_WS_CONTRACT.md)
 ├── _orphan_cleanup.py     removes registry entries for devices that disappeared
 ├── <platform>.py          the entity platforms listed above
 ├── api/
@@ -416,7 +418,7 @@ custom_components/robovac_mqtt/
 │   ├── tuya_map.py        map blob decoder
 │   ├── local_tuya.py      Tuya LAN transport
 │   ├── map_stream.py      map decoding and PNG rendering
-│   └── map_geometry.py    compact map geometry payload builder
+│   └── map_geometry.py    map websocket payload builder
 ├── frontend/              the bundled Lovelace card
 └── proto/cloud/           protobuf schemas and pre-compiled modules
 ```

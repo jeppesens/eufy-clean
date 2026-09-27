@@ -375,6 +375,7 @@ has cleaned once (or you've edited the map in the app).
 |----------|----------|
 | [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | layers, transports, datapoint map, state model, entity platforms |
 | [`docs/MAP.md`](docs/MAP.md) | how the floor map, live pose and cleaning trail are obtained and drawn |
+| [`docs/MAP_WS_CONTRACT.md`](docs/MAP_WS_CONTRACT.md) | the map websocket wire format |
 
 ### Local Testing
 A `docker-compose.yml` is included for local development:

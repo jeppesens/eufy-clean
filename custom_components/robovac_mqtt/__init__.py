@@ -42,6 +42,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import EufyCleanCoordinator
+from .websocket_api import async_setup as async_setup_websocket_api
 
 PLATFORMS: list[Platform] = [
     Platform.VACUUM,
@@ -150,6 +151,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register the global, entry-independent parts once per HA run."""
     # Deferred: registering before `frontend` is up silently no-ops.
     async_when_setup(hass, "frontend", _register_card_when_frontend_ready)
+    # Websocket command names are global; registering one twice raises.
+    async_setup_websocket_api(hass)
     return True
 
 

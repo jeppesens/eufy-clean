@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -183,7 +184,10 @@ async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
         assert hass.data[DOMAIN]["card_registered"] is True
         mock_add_js.assert_called_once()
         registered_url = mock_add_js.call_args.args[1]
-        assert registered_url.startswith("/robovac_mqtt/eufy-clean-card.js?v=")
+        # A content hash, not the bare version a missing frontend file falls back to.
+        assert re.fullmatch(
+            r"/robovac_mqtt/eufy-clean-card\.js\?v=.+-[0-9a-f]{12}", registered_url
+        ), registered_url
 
         # Idempotent: a second frontend-ready callback does nothing.
         await register_cb(hass, "frontend")
@@ -519,10 +523,12 @@ async def test_rate_limited_first_start_holds_off_and_keeps_the_openudid(
 
 
 async def test_global_registration_runs_once_for_several_entries(hass: HomeAssistant):
-    """The frontend hook registers in async_setup, once."""
+    """The frontend hook and websocket commands register in async_setup, once."""
     with patch(
         "custom_components.robovac_mqtt.async_when_setup"
     ) as mock_when_setup, patch(
+        "custom_components.robovac_mqtt.async_setup_websocket_api"
+    ) as mock_ws, patch(
         "custom_components.robovac_mqtt.EufyLogin"
     ) as mock_login_cls, patch(
         "custom_components.robovac_mqtt.EufyCleanCoordinator",
@@ -541,6 +547,7 @@ async def test_global_registration_runs_once_for_several_entries(hass: HomeAssis
         await hass.async_block_till_done()
 
     assert mock_when_setup.call_count == 1
+    assert mock_ws.call_count == 1
 
 
 async def test_remove_device_refused_while_the_api_still_returns_it(

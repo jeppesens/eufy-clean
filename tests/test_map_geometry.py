@@ -289,6 +289,7 @@ def test_envelope_carries_geometry_and_live_positions():
         dock=(3, 4),
         robot=(5, 2),
         trail=[(1, 1), (2, 2)],
+        trail_types=[1, 0],
         trail_seq=949,
     )
 
@@ -303,6 +304,7 @@ def test_envelope_carries_geometry_and_live_positions():
     assert result["dock"] == [3, 4]
     assert result["robot"] == [5, 2]
     assert result["trail"] == [[1, 1], [2, 2]]
+    assert result["trail_types"] == [1, 0]
     assert result["trail_seq"] == 949
 
 
@@ -312,6 +314,7 @@ def test_absent_pose_and_trail_are_null_and_empty():
     assert result["dock"] is None
     assert result["robot"] is None
     assert result["trail"] == []
+    assert result["trail_types"] == []
     assert result["trail_seq"] == 0
 
 

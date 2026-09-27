@@ -1495,6 +1495,9 @@ def test_live_room_names_reach_the_room_list(mock_hass, mock_login):
     rooms = _six_rooms(coordinator)
     assert rooms[0]["name"] == "Entry"
     assert rooms[1]["name"] == "Lounge"
+    # The map layer gets the whole table, room id 0 included.
+    assert len(coordinator._map_data.room_names) == 6
+    assert coordinator._map_data.room_names[0] == "Entry"
 
 
 def test_a_room_the_list_has_never_seen_is_appended(mock_hass, mock_login):
@@ -2120,6 +2123,7 @@ def test_a_new_session_drops_the_raw_points_too(mock_hass, mock_login):
     coordinator._on_legacy_trail(1, [(0, 0, 0)])
     coordinator._clear_trail()
     assert coordinator._robot_trail_raw == []
+    assert coordinator._robot_trail_types == []
     coordinator._set_map_data(_grown_map_data())
     assert coordinator._robot_trail == []
 
@@ -2434,3 +2438,137 @@ async def test_a_failed_storage_read_still_ends_the_not_yet_window(
         await coordinator.async_load_storage()
 
     assert coordinator._storage_loaded is True
+
+
+# ---------------------------------------------------------------------------
+# Map edits, live room outlines and trail point types
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_set_nogo_zones_adds_to_the_shapes_already_held(mock_hass, mock_login):
+    """Without ``replace`` an addition is sent together with every existing shape."""
+    coordinator, _md = _legacy_coordinator_with_geometry(mock_hass, mock_login)
+
+    await coordinator.async_set_nogo_zones(
+        add_forbidden=[(0.1, 0.1, 0.3, 0.3)], add_walls=[(0.1, 0.2, 0.7, 0.8)]
+    )
+
+    kwargs = coordinator.build_device_command.call_args.kwargs
+    assert len(kwargs["forbidden_zones"]) == 3
+    assert len(kwargs["virtual_walls"]) == 2
+    assert all(len(wall) == 2 for wall in kwargs["virtual_walls"])
+
+
+@pytest.mark.asyncio
+async def test_set_nogo_zones_replace_with_nothing_clears_every_category(
+    mock_hass, mock_login
+):
+    coordinator, md = _legacy_coordinator_with_geometry(mock_hass, mock_login)
+    md.ban_mop_zones = [[(40.0, 40.0), (50.0, 40.0), (50.0, 50.0), (40.0, 50.0)]]
+
+    await coordinator.async_set_nogo_zones(replace=True)
+
+    kwargs = coordinator.build_device_command.call_args.kwargs
+    assert kwargs["forbidden_zones"] == []
+    assert kwargs["virtual_walls"] == []
+    assert kwargs["ban_mop_zones"] == []
+
+
+@pytest.mark.asyncio
+async def test_set_nogo_zones_requires_a_map(mock_hass, mock_login):
+    """Without a decoded map there is no frame to convert into."""
+    coordinator, _md = _legacy_coordinator_with_geometry(mock_hass, mock_login)
+    coordinator._map_data = None
+    with pytest.raises(HomeAssistantError, match="no map decoded"):
+        await coordinator.async_set_nogo_zones(add_forbidden=[(0.1, 0.1, 0.3, 0.3)])
+    coordinator.async_send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_nogo_zones_is_legacy_only(mock_hass, mock_login):
+    coordinator, _md = _legacy_coordinator_with_geometry(mock_hass, mock_login)
+    coordinator.api_type = "novel"
+    with pytest.raises(HomeAssistantError, match="not supported"):
+        await coordinator.async_set_nogo_zones(add_forbidden=[(0.1, 0.1, 0.3, 0.3)])
+    coordinator.async_send_command.assert_not_awaited()
+
+
+def _square_map(size: int = 40) -> MapData:
+    return MapData(
+        raw_pixels=b"\x00" * 100, width=size, height=size, resolution=5,
+        origin_x=0, origin_y=0,
+    )
+
+
+def test_normalized_lines_keep_a_diagonal_wall_diagonal(mock_hass, mock_login):
+    """The endpoints are kept in drawing order, never sorted into a bounding box.
+
+    Sorting would turn every diagonal wall into an axis-aligned one in the right
+    place, which looks like a rendering bug rather than a coordinate bug.
+    """
+    coordinator = _coordinator_with_map(mock_hass, mock_login, _square_map())
+    (start, end), = coordinator.normalized_lines_to_segments_cm([(0.2, 0.8, 0.8, 0.2)])
+    assert start[0] != end[0] and start[1] != end[1]
+    reversed_seg, = coordinator.normalized_lines_to_segments_cm([(0.8, 0.2, 0.2, 0.8)])
+    assert reversed_seg[0] == end and reversed_seg[1] == start
+
+
+def test_normalized_lines_skip_malformed_entries(mock_hass, mock_login):
+    coordinator = _coordinator_with_map(mock_hass, mock_login, _square_map())
+    assert not coordinator.normalized_lines_to_segments_cm([(0.1, 0.2)])
+    assert not coordinator.normalized_lines_to_segments_cm(["nope"])
+
+
+def _varint(value: int) -> bytes:
+    out = bytearray()
+    while True:
+        byte = value & 0x7F
+        value >>= 7
+        out.append(byte | (0x80 if value else 0))
+        if not value:
+            return bytes(out)
+
+
+def _zigzag(value: int) -> int:
+    return (value << 1) ^ (value >> 31)
+
+
+def test_live_room_outlines_populate_the_map(mock_hass, mock_login):
+    """0x65 outlines are converted into stored-frame cells on MapData."""
+    coordinator = _coordinator_with_map(mock_hass, mock_login, _square_map())
+    # One triangle for room 0 (no id field), in the 0.5 cm world frame.
+    rec = b""
+    for x, y in [(0, 0), (100, 0), (100, 100)]:
+        inner = bytes([0x08]) + _varint(_zigzag(x)) + bytes([0x10]) + _varint(_zigzag(y))
+        rec += bytes([0x12, len(inner)]) + inner
+    coordinator._on_legacy_meta(0x65, bytes([len(rec)]) + rec)
+    assert list(coordinator._map_data.room_polygons) == [0]
+    assert len(coordinator._map_data.room_polygons[0]) == 3
+
+
+def test_live_metadata_never_breaks_on_garbage(mock_hass, mock_login):
+    """A malformed metadata frame is a no-op: it shares the pose and trail stream."""
+    coordinator = _coordinator_with_map(mock_hass, mock_login, _square_map())
+    for channel in (0x64, 0x65, 0x6A, 0x75):
+        coordinator._on_legacy_meta(channel, b"\xff\xff\xff\xff")
+    assert coordinator._map_data.room_names == {}
+
+
+def test_live_metadata_alone_builds_no_map(mock_hass, mock_login):
+    """The grid only comes from the blob, so metadata without a map is dropped."""
+    coordinator = _coordinator_with_map(mock_hass, mock_login, None)
+    coordinator._on_legacy_meta(0x6A, _LIVE_ROOM_NAMES)
+    assert coordinator._map_data is None
+
+
+def test_trail_types_are_padded_when_the_lists_desync(mock_hass, mock_login):
+    """A directly assigned trail never ships a misaligned types array.
+
+    Padding degrades to "all cleaning" rather than types that do not line up with
+    the points, which the client would silently mis-colour.
+    """
+    coordinator = _coordinator_with_map(mock_hass, mock_login, None)
+    coordinator._robot_trail = [(1, 1), (2, 2), (3, 3)]
+    coordinator._robot_trail_types = [1]
+    assert coordinator._trail_types_for(0, 3) == [1, 0, 0]

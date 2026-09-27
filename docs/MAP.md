@@ -3,7 +3,8 @@
 How the integration obtains a floor map, what it decodes it into, how the live robot
 position and cleaning trail are tracked, and how all of that reaches a dashboard.
 
-Companion document: [`ARCHITECTURE.md`](ARCHITECTURE.md) for the transports.
+Companion documents: [`ARCHITECTURE.md`](ARCHITECTURE.md) for the transports,
+and [`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md) for the websocket wire format.
 
 ---
 
@@ -24,20 +25,22 @@ Companion document: [`ARCHITECTURE.md`](ARCHITECTURE.md) for the transports.
                               MapData  (api/map_stream.py)
                      grid · rooms · dock · robot · trail · restricted geometry
                                           │
-                                          ▼
-                              render_map_png (Pillow)
-                              → camera.<vacuum>_map
-                              a PNG, re-rendered every ~2 s
-                              while cleaning
+                    ┌─────────────────────┴─────────────────────┐
+                    ▼                                           ▼
+         render_map_png (Pillow)                    build_map_static / _dynamic
+         → camera.<vacuum>_map                      → robovac_mqtt/map/* websocket
+         a PNG, re-rendered every ~2 s              a compact geometry snapshot plus
+         while cleaning                             pose and trail events
 ```
 
-Scalar devices report no map at all; the camera entity is gated off for them.
+Scalar devices report no map at all; the camera entity and the map websocket are gated
+off for them.
 
 ---
 
 ## `MapData`
 
-The single decoded representation the renderer consumes, regardless of which transport
+The single decoded representation both renderers consume, regardless of which transport
 produced it:
 
 | Field | Meaning |
@@ -170,7 +173,8 @@ marks the dock contacts.
 The dock pose on `0x75` is **map-relative**, so when the device grows or rewrites the
 map the whole frame shifts underneath the points already held. The coordinator
 differences consecutive frames, re-projects the cells it is holding, and emits a trail
-`reset`, so a listener draws the list it is given rather than merging it into its own.
+`reset` — which is why a websocket client must draw the list it is given rather than
+merging it into its own (see [`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md)).
 
 A jump larger than a sanity threshold is treated as a frame change rather than as
 movement.
@@ -232,12 +236,17 @@ The PNG is displayed **flipped** relative to the source grid: row 0 of the array
 bottom of the image. Positions stored in `MapData` are always in the *unflipped* source
 frame, and the renderer flips them at draw time.
 
-### Geometry payload
+### Websocket geometry
 
-`api/map_geometry.py` builds a compact geometry snapshot of `MapData` (deflated
-occupancy and room grids, rooms, restricted geometry). `coordinator.map_geometry_revision`
-— distinct from `map_revision` — bumps only when the map's own geometry changes, gated
-on a content signature.
+Instead of re-fetching a ~208 KiB image every couple of seconds, a client can fetch
+one compact geometry snapshot and then receive pose and trail deltas over a websocket
+subscription. `api/map_geometry.py` builds the payload and `websocket_api.py` serves it.
+
+`coordinator.map_geometry_revision` — distinct from `map_revision` — bumps only when the
+map's own geometry changes, gated on a content signature, so viewers re-fetch the
+snapshot only when there is something new in it. The full wire format, the coordinate
+rules and the reasons the two grids are shipped separately are in
+[`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md).
 
 ---
 
@@ -249,7 +258,8 @@ on a content signature.
 | Blob decode | `api/tuya_map.py` |
 | Live channels | `api/tuya_mqtt.py` |
 | Frame decode, `MapData`, PNG | `api/map_stream.py` |
-| Geometry payload | `api/map_geometry.py` |
+| Websocket payload | `api/map_geometry.py` |
+| Websocket commands | `websocket_api.py` |
 | Map/trail state, freshness, re-projection | `coordinator.py` |
 | Map edit commands | `api/legacy_commands.py`, `api/commands.py` |
 | Camera entity | `camera.py` |
