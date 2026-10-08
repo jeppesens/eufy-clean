@@ -9,6 +9,7 @@ import aiohttp
 from ..const import (
     EUFY_API_DEVICE_LIST,
     EUFY_API_DEVICE_LIST_HOME,
+    EUFY_API_DEVICE_LIST_HOME_GROUPS,
     EUFY_API_DEVICE_V2,
     EUFY_API_LOGIN,
     EUFY_API_LOGIN_V2,
@@ -275,37 +276,76 @@ class EufyHTTPClient:
             )
             return []
 
-    async def _get_home_device_list(self) -> list[dict[str, Any]]:
-        """Get device list from home-api.eufylife.com (unified Eufy app endpoint)."""
-        session = self._websession
-        async with session.get(
-            EUFY_API_DEVICE_LIST_HOME,
-            timeout=_REQUEST_TIMEOUT,
-            headers={
-                "content-type": "application/json",
-                "token": self.session["access_token"],  # type: ignore
-            },
-        ) as response:
-            if response.status == 200:
-                data = await response.json()
-                _LOGGER.debug(
-                    "Home-api device list raw response keys: %s",
-                    list(data.keys())
-                    if isinstance(data, dict)
-                    else type(data).__name__,
-                )
-                # The response format may vary; try known structures.
-                if isinstance(data, dict):
-                    devices = data.get("devices", data.get("data", []))
-                    if isinstance(devices, dict):
-                        devices = devices.get("devices", [])
-                    if isinstance(devices, list):
-                        return devices
-                return []
-            _LOGGER.debug(
-                "Home-api device list failed: status=%s", response.status
-            )
+    @staticmethod
+    def _extract_home_devices(data: Any) -> list[dict[str, Any]]:
+        """Extract device records from the different home-api list shapes."""
+        if not isinstance(data, (dict, list)):
             return []
+        if isinstance(data, list):
+            records: list[dict[str, Any]] = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                if isinstance(item.get("device"), dict):
+                    records.append(item["device"])
+                elif any(
+                    key in item
+                    for key in (
+                        "id",
+                        "device_id",
+                        "deviceId",
+                        "device_sn",
+                        "serial",
+                        "device_model",
+                        "product",
+                    )
+                ):
+                    records.append(item)
+            return records
+        for key in ("devices", "items", "device_list", "deviceList", "data"):
+            if key in data:
+                records = EufyHTTPClient._extract_home_devices(data[key])
+                if records:
+                    return records
+        if isinstance(data.get("device"), dict):
+            return [data["device"]]
+        return []
+
+    async def _get_home_device_list(self) -> list[dict[str, Any]]:
+        """Get device list from the unified Eufy app home API."""
+        session = self._websession
+        headers = {
+            "content-type": "application/json",
+            "token": self.session["access_token"],  # type: ignore
+        }
+        for url, label in (
+            (EUFY_API_DEVICE_LIST_HOME, "home-api device"),
+            (EUFY_API_DEVICE_LIST_HOME_GROUPS, "home-api devices-and-groups"),
+        ):
+            async with session.get(
+                url, timeout=_REQUEST_TIMEOUT, headers=headers
+            ) as response:
+                if response.status != 200:
+                    _LOGGER.debug("%s failed: status=%s", label, response.status)
+                    continue
+                try:
+                    data = await response.json()
+                except Exception:
+                    _LOGGER.debug("%s returned a non-JSON response", label)
+                    continue
+                if isinstance(data, dict):
+                    _LOGGER.debug(
+                        "%s raw response: res_code=%s message=%s keys=%s",
+                        label,
+                        data.get("res_code"),
+                        data.get("message"),
+                        list(data.keys()),
+                    )
+                devices = self._extract_home_devices(data)
+                _LOGGER.debug("%s parsed %d device(s)", label, len(devices))
+                if devices:
+                    return devices
+        return []
 
     async def get_mqtt_credentials(self) -> dict[str, Any] | None:
         """Get MQTT credentials."""
