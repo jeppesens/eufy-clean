@@ -915,6 +915,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                         ban_mop_zones=[[tuple(p) for p in zone] for zone in md_raw.get("ban_mop_zones", [])],
                     )
                     _LOGGER.debug("Loaded map data from storage for %s", self.device_name)
+                    # Re-render rather than keep the cached PNG: map options
+                    # (style, size, robot marker) may have changed since it was
+                    # saved, and a docked robot sends no map data to trigger it.
+                    self._rerender_map()
                 except Exception as exc:
                     _LOGGER.warning("Failed to restore map data for %s: %s", self.device_name, exc)
 
