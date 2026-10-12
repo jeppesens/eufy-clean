@@ -47,12 +47,14 @@
         "title": "Settings",
         "data": {
           "map_max_px": "Map image size (px)",
+          "map_style": "Map style",
           "robot_style": "Robot marker style",
           "notify_desktop": "Desktop notification (HA bell)",
           "notify_mobile_service": "Mobile notification service"
         },
         "data_description": {
           "map_max_px": "Maximum pixel dimension for the rendered map image. Higher values give more detail but use more memory and bandwidth.",
+          "map_style": "Detailed draws the raw lidar scan. Clean draws smoothed, app-style room shapes with straight walls (needs room data, which arrives after the map is edited in the Eufy app; until then the detailed map is shown). Clean also scales up to the map image size.",
           "robot_style": "How the robot is drawn on the map.",
           "notify_desktop": "Show a persistent notification in the Home Assistant UI (the bell icon) when the robot reports an error.",
           "notify_mobile_service": "Select your phone from the list, or type a service name (e.g. mobile_app_my_phone). Leave blank to skip mobile alerts."

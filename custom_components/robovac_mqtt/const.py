@@ -16,6 +16,13 @@ DEFAULT_MAP_MAX_PX: Final = 512
 CONF_ROBOT_STYLE: Final = "robot_style"
 DEFAULT_ROBOT_STYLE: Final = "googly"
 
+# "detailed" draws the raw lidar grid; "clean" draws smoothed, app-style room
+# shapes from the RoomOutline (falls back to "detailed" when there is none).
+CONF_MAP_STYLE: Final = "map_style"
+MAP_STYLE_DETAILED: Final = "detailed"
+MAP_STYLE_CLEAN: Final = "clean"
+DEFAULT_MAP_STYLE: Final = MAP_STYLE_DETAILED
+
 CONF_NOTIFY_DESKTOP: Final = "notify_desktop"
 DEFAULT_NOTIFY_DESKTOP: Final = True
 CONF_NOTIFY_MOBILE_SERVICE: Final = "notify_mobile_service"

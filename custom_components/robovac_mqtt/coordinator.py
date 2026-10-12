@@ -45,10 +45,12 @@ from .api.map_stream import (
 from .api.parser import update_state
 from .const import (
     CONF_MAP_MAX_PX,
+    CONF_MAP_STYLE,
     CONF_NOTIFY_DESKTOP,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROBOT_STYLE,
     DEFAULT_MAP_MAX_PX,
+    DEFAULT_MAP_STYLE,
     DEFAULT_NOTIFY_DESKTOP,
     DEFAULT_NOTIFY_MOBILE_SERVICE,
     DEFAULT_ROBOT_STYLE,
@@ -644,6 +646,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         opts = entry.options if entry else {}
         max_px = int(opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
         robot_style = opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
+        map_style = opts.get(CONF_MAP_STYLE, DEFAULT_MAP_STYLE)
         # Snapshot mutable state before entering the thread.
         map_data = self._map_data
         robot_trail = list(self._robot_trail) if self._robot_trail else None
@@ -659,6 +662,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 robot_status=robot_status,
                 max_px=max_px,
                 robot_style=robot_style,
+                map_style=map_style,
             )
 
         try:
