@@ -336,6 +336,10 @@ async def async_setup_entry(
 
         # Accessory Sensors. Filter/brushes/sensor are universal; cleaning tray
         # and mopping cloth only exist on mop-capable (novel) devices.
+        # Novel devices only get a sensor for accessories their lifespan table
+        # lists, so a new accessory added here must also be added to
+        # ACCESSORY_MAX_LIFE (and any MODEL_ACCESSORY_MAX_LIFE entry that has
+        # it), or it silently gets no sensor.
         accessories = [
             ("filter_usage", "Filter Remaining", "mdi:air-filter", None),
             ("main_brush_usage", "Rolling Brush Remaining", "mdi:broom", None),
