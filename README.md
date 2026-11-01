@@ -87,6 +87,8 @@ Sends a notification when the robot reports an error (Wheel Stuck, Sensor Dirty,
 > [!NOTE]
 > Error codes are reported by the **robot** via MQTT. Dock hardware faults (error light on the station) use a separate channel not currently accessible via MQTT and will not trigger notifications.
 
+The vacuum entity also exposes `error_codes` and `warn_codes`, the lists from the robot's latest error report. `error_code` is the first entry in `error_codes`, or the first in `warn_codes` if there are no errors, so it can hold a warning. Either list can contain a fault. Both lists stay empty on scalar and legacy devices, so use `error_code` there.
+
 ### Sensors
 
 | Sensor | Notes |
