@@ -663,7 +663,8 @@ async def test_cloud_poll_backoff_caps_at_max(mock_hass, mock_login):
 
 def test_resolve_map_id_priority(mock_hass, mock_login, caplog):
     """resolve_map_id: per-map override > all-maps override > device-reported
-    id > 1.
+    id > 1, with a lone per-map override in place of the 1 until a map id is
+    reported.
 
     Overrides exist because some devices (T2080A / S1 Pro) report their cloud
     map id on the UniversalData DPS, which the firmware rejects in
@@ -691,12 +692,25 @@ def test_resolve_map_id_priority(mock_hass, mock_login, caplog):
     coordinator.map_id_overrides = {3001: 2}
     assert coordinator.resolve_map_id() == 2154
     assert "'2154: <local id>'" in caplog.text
-    # ...the all-maps override wins over the reported id...
+    # ...the all-maps override wins over the reported id, and the unmatched map
+    # is still named in the log...
+    caplog.clear()
     coordinator.map_id_override = 1
     assert coordinator.resolve_map_id() == 1
+    assert "'2154: <local id>'" in caplog.text
     # ...and an override for the reported map wins over everything.
     coordinator.data.map_id = 3001
     assert coordinator.resolve_map_id() == 2
+
+    # No map id reported yet (e.g. just after setup, before DPS 165): the log
+    # says so, and a lone per-map line is used instead of the 1...
+    coordinator.data.map_id = 0
+    coordinator.map_id_override = None
+    assert coordinator.resolve_map_id() == 2
+    assert "No map id reported yet" in caplog.text
+    # ...but with several lines the current map is unknown, so 1 stays.
+    coordinator.map_id_overrides = {3001: 2, 2154: 3}
+    assert coordinator.resolve_map_id() == 1
 
 
 def test_map_id_override_from_device_info(mock_hass, mock_login):

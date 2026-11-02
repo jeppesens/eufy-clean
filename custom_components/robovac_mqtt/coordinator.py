@@ -193,21 +193,35 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         Priority: the user's override for the reported map, then their
         override for all maps (both from the options flow), then the last
         device-reported map id, then 1 (the firmware default for the first
-        saved map). Overrides exist because some devices (T2080A) report
-        their cloud map id, which room commands reject.
+        saved map). Before any map id is reported, a single per-map override
+        is used instead of that 1. Overrides exist because some devices
+        (T2080A) report their cloud map id, which room commands reject.
         """
         reported = self.data.map_id
         if reported in self.map_id_overrides:
             return self.map_id_overrides[reported]
+        if self.map_id_overrides:
+            # Warn even when the all-maps override applies: without an Active
+            # Map sensor (Tuya transports) the log is the only place the user
+            # sees which reported id needs a line.
+            if reported:
+                _LOGGER.warning(
+                    "Map %s has no map id override; if room cleans fail, add a "
+                    "'%s: <local id>' line to the device options",
+                    reported,
+                    reported,
+                )
+            else:
+                _LOGGER.warning(
+                    "No map id reported yet, so the per-map map id overrides "
+                    "can't be matched"
+                )
         if self.map_id_override:
             return self.map_id_override
-        if self.map_id_overrides and reported:
-            _LOGGER.warning(
-                "Map %s has no map id override; if room cleans fail, add a "
-                "'%s: <local id>' line to the device options",
-                reported,
-                reported,
-            )
+        if not reported and len(self.map_id_overrides) == 1:
+            # Nothing reported yet (e.g. just after setup): the user's only
+            # per-map line is a better guess than the first-map default.
+            return next(iter(self.map_id_overrides.values()))
         return reported or 1
 
     def build_device_command(self, command: str, **kwargs: Any) -> dict[str, Any]:
