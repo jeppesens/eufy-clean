@@ -439,3 +439,53 @@ async def test_options_device_invalid_map_id_shows_error(hass: HomeAssistant):
     assert result2["type"] == data_entry_flow.FlowResultType.FORM
     assert result2["errors"][CONF_MAP_ID] == "invalid_map_id"
     assert entry.options.get(CONF_LOCAL_DEVICES, {}) == {}
+
+
+async def test_options_device_cleared_override_is_removed(hass: HomeAssistant):
+    """Emptying an optional field must drop its stored override. The frontend
+    leaves cleared optional fields out of the submission, so the form must not
+    re-insert the stored value (it pre-fills with suggested_value, not default)."""
+    stored = {
+        "loaded_dev": {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: {1: "Kitchen"},
+            CONF_MAP_ID: 1,
+        }
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={CONF_LOCAL_DEVICES: stored},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    _register_coordinators(
+        hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
+    )
+
+    result = await _open_device_step(hass, entry, "loaded_dev")
+
+    # Map id field cleared (omitted by the frontend); the rest kept.
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: "1: Kitchen",
+        },
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    saved = result2["data"][CONF_LOCAL_DEVICES]["loaded_dev"]
+    assert CONF_MAP_ID not in saved
+    assert saved[CONF_ROOM_NAMES] == {1: "Kitchen"}
+    assert saved[CONF_LOCAL_HOST] == "192.168.1.50"
+
+    # Host and rooms cleared too: nothing left, so the device entry is dropped.
+    result = await _open_device_step(hass, entry, "loaded_dev")
+    result3 = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_LOCAL_VERSION: 3.3}
+    )
+    assert result3["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert "loaded_dev" not in result3["data"][CONF_LOCAL_DEVICES]

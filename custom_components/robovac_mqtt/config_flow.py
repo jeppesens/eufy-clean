@@ -388,7 +388,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 if entry:
                     existing_all[dev_id] = entry
                 else:
-                    # Both fields cleared — drop any stored override.
+                    # All fields cleared — drop any stored override.
                     existing_all.pop(dev_id, None)
                 return self.async_create_entry(
                     title="",
@@ -405,10 +405,16 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_MAP_ID: map_id_raw,
             }
 
+        # Pre-fill with suggested_value, not default=: the frontend omits an
+        # emptied optional field from the submission, and a default= would put
+        # the stored value back, making a saved override impossible to clear.
         schema_dict: dict = {}
         if has_local_key:
             schema_dict[
-                VOptional(CONF_LOCAL_HOST, default=current.get(CONF_LOCAL_HOST, ""))
+                VOptional(
+                    CONF_LOCAL_HOST,
+                    description={"suggested_value": current.get(CONF_LOCAL_HOST, "")},
+                )
             ] = cv.string
             schema_dict[
                 VOptional(
@@ -418,13 +424,22 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         schema_dict[
             VOptional(
                 CONF_ROOM_NAMES,
-                default=_format_rooms_text(current.get(CONF_ROOM_NAMES) or {}),
+                description={
+                    "suggested_value": _format_rooms_text(
+                        current.get(CONF_ROOM_NAMES) or {}
+                    )
+                },
             )
         ] = selector.TextSelector(
             selector.TextSelectorConfig(multiline=True)
         )
         schema_dict[
-            VOptional(CONF_MAP_ID, default=str(current.get(CONF_MAP_ID, "") or ""))
+            VOptional(
+                CONF_MAP_ID,
+                description={
+                    "suggested_value": str(current.get(CONF_MAP_ID, "") or "")
+                },
+            )
         ] = cv.string
         return self.async_show_form(
             step_id="device",

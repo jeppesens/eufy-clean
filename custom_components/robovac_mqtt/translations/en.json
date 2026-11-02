@@ -45,7 +45,7 @@
           "host": "The dock's LAN address, for direct local push instead of 30 s cloud polling. Leave blank to stay on cloud.",
           "version": "Tuya protocol version — 3.3 fits most vacuums; try 3.4/3.5 for newer models if 3.3 fails.",
           "rooms": "Manual 'id: name' lines, one room per line (e.g. '1: Kitchen'). Used when the device's room list isn't delivered automatically.",
-          "map_id": "The map id sent in room/zone clean commands. Leave blank to use the device-reported id. Set this (usually 1) if room cleans are ignored — some models (S1 Pro / T2080A) report their cloud map id, which the firmware rejects; the local id of the first saved map is 1."
+          "map_id": "The local id of the map in use, sent in room/zone clean commands. Leave blank to use the device-reported id. Set this if room cleans fail — some models (S1 Pro / T2080A) report a cloud map id that the firmware rejects. The first map saved on the robot is 1, but a re-created or additional map gets a new id (2, 3, …), so if 1 fails try the next number. This value is used for every map, including after switching maps."
         }
       }
     },

@@ -335,8 +335,9 @@ def test_off_peak_command_dispatch():
     assert DPS_MAP["UNSETTING"] in result
 
 
-def test_build_room_clean_command_default_clean_times_unchanged():
-    """Default room clean stays byte-compatible: clean_times=1, GENERAL mode."""
+def test_build_room_clean_command_keeps_room_zero():
+    """Room id 0 is a real id on some maps (T2080A after room merges) and must
+    reach SelectRoomsClean alongside the requested map id."""
     result = build_room_clean_command([0, 5], map_id=1)
     decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
     assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN
@@ -344,13 +345,6 @@ def test_build_room_clean_command_default_clean_times_unchanged():
     assert src.map_id == 1
     assert src.clean_times == 1
     assert [(r.id, r.order) for r in src.rooms] == [(0, 1), (5, 2)]
-
-
-def test_build_room_clean_command_explicit_clean_times():
-    """An explicitly passed clean_times reaches SelectRoomsClean."""
-    result = build_room_clean_command([3], map_id=1, clean_times=2)
-    src = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]]).select_rooms_clean
-    assert src.clean_times == 2
 
 
 def test_set_room_custom_keeps_room_zero():

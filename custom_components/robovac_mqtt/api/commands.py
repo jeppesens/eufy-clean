@@ -131,10 +131,7 @@ def build_scene_clean_command(scene_id: int) -> dict[str, str]:
 
 
 def build_room_clean_command(
-    room_ids: list[int],
-    map_id: int = 3,
-    mode: str = "GENERAL",
-    clean_times: int = 1,
+    room_ids: list[int], map_id: int = 3, mode: str = "GENERAL"
 ) -> dict[str, str]:
     """Build command to clean specific rooms."""
     if mode == "CUSTOMIZE":
@@ -147,7 +144,7 @@ def build_room_clean_command(
             SelectRoomsClean.Room(id=rid, order=i + 1) for i, rid in enumerate(room_ids)
         ],
         mode=proto_mode,
-        clean_times=max(1, int(clean_times)),
+        clean_times=1,
         map_id=map_id,
     )
     value = encode_message(
@@ -647,7 +644,6 @@ def build_command(
             kwargs.get("room_ids", []),
             kwargs.get("map_id", 3),
             kwargs.get("mode", "GENERAL"),
-            int(kwargs.get("clean_times", 1) or 1),
         )
     if cmd == "zone_clean":
         return build_zone_clean_command(
