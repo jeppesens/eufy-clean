@@ -81,8 +81,21 @@ async def test_send_command_calls_set_multiple(patch_tinytuya, fake_dev):
     finally:
         await client.disconnect()
     fake_dev.set_multiple_values.assert_called_once_with(
-        {"154": "BgoEIgIIAg=="}
+        {"154": "BgoEIgIIAg=="}, nowait=False
     )
+
+
+@pytest.mark.asyncio
+async def test_send_command_can_skip_the_reply_wait(patch_tinytuya, fake_dev):
+    """Drive commands get no reply; waiting on one stalls the next by the socket timeout."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client.set_on_message(lambda _b: None)
+    await client.connect()
+    try:
+        await client.send_command({"155": "AggB"}, wait=False)
+    finally:
+        await client.disconnect()
+    fake_dev.set_multiple_values.assert_called_once_with({"155": "AggB"}, nowait=True)
 
 
 @pytest.mark.asyncio
@@ -389,3 +402,21 @@ def test_receive_with_timeout_guards_none_dev(patch_tinytuya):
     )
     assert client._dev is None
     assert client._receive_with_timeout() is None
+
+
+@pytest.mark.asyncio
+async def test_cancelled_write_holds_socket_lock_until_executor_finishes(patch_tinytuya, fake_dev):
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client._dev = fake_dev
+    pending = asyncio.get_running_loop().create_future()
+    client._loop = MagicMock()
+    client._loop.run_in_executor.return_value = pending
+    write = asyncio.create_task(client.send_command({"155": "brake"}, wait=False))
+    await asyncio.sleep(0)
+    write.cancel()
+    await asyncio.sleep(0)
+    assert client._dev_lock.locked() and not pending.cancelled()
+    pending.set_result(None)
+    with pytest.raises(asyncio.CancelledError):
+        await write
+    assert not client._dev_lock.locked()

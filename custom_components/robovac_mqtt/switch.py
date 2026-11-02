@@ -65,6 +65,24 @@ async def async_setup_entry(
                     set_wash_cfg,
                     icon="mdi:water-sync",
                 ),
+                DockSwitchEntity(
+                    coordinator,
+                    "auto_detergent",
+                    "Auto Detergent",
+                    lambda cfg: bool(cfg.get("detergent", False)),
+                    lambda cfg, val: cfg.__setitem__("detergent", val),
+                    icon="mdi:bottle-tonic-plus-outline",
+                    requires_key="detergent",
+                ),
+                DockSwitchEntity(
+                    coordinator,
+                    "auto_disinfectant",
+                    "Auto Disinfectant",
+                    lambda cfg: bool(cfg.get("make_disinfectant", False)),
+                    lambda cfg, val: cfg.__setitem__("make_disinfectant", val),
+                    icon="mdi:shield-plus-outline",
+                    requires_key="make_disinfectant",
+                ),
                 DoNotDisturbSwitchEntity(coordinator),
                 OffPeakChargingSwitchEntity(coordinator),
                 ChildLockSwitchEntity(coordinator),
@@ -138,9 +156,17 @@ class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
         getter: Callable[[dict[str, Any]], bool],
         setter: Callable[[dict[str, Any], bool], None],
         icon: str | None = None,
+        requires_key: str | None = None,
     ) -> None:
-        """Initialize the dock switch entity."""
+        """Initialize the dock switch entity.
+
+        ``requires_key`` names an auto-config field only some docks have. proto3
+        omits a false bool, so the switch stays available once the field has
+        been seen even after it is turned off.
+        """
         super().__init__(coordinator)
+        self._requires_key = requires_key
+        self._seen_key = False
         self._id_suffix = id_suffix
         self._getter = getter
         self._setter = setter
@@ -176,7 +202,13 @@ class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
     @property
     def available(self) -> bool:
         """Return whether the entity is available."""
-        return super().available and bool(self.coordinator.data.dock_auto_cfg)
+        cfg = self.coordinator.data.dock_auto_cfg
+        if not super().available or not cfg:
+            return False
+        if self._requires_key is None:
+            return True
+        self._seen_key = self._seen_key or self._requires_key in cfg
+        return self._seen_key
 
     async def _set_state(self, state: bool) -> None:
         """Send command to update config."""
@@ -380,15 +412,18 @@ class OffPeakChargingSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], Switc
 class BoostIQSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
     """Switch for BoostIQ (auto carpet suction boost).
 
-    scalar-protocol only (DPS 118). X-series lumps BoostIQ into the fan-speed
-    list, so this entity is not created there.
+    scalar-protocol DPS 118, or DPS 159 on protobuf robots reached over Tuya
+    (S1 Pro). MQTT X-series lump BoostIQ into the fan-speed list, so this entity
+    is not created there.
     """
 
-    supported_api_types = (API_TYPE_SCALAR,)
+    supported_api_types: tuple[str, ...] = (API_TYPE_SCALAR,)
 
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize the BoostIQ switch."""
         super().__init__(coordinator)
+        if coordinator.tuya_transport:
+            self.supported_api_types = (API_TYPE_SCALAR, API_TYPE_NOVEL)
         self._attr_unique_id = f"{coordinator.device_id}_boost_iq"
         self._attr_has_entity_name = True
         self._attr_name = "BoostIQ"

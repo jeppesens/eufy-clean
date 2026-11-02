@@ -24,7 +24,7 @@ from custom_components.robovac_mqtt.vacuum import RoboVacMQTTEntity
 
 def _room_mask(width, height, rid_at):
     """Build a room_pixels byte mask. Each byte is (room_id << 2) | sub_type; tests
-    use sub_type 0, so byte == rid << 2 (matching render_map_png's `rid = byte >> 2`)."""
+    use sub_type 0, so byte == rid << 2 (matching the renderer's `rid = byte >> 2`)."""
     return bytes(((rid_at(px, py) << 2) & 0xFF) for py in range(height) for px in range(width))
 
 
@@ -88,14 +88,14 @@ def mock_coordinator():
 # ---------------------------------------------------------------------------
 
 
-def test_hit_test_no_mask_returns_zero():
-    """No room mask decoded yet -> 0 (never raises)."""
+def test_hit_test_no_mask_returns_none():
+    """No room mask decoded yet -> None (never raises)."""
     md = MapData(raw_pixels=b"", width=10, height=10, resolution=1)
-    assert md.room_id_at_normalized(0.5, 0.5) == 0
+    assert md.room_id_at_normalized(0.5, 0.5) is None
 
 
-def test_hit_test_zero_outline_dims_returns_zero():
-    """A mask present but with no outline dims is unusable -> 0."""
+def test_hit_test_zero_outline_dims_returns_none():
+    """A mask present but with no outline dims is unusable -> None."""
     md = MapData(
         raw_pixels=b"",
         width=10,
@@ -105,7 +105,7 @@ def test_hit_test_zero_outline_dims_returns_zero():
         room_outline_width=0,  # ...no dims -> can't index
         room_outline_height=0,
     )
-    assert md.room_id_at_normalized(0.5, 0.5) == 0
+    assert md.room_id_at_normalized(0.5, 0.5) is None
 
 
 def test_hit_test_y_flip_orientation():
@@ -119,17 +119,24 @@ def test_hit_test_y_flip_orientation():
     assert md.room_id_at_normalized(0.5, 0.9) == 3  # image bottom -> low source py
 
 
-def test_hit_test_returns_raw_mask_id():
-    """The hit-test returns the raw mask id (incl. the background id); selecting
-    which ids are 'real rooms' is the caller's job."""
-    md = _map_with_mask(lambda px, py: 0 if px < 5 else 32)
-    assert md.room_id_at_normalized(0.1, 0.5) == 0  # left half  -> empty
-    assert md.room_id_at_normalized(0.9, 0.5) == 32  # right half -> background id
+def test_hit_test_room_zero_is_a_room():
+    """Ids 0-31 are rooms (the S1 Pro numbers its first room 0); ids from 32 up
+    (60 = no room data, 61 = gap, 62 = obstacle, 63 = unknown) are not."""
+    md = _map_with_mask(lambda px, py: 0 if px < 5 else 60)
+    assert md.room_id_at_normalized(0.1, 0.5) == 0  # left half  -> room 0
+    assert md.room_id_at_normalized(0.9, 0.5) is None  # right half -> background
+
+
+def test_hit_test_ignores_unlisted_ids_when_rooms_are_known():
+    """With a room list, a mask id that is not a listed room is not a hit."""
+    md = _map_with_mask(lambda px, py: 0 if px < 5 else 3, room_names={3: "Hall"})
+    assert md.room_id_at_normalized(0.1, 0.5) is None  # id 0 not listed here
+    assert md.room_id_at_normalized(0.9, 0.5) == 3
 
 
 def test_hit_test_honours_outline_origin_offset():
     """The room mask can have a different origin than the map; the offset (the same
-    one render_map_png applies) must shift the lookup, and out-of-mask -> 0."""
+    one the renderer applies) must shift the lookup, and out-of-mask -> None."""
     # origin_x 0, room_outline_origin_x -10, res 5 -> ro_dx = (0 - -10)/5 = 2,
     # so map pixel px maps to mask column px-2.
     md = _map_with_mask(
@@ -141,7 +148,7 @@ def test_hit_test_honours_outline_origin_offset():
         room_outline_origin_y=0,
     )
     assert md.room_id_at_normalized(0.9, 0.5) == 4  # px 9 -> rx 7 (in bounds)
-    assert md.room_id_at_normalized(0.0, 0.5) == 0  # px 0 -> rx -2 (out of bounds)
+    assert md.room_id_at_normalized(0.0, 0.5) is None  # px 0 -> rx -2 (out of bounds)
 
 
 def test_hit_test_clamps_normalized_input():
@@ -156,10 +163,10 @@ def test_hit_test_clamps_normalized_input():
 # ---------------------------------------------------------------------------
 
 
-def test_coordinator_no_map_returns_zero_none(mock_hass, mock_login):
-    """No map decoded -> (0, None) so the service reports a clean miss."""
+def test_coordinator_no_map_returns_none(mock_hass, mock_login):
+    """No map decoded -> (None, None) so the service reports a clean miss."""
     coordinator = _coordinator_with_map(mock_hass, mock_login, None)
-    assert coordinator.room_id_at_normalized(0.5, 0.5) == (0, None)
+    assert coordinator.room_id_at_normalized(0.5, 0.5) == (None, None)
 
 
 def test_coordinator_resolves_room_name(mock_hass, mock_login):
@@ -176,11 +183,18 @@ def test_coordinator_unnamed_room_returns_id_none(mock_hass, mock_login):
     assert coordinator.room_id_at_normalized(0.5, 0.5) == (7, None)
 
 
-def test_coordinator_miss_returns_zero_none(mock_hass, mock_login):
-    """A tap on a 0 (no-room) mask cell -> (0, None)."""
-    md = _map_with_mask(lambda px, py: 0)
+def test_coordinator_miss_returns_none(mock_hass, mock_login):
+    """A tap on a background (60) mask cell -> (None, None)."""
+    md = _map_with_mask(lambda px, py: 60)
     coordinator = _coordinator_with_map(mock_hass, mock_login, md)
-    assert coordinator.room_id_at_normalized(0.5, 0.5) == (0, None)
+    assert coordinator.room_id_at_normalized(0.5, 0.5) == (None, None)
+
+
+def test_coordinator_resolves_room_zero(mock_hass, mock_login):
+    """Room 0 resolves like any other room."""
+    md = _map_with_mask(lambda px, py: 0, room_names={0: "Kitchen"})
+    coordinator = _coordinator_with_map(mock_hass, mock_login, md)
+    assert coordinator.room_id_at_normalized(0.5, 0.5) == (0, "Kitchen")
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +216,10 @@ async def test_service_returns_resolved_room(mock_coordinator):
 
 @pytest.mark.asyncio
 async def test_service_miss_returns_empty_name(mock_coordinator):
-    """A miss returns room_id 0 and an empty string name (never None, for the card)."""
-    mock_coordinator.room_id_at_normalized = MagicMock(return_value=(0, None))
+    """A miss returns room_id -1 and an empty string name (never None, for the card)."""
+    mock_coordinator.room_id_at_normalized = MagicMock(return_value=(None, None))
     entity = RoboVacMQTTEntity(mock_coordinator)
 
     result = await entity.async_room_at_point(0.0, 0.0)
 
-    assert result == {"room_id": 0, "room_name": ""}
+    assert result == {"room_id": -1, "room_name": ""}

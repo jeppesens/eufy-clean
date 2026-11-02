@@ -1,6 +1,8 @@
 """Unit tests for the API layer (parser and commands)."""
 
-from unittest.mock import MagicMock, PropertyMock, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
+
+import pytest
 
 from custom_components.robovac_mqtt.api.commands import (
     build_command,
@@ -15,6 +17,7 @@ from custom_components.robovac_mqtt.api.commands import (
     build_set_water_level_command,
 )
 from custom_components.robovac_mqtt.api.parser import update_state
+from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudClient
 from custom_components.robovac_mqtt.const import DPS_MAP, EUFY_CLEAN_CONTROL
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.proto.cloud.error_code_pb2 import ErrorCode
@@ -90,6 +93,8 @@ def test_update_state_error_code(mock_decode):
     mock_error = MagicMock(spec=ErrorCode)
     mock_error.error = []
     mock_error.warn = [1]  # CRASH BUFFER STUCK
+    mock_error.error = []
+    mock_error.new_code = MagicMock(error=[])
     mock_decode.return_value = mock_error
 
     dps = {DPS_MAP["ERROR_CODE"]: "some_encoded_string"}
@@ -400,16 +405,15 @@ def test_update_state_device_info_dps169():
     state = VacuumState()
     # Real DPS 169 payload from a T2351 (X10 Pro Omni)
     dps = {
-        DPS_MAP["MAP_MANAGE"]: "vgEKF2V1ZnkgQ2xlYW4gWDEwIFBybyBPbW5pGhFjMDo"
-        "4YTo2MDoyMzo4MzpkOSIGMy40Ljg1KAMyCkx1ZnRIYW1uZW46CjEwLjEuMC4xMDZCKD"
-        "A5OTM2ZDFkNjdhZjE2YWJlYzJiNDdhOTZjYmU5M2RiNTY4NmM2YzhaCgoGMS4yLjI3EA"
-        "hiLQgBEgQIAhADGgQIAhAPIgQIARABMgQIARADOgQIARABQgQIARADUgUIARCzJGoJVDI"
-        "zNTFfb3Rh"
+        DPS_MAP["MAP_MANAGE"]: "vgEKF2V1ZnkgQ2xlYW4gWDEwIFBybyBPbW5pGhEwMDowMDowMDowMDowMDowMCIGMy40Lj"
+        "g1KAMyClRlc3ROZXQxMjM6CjEwLjAuMC4xMDZCKDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAw"
+        "MDAwMDAwMDAwMDAwMDAwMDBaCgoGMS4yLjI3EAhiLQgBEgQIAhADGgQIAhAPIgQIARABMg"
+        "QIARADOgQIARABQgQIARADUgUIARCzJGoJVDIzNTFfb3Rh"
     }
     new_state, _ = update_state(state, dps)
-    assert new_state.device_mac == "c0:8a:60:23:83:d9"
-    assert new_state.wifi_ssid == "LuftHamnen"
-    assert new_state.wifi_ip == "10.1.0.106"
+    assert new_state.device_mac == "00:00:00:00:00:00"
+    assert new_state.wifi_ssid == "TestNet123"
+    assert new_state.wifi_ip == "10.0.0.106"
     assert "wifi_ssid" in new_state.received_fields
     assert "wifi_ip" in new_state.received_fields
 
@@ -448,3 +452,17 @@ def test_known_unprocessed_dps_does_not_crash():
     new_state, _ = update_state(state, dps)
     # Should not crash and state should be unchanged (except raw_dps)
     assert new_state.activity == "idle"
+
+
+@pytest.mark.asyncio
+async def test_get_rtc_config_returns_the_cloud_session_reserved_on_the_robot():
+    client = TuyaCloudClient.__new__(TuyaCloudClient)
+    client.request = AsyncMock(
+        return_value={
+            "password": "pw",
+            "p2pConfig": {"ices": [{"urls": "stun:x"}], "tcpRelay": {"a": 1}, "log": {}, "session": {"sessionId": "sid"}},
+        }
+    )
+    config = await client.get_rtc_config("dev")
+    assert config["session"] == {"sessionId": "sid"}
+    assert config["device_password"] == "pw" and config["ice_config"]["token"] == [{"urls": "stun:x"}]

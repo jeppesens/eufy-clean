@@ -18,8 +18,11 @@ from custom_components.robovac_mqtt.proto.cloud.clean_statistics_pb2 import (
     CleanStatistics,
 )
 from custom_components.robovac_mqtt.proto.cloud.common_pb2 import Numerical
+from custom_components.robovac_mqtt.proto.cloud.consumable_pb2 import ConsumableResponse
+from custom_components.robovac_mqtt.proto.cloud.error_code_pb2 import ErrorCode
 from custom_components.robovac_mqtt.proto.cloud.language_pb2 import LanguageResponse
 from custom_components.robovac_mqtt.proto.cloud.station_pb2 import StationResponse
+from custom_components.robovac_mqtt.proto.cloud.work_status_pb2 import WorkStatus
 from custom_components.robovac_mqtt.utils import encode_message
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -775,3 +778,114 @@ def test_cleaning_stats_user_total():
     assert new_state.total_cleaning_time == 18000
     assert new_state.total_cleaning_count == 42
     assert "cleaning_totals" in new_state.received_fields
+
+
+def test_unenumerated_state_reads_sub_states():
+    """S1 Pro reports state 9 while washing its mop mid-task: not "idle".
+
+    Real payload (fw 7.0.168): mode SELECT_ROOM, state 9, charging DONE,
+    cleaning DOING, go_wash WASHING.
+    """
+    state, changes = update_state(VacuumState(), {DPS_MAP["WORK_STATUS"]: "EAoCCAEQCRoCCAEyADoCEAE="})
+    assert changes["status_code"] == 9
+    assert state.activity == "docked"
+    assert state.task_status == "Washing Mop"
+
+
+def test_state_9_is_docked_for_station_tasks():
+    """After a clean the S1 Pro sits in state 9 (bare, or with field 31) while it
+    empties, washes and dries: it is at the dock, not idle."""
+    state, _ = update_state(VacuumState(), {DPS_MAP["WORK_STATUS"]: "AhAJ"})
+    assert state.activity == "docked"
+
+
+def test_unenumerated_state_cleaning_without_wash():
+    ws = WorkStatus(state=10)
+    ws.cleaning.state = 0
+    state, _ = update_state(VacuumState(), {DPS_MAP["WORK_STATUS"]: encode_message(ws)})
+    assert state.activity == "cleaning"
+
+
+def test_boost_iq_dps_159_parsed_for_tuya_transport_robots():
+    state, _ = update_state(VacuumState(), {DPS_MAP["BOOST_IQ"]: True})
+    assert state.boost_iq is True
+    assert "boost_iq" in state.received_fields
+    # A non-bool on 159 is not BoostIQ and is ignored.
+    state, changes = update_state(VacuumState(), {DPS_MAP["BOOST_IQ"]: "x"})
+    assert "boost_iq" not in changes
+
+
+def test_accessory_minutes_on_tuya_transport_firmware():
+    """S1 Pro firmware puts consumable runtime in minutes (field 22)."""
+    response = ConsumableResponse()
+    response.runtime.rolling_brush.duration_min = 22756
+    response.runtime.side_brush.duration = 7  # MQTT style, hours
+    state, _ = update_state(VacuumState(), {DPS_MAP["ACCESSORIES_STATUS"]: encode_message(response)})
+    assert state.accessories.main_brush_usage == 379
+    assert state.accessories.side_brush_usage == 7
+
+
+def test_height_detection_read_from_s1_pro_settings():
+    """S1 Pro DPS 176 carries the sensitivity as field 107 (1 Safe / 2 Medium / 3 Free)."""
+    medium = "EMIGAggBygYA0gYCCAHYBgI="  # 104 off, 106 on, 107 = 2
+    free = "EMIGAggBygYA0gYCCAHYBgM="
+    state, changes = update_state(VacuumState(), {DPS_MAP["UNSETTING"]: medium})
+    assert changes["height_detection"] == "Medium"
+    state, changes = update_state(state, {DPS_MAP["UNSETTING"]: free})
+    assert state.height_detection == "Free"
+    assert "height_detection" in state.received_fields
+
+
+def test_height_detection_ignored_when_absent_or_unknown():
+    # An X-series style payload with no field 107, and a value outside 1-3.
+    _, changes = update_state(VacuumState(), {DPS_MAP["UNSETTING"]: "A9gGBw=="})
+    assert "height_detection" not in changes
+
+
+def test_camera_switch_read_from_s1_pro_settings():
+    """DPS 176 field 104 is `videoMgrSw`, the robot's camera switch.
+
+    Confirmed on a real S1 Pro: toggling Visual Anti-Drop in the app moves
+    field 105, not 104, and 104 reads on only after the on-robot button hold.
+    """
+    on = "EMIGAggBygYA0gYCCAHYBgI="
+    off = "DsIGAMoGANIGAggB2AYC"
+    _, changes = update_state(VacuumState(), {DPS_MAP["UNSETTING"]: on})
+    assert changes["camera_enabled"] is True
+    state, changes = update_state(VacuumState(), {DPS_MAP["UNSETTING"]: off})
+    assert changes["camera_enabled"] is False
+    assert "camera_enabled" in state.received_fields
+    # A payload without field 104 reports nothing rather than a false negative.
+    _, changes = update_state(VacuumState(), {DPS_MAP["UNSETTING"]: "A9gGAg=="})
+    assert "camera_enabled" not in changes
+
+
+def _error_payload(**fields) -> str:
+    message = ErrorCode()
+    message.error.extend(fields.get("error", []))
+    message.warn.extend(fields.get("warn", []))
+    message.new_code.error.extend(fields.get("new_error", []))
+    return encode_message(message)
+
+
+def test_a_fault_in_error_is_reported_when_warn_is_empty():
+    """Previously only warn[0] was read, so a real fault showed as code 0 / no message."""
+    _, changes = update_state(VacuumState(), {DPS_MAP["ERROR_CODE"]: _error_payload(error=[74])})
+    assert changes["error_code"] == 74
+    assert changes["error_message"]
+
+
+def test_a_newly_raised_fault_is_reported():
+    _, changes = update_state(VacuumState(), {DPS_MAP["ERROR_CODE"]: _error_payload(new_error=[75])})
+    assert changes["error_code"] == 75
+
+
+def test_faults_outrank_warnings_and_zeros_are_ignored():
+    payload = _error_payload(error=[0, 74], warn=[9])
+    _, changes = update_state(VacuumState(), {DPS_MAP["ERROR_CODE"]: payload})
+    assert changes["error_code"] == 74
+
+
+def test_no_fault_clears_the_error():
+    _, changes = update_state(VacuumState(), {DPS_MAP["ERROR_CODE"]: _error_payload()})
+    assert changes["error_code"] == 0 and changes["error_message"] == ""

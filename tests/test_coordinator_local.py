@@ -26,12 +26,14 @@ def mock_login():
     login = MagicMock()
     login.openudid = "test_udid"
     login.checkLogin = AsyncMock()
+    # No Tuya cloud session: the P2P map feed stays off unless a test opts in.
+    login.tuya_client = None
     return login
 
 
 def _device_info(connection_type: str | None = None, **extra) -> dict:
     base = {
-        "deviceId": "bf64ff37e97fadf4f5pxny",
+        "deviceId": "testdeviceid0000000000",
         "deviceModel": "T2080A",
         "deviceName": "S1 Pro",
     }
@@ -129,7 +131,7 @@ async def test_initialize_local_success_uses_local_client(
         await coordinator.initialize()
 
     cls.assert_called_once_with(
-        device_id="bf64ff37e97fadf4f5pxny",
+        device_id="testdeviceid0000000000",
         local_key="k" * 16,
         host="192.168.1.50",
         version=3.3,

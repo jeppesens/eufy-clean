@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import logging
+import time
+from collections.abc import Iterator
 from dataclasses import replace
 from typing import Any
 
@@ -15,12 +17,16 @@ from ..const import (
     DOCK_ACTIVITY_STATES,
     DPS_MAP,
     DPS_ROBOT_TELEMETRY,
+    DPS_UNSETTING_HEIGHT_DETECTION_FIELD,
+    DPS_UNSETTING_VIDEO_SWITCH_FIELD,
     EUFY_CLEAN_APP_TRIGGER_MODES,
     EUFY_CLEAN_ERROR_CODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     FAN_SUCTION_NAMES,
+    HEIGHT_DETECTION_MODES,
     KNOWN_UNPROCESSED_DPS,
     MOP_WATER_LEVEL_NAMES,
+    S1_PRO_MODELS,
     STATION_WATER_LEVEL_NAMES,
     TRIGGER_SOURCE_NAMES,
     WORK_MODE_NAMES,
@@ -28,6 +34,7 @@ from ..const import (
     MopWaterLevel,
     TriggerSource,
 )
+from ..errors import s1_error_message
 from ..models import AccessoryState, VacuumState, track_received_field
 from ..proto.cloud.app_device_info_pb2 import DeviceInfo
 from ..proto.cloud.clean_param_pb2 import CleanParamRequest, CleanParamResponse
@@ -44,7 +51,7 @@ from ..proto.cloud.undisturbed_pb2 import UndisturbedResponse
 from ..proto.cloud.unisetting_pb2 import UnisettingResponse
 from ..proto.cloud.universal_data_pb2 import UniversalDataResponse
 from ..proto.cloud.work_status_pb2 import WorkStatus
-from ..utils import decode, decode_varint, deduplicate_names
+from ..utils import decode, decode_varint, deduplicate_names, encode_varint
 from .parser_scalar import process_scalar_dps
 
 _LOGGER = logging.getLogger(__name__)
@@ -226,6 +233,45 @@ def update_state(
     if "received_fields" in changes:
         _LOGGER.debug("Received fields now: %s", changes["received_fields"])
 
+    if "error_code" in changes:
+        code = changes["error_code"]
+        if code:
+            changes["error_message"] = s1_error_message(code, state.device_model) or changes["error_message"]
+            changes["last_error_code"] = code
+            changes["last_error_message"] = changes["error_message"]
+
+    # A confirmed healthy WorkStatus means a previous S1 fault was recovered.
+    # Do not infer recovery from standby/pause, command echoes or manual mode.
+    # A newly raised fault in the same packet wins over a healthy status snapshot.
+    healthy = (
+        state.device_model.upper() in S1_PRO_MODELS
+        and "status_code" in changes
+        and changes["status_code"] != 6
+        and changes.get("activity") in ("cleaning", "returning", "docked")
+    )
+    new_fault = False
+    if healthy:
+        try:
+            work_status = decode(WorkStatus, dps[DPS_MAP["WORK_STATUS"]])
+            healthy = not (
+                work_status.HasField("charging") and work_status.charging.state == 2
+            ) and not any(
+                work_status.HasField(field) and getattr(work_status, field).state == 1
+                for field in ("mapping", "cleaning", "go_wash", "go_home", "cruisiing")
+            )
+        except Exception:
+            healthy = False
+    if healthy and DPS_MAP["ERROR_CODE"] in dps:
+        try:
+            new_fault = any(decode(ErrorCode, dps[DPS_MAP["ERROR_CODE"]]).new_code.error)
+        except Exception:  # The main parser logs malformed reports; retain the fault.
+            new_fault = True
+    if healthy and not new_fault and changes.get("error_code", state.error_code):
+        if state.error_code and "last_error_code" not in changes:
+            changes["last_error_code"] = state.error_code
+            changes["last_error_message"] = state.error_message
+        changes.update(error_code=0, error_message="", error_codes=[])
+
     return replace(state, **changes), changes
 
 
@@ -249,17 +295,19 @@ def _process_station_status(
             changes["station_clean_water"] = station.clean_water.value
             track_received_field(state, changes, "station_clean_water")
 
-        # dirty_level is a proto3 enum without presence, so a dock that never
-        # sends it would read as EMPTY. Report it only once it has been on the
-        # wire; after that, a frame without it is read as EMPTY.
-        dirty_level_sent = any(
-            fd.name == "dirty_level" for fd, _ in station.ListFields()
-        )
-        if dirty_level_sent or "station_dirty_water" in state.received_fields:
-            changes["station_dirty_water"] = STATION_WATER_LEVEL_NAMES.get(
-                station.dirty_level, "Unknown"
-            )
-            track_received_field(state, changes, "station_dirty_water")
+        # dirty_level / clean_level are proto3 enums without presence, so a dock
+        # that never sends them would read as EMPTY. Report each only once it has
+        # been on the wire; after that, a frame without it is read as EMPTY.
+        sent = {fd.name for fd, _ in station.ListFields()}
+        for field_name, key in (
+            ("dirty_level", "station_dirty_water"),
+            ("clean_level", "station_clean_water_level"),
+        ):
+            if field_name in sent or key in state.received_fields:
+                changes[key] = STATION_WATER_LEVEL_NAMES.get(
+                    getattr(station, field_name), "Unknown"
+                )
+                track_received_field(state, changes, key)
 
         # Auto Empty Config
         if station.HasField("auto_cfg_status"):
@@ -484,21 +532,30 @@ def _process_other_dps(
             elif key == DPS_MAP["CLEAN_SPEED"]:
                 changes["fan_speed"] = _map_clean_speed(value)
                 track_received_field(state, changes, "fan_speed")
+            elif key == DPS_MAP["BOOST_IQ"] and isinstance(value, bool):
+                changes["boost_iq"] = value
+                track_received_field(state, changes, "boost_iq")
 
             elif key == DPS_MAP["ERROR_CODE"]:
                 error_proto = decode(ErrorCode, value)
                 _LOGGER.debug("Decoded ErrorCode: %s", error_proto)
-                # Codes arrive in two lists; prefer `error` so a standing
-                # warning can't mask a fault, and expose both in full.
+                # Codes arrive in `error` (faults), `new_code.error` (newly raised
+                # faults) and `warn` (advisories). error_codes / warn_codes expose
+                # the `error` and `warn` lists in full; the headline code is the
+                # first non-zero one in that order, so a standing warning can't
+                # mask a fault and an empty `error` list can't hide a new one.
                 errors = [int(c) for c in error_proto.error]
                 warns = [int(c) for c in error_proto.warn]
                 changes["error_codes"] = errors
                 changes["warn_codes"] = warns
-                if errors or warns:
-                    code = errors[0] if errors else warns[0]
+                code = next(
+                    (c for c in (*errors, *error_proto.new_code.error, *warns) if c),
+                    0,
+                )
+                if code:
                     changes["error_code"] = code
                     changes["error_message"] = EUFY_CLEAN_ERROR_CODES.get(
-                        code, "Unknown Error"
+                        code, f"Unknown Error ({code})"
                     )
                 else:
                     changes["error_code"] = 0
@@ -518,10 +575,17 @@ def _process_other_dps(
                     if stats.single.clean_area > 0:
                         changes["cleaning_area"] = stats.single.clean_area
                     track_received_field(state, changes, "cleaning_stats")
-                if stats.HasField("user_total"):
-                    changes["total_cleaning_area"] = stats.user_total.clean_area
-                    changes["total_cleaning_time"] = stats.user_total.clean_duration
-                    changes["total_cleaning_count"] = stats.user_total.clean_count
+                # user_total resets per owner; robots that only send the
+                # lifetime total (S1 Pro) fall back to it.
+                totals = (
+                    stats.user_total if stats.HasField("user_total")
+                    else stats.total if stats.HasField("total")
+                    else None
+                )
+                if totals is not None:
+                    changes["total_cleaning_area"] = totals.clean_area
+                    changes["total_cleaning_time"] = totals.clean_duration
+                    changes["total_cleaning_count"] = totals.clean_count
                     track_received_field(state, changes, "cleaning_totals")
 
             elif key == DPS_MAP["SCENE_INFO"]:
@@ -583,6 +647,10 @@ def _process_other_dps(
                     _LOGGER.debug("Received MULTI_MAP_MANAGE (DPS 172): %.100s", value)
                     _parse_multi_map_response(value)
 
+            elif key == DPS_MAP["VIDEO_MANAGER"]:
+                if (reply := _parse_video_manager_reply(value)) is not None:
+                    changes["video_response"] = (*reply, time.monotonic())
+
             elif key == DPS_MAP["UNSETTING"]:
                 settings = decode(UnisettingResponse, value)
                 _LOGGER.debug("Decoded UnisettingResponse: %s", settings)
@@ -592,6 +660,12 @@ def _process_other_dps(
                 if settings.HasField("children_lock"):
                     changes["child_lock"] = settings.children_lock.value
                     track_received_field(state, changes, "child_lock")
+                if (cam := _extract_video_switch(value)) is not None:
+                    changes["camera_enabled"] = cam
+                    track_received_field(state, changes, "camera_enabled")
+                if (mode := _extract_height_detection(value)) is not None:
+                    changes["height_detection"] = mode
+                    track_received_field(state, changes, "height_detection")
                 off_peak = _extract_off_peak_charging(value)
                 if off_peak is not None:
                     _LOGGER.debug("DPS 176 off-peak parsed: %s", off_peak)
@@ -762,8 +836,18 @@ def _map_work_status(status: WorkStatus) -> str:
         return "returning"
     if s == 8:  # Active clean (alternate / cruising)
         return "cleaning"
+    if s == 9:  # Outside the enum: S1 Pro at its station (wash / empty / dry)
+        return "docked"
     if s == 15:  # Paused
         return "paused"
+    # Any other state outside the enum: read the sub-states rather than
+    # guessing "idle".
+    if status.HasField("go_wash"):
+        return "docked" if status.go_wash.mode in (1, 2) else "cleaning"
+    if status.HasField("go_home"):
+        return "returning"
+    if status.HasField("cleaning"):
+        return "paused" if status.cleaning.state == 1 else "cleaning"
 
     return "idle"
 
@@ -779,6 +863,94 @@ def _map_trigger_source(value: int) -> str:
     5: REMOTE_CTRL
     """
     return TRIGGER_SOURCE_NAMES.get(TriggerSource(value), "unknown")
+
+
+def _parse_video_manager_reply(value: Any) -> tuple[int, int] | None:
+    """Return ``(method, result)`` from a DP 181 VideoMgrResponse, or None.
+
+    ``result`` 0 (absent on the wire) is success; 1 means the robot refused.
+    """
+    try:
+        raw = base64.b64decode(value)
+        length, pos = decode_varint(raw, 0)
+        end = min(len(raw), pos + length)
+        while pos < end:
+            key, pos = decode_varint(raw, pos)
+            if key & 7 != 2:
+                return None
+            size, pos = decode_varint(raw, pos)
+            if key >> 3 == 1:  # control
+                method = result = 0
+                inner, stop = pos, pos + size
+                while inner < stop:
+                    inner_key, inner = decode_varint(raw, inner)
+                    if inner_key & 7 != 0:
+                        return None
+                    number, inner = decode_varint(raw, inner)
+                    if inner_key >> 3 == 1:
+                        method = number
+                    elif inner_key >> 3 == 3:
+                        result = number
+                return method, result
+            pos += size
+    except (ValueError, TypeError, IndexError):
+        return None
+    return None
+
+
+def _iter_unsetting_fields(value: Any) -> Iterator[tuple[int, int, bytes]]:
+    """Walk a DPS 176 payload, yielding ``(field, wire_type, raw)`` for each entry.
+
+    The S1 Pro packs settings into fields 104-107 that the bundled
+    ``UnisettingResponse`` does not define, so these are read off the wire.
+    """
+    raw = base64.b64decode(value)
+    length, pos = decode_varint(raw, 0)
+    end = min(len(raw), pos + length)
+    while pos < end:
+        key, pos = decode_varint(raw, pos)
+        field, wire = key >> 3, key & 7
+        if wire == 0:
+            number, pos = decode_varint(raw, pos)
+            yield field, wire, encode_varint(number)
+        elif wire == 2:
+            size, pos = decode_varint(raw, pos)
+            yield field, wire, raw[pos : pos + size]
+            pos += size
+        elif wire == 5:
+            yield field, wire, raw[pos : pos + 4]
+            pos += 4
+        elif wire == 1:
+            yield field, wire, raw[pos : pos + 8]
+            pos += 8
+        else:
+            return
+
+
+def _extract_video_switch(value: Any) -> bool | None:
+    """Read the camera switch (field 105) out of a DPS 176 payload.
+
+    The field holds a bool wrapper: an absent or empty submessage is the proto3
+    default, i.e. the camera is off.
+    """
+    try:
+        for field, _wire, raw in _iter_unsetting_fields(value):
+            if field == DPS_UNSETTING_VIDEO_SWITCH_FIELD:
+                return bool(raw) and raw != b"\x08\x00"
+    except (ValueError, TypeError, IndexError):
+        return None
+    return None
+
+
+def _extract_height_detection(value: Any) -> str | None:
+    """Pull the height-detection mode (field 107) out of a DPS 176 payload."""
+    try:
+        for field, wire, raw in _iter_unsetting_fields(value):
+            if field == DPS_UNSETTING_HEIGHT_DETECTION_FIELD and wire == 0:
+                return HEIGHT_DETECTION_MODES.get(decode_varint(raw, 0)[0])
+    except (ValueError, TypeError, IndexError):
+        return None
+    return None
 
 
 def _map_clean_speed(value: Any) -> str:
@@ -940,24 +1112,25 @@ def _parse_accessories(current_state: AccessoryState, value: Any) -> AccessorySt
         runtime = response.runtime
         changes: dict[str, Any] = {}
 
-        if runtime.HasField("filter_mesh"):
-            changes["filter_usage"] = runtime.filter_mesh.duration
-        if runtime.HasField("rolling_brush"):
-            changes["main_brush_usage"] = runtime.rolling_brush.duration
-        if runtime.HasField("side_brush"):
-            changes["side_brush_usage"] = runtime.side_brush.duration
-        if runtime.HasField("sensor"):
-            changes["sensor_usage"] = runtime.sensor.duration
-        if runtime.HasField("scrape"):
-            changes["scrape_usage"] = runtime.scrape.duration
-        if runtime.HasField("mop"):
-            changes["mop_usage"] = runtime.mop.duration
-        if runtime.HasField("dustbag"):
-            changes["dustbag_usage"] = runtime.dustbag.duration
-        if runtime.HasField("dirty_watertank"):
-            changes["dirty_watertank_usage"] = runtime.dirty_watertank.duration
-        if runtime.HasField("dirty_waterfilter"):
-            changes["dirty_waterfilter_usage"] = runtime.dirty_waterfilter.duration
+        def hours(field: str) -> int:
+            # MQTT firmware reports whole hours; Tuya-transport firmware (S1 Pro)
+            # reports minutes in a different field.
+            duration = getattr(runtime, field)
+            return round(duration.duration_min / 60) if duration.duration_min else duration.duration
+
+        for field, usage in (
+            ("filter_mesh", "filter_usage"),
+            ("rolling_brush", "main_brush_usage"),
+            ("side_brush", "side_brush_usage"),
+            ("sensor", "sensor_usage"),
+            ("scrape", "scrape_usage"),
+            ("mop", "mop_usage"),
+            ("dustbag", "dustbag_usage"),
+            ("dirty_watertank", "dirty_watertank_usage"),
+            ("dirty_waterfilter", "dirty_waterfilter_usage"),
+        ):
+            if runtime.HasField(field):
+                changes[usage] = hours(field)
 
         return replace(current_state, **changes)
 
