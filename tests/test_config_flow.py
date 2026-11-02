@@ -2,8 +2,8 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import homeassistant.helpers.config_validation as cv
+import probatio
 import pytest
-import voluptuous_serialize
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
@@ -105,7 +105,7 @@ async def test_options_settings_independent_edit(hass: HomeAssistant):
 
     # The HTTP layer serializes the form schema for the frontend; a function
     # (e.g. a coercion lambda) in the schema makes that raise -> 500 on load.
-    voluptuous_serialize.convert(
+    probatio.to_field_list(
         result["data_schema"], custom_serializer=cv.custom_serializer
     )
 
