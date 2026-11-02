@@ -171,10 +171,10 @@ class P2PMapFeed:
             started = time.monotonic()
             refused = False
             try:
-                await self._run_session()
-                self.last_error = None
-                backoff = _ACTIVE_RETRY
-                self._failures_in_a_row = 0
+                if await self._run_session():
+                    self.last_error = None
+                    backoff = _ACTIVE_RETRY
+                    self._failures_in_a_row = 0
             except Exception as err:  # noqa: BLE001 - keep supervising whatever happens
                 self.last_error = str(err)
                 refused = isinstance(err, P2PRefused)
@@ -226,16 +226,20 @@ class P2PMapFeed:
         self.session_slot.release()
         self.poke()
 
-    async def _run_session(self) -> None:
+    async def _run_session(self) -> bool:
+        """Run one session; False if it stepped aside without opening one."""
         async with self.session_slot:
-            await self._run_session_in_slot()
+            # A poke that arrived while we queued (e.g. the camera releasing the
+            # slot) is about the state before this session, which is now fresh.
+            self._wake.clear()
+            return await self._run_session_in_slot()
 
-    async def _run_session_in_slot(self) -> None:
+    async def _run_session_in_slot(self) -> bool:
         # State can change while we queued for the slot (the camera was refused,
         # the camera wants the slot, or the entry is unloading). Nothing has been
         # reserved yet, so just step aside; the supervisor re-checks its deadline.
         if self._stopping or self._yield_requested.is_set() or self.refusal_remaining() > 0:
-            return
+            return False
         rtc = await self.get_rtc()
         self.decoder.start_session()
         self._session = P2PSession(
@@ -262,6 +266,7 @@ class P2PMapFeed:
             runner.cancel()
             with suppress(asyncio.CancelledError, Exception):
                 await runner
+        return True
 
     def _on_object(self, name: str, obj: bytes) -> None:
         if not self.connected:

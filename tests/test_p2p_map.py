@@ -588,3 +588,28 @@ async def test_current_room_comes_from_the_p2p_pose_on_local_tuya_robots(hass):
     assert coordinator.current_room() == (0, "Kitchen")  # room 0 is a real room
     coordinator.p2p.decoder.state.pose = Pose(16, 5, 0)
     assert coordinator.current_room() == (1, "Hall")
+
+
+@pytest.mark.asyncio
+async def test_a_release_poke_while_queued_does_not_cause_a_second_session(hass, fake_session):
+    feed = _feed(hass)  # idle
+    await feed.acquire_slot(1)  # the camera holds the slot
+    feed.start()
+    await asyncio.sleep(0.05)  # the supervisor is queued behind it
+    feed.release_slot()  # pokes
+    await asyncio.sleep(0.3)
+    await feed.stop()
+    assert feed.sessions == 1
+
+
+@pytest.mark.asyncio
+async def test_stepping_aside_does_not_wipe_a_failure_streak(hass, fake_session):
+    feed = _feed(hass)
+    feed._failures_in_a_row = 2
+    feed.last_error = "boom"
+    feed.note_refusal()
+    assert await feed._run_session() is False
+    # the supervisor only does its success bookkeeping when a session ran
+    fake_session.script = [[]]
+    feed._refused_until = 0.0
+    assert await feed._run_session() is True
