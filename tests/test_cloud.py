@@ -852,3 +852,117 @@ async def test_tuya_supersedes_placeholder_on_id_mismatch_single_robot():
     assert len(login.cloud_devices) == 1
     assert login.cloud_devices[0]["deviceId"] == "tuya_devid"
     assert login.cloud_devices[0]["local_key"] == "k"
+
+
+# ── Non-vacuum Tuya products on the same account (issue #148) ────────
+
+# The Tuya record from #148: "eufy S1200", most likely eufy's robot lawn mower.
+_IGNORED_TUYA_RECORD = {
+    "devId": "mower_devid",
+    "productId": "zv0iudtdybehgecu",
+    "localKey": "k",
+    "name": "eufy S1200",
+    "dps": {"153": "CgIIAQ==", "173": 1, "176": 0, "177": 0},
+}
+# Its own Eufy cloud record (same id as the Tuya devId). Listed as a cleaning
+# appliance, it is reconstructed as a placeholder of its own.
+_IGNORED_CLOUD_RECORD = {
+    "id": "mower_devid",
+    "product": {"name": "eufy S1200", "appliance": "Cleaning"},
+}
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_devices_skips_ignored_tuya_product():
+    """#148: "eufy S1200" (most likely eufy's robot lawn mower) shares the Tuya
+    home and carries a localKey, but is not a vacuum: it must not get a
+    coordinator."""
+    login = _make_login(eufy_api_devices=[])
+    login.mqtt_devices = [
+        {"deviceId": "x10_dev", "deviceName": "X10", "reconstructed": False}
+    ]
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(return_value=[_IGNORED_TUYA_RECORD])
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert not login.cloud_devices
+    assert [d["deviceId"] for d in login.mqtt_devices] == ["x10_dev"]
+
+
+@pytest.mark.parametrize(
+    "ignored_cloud_record",
+    [
+        pytest.param(None, id="devid-mismatch"),
+        pytest.param(_IGNORED_CLOUD_RECORD, id="devid-match"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ignored_tuya_product_does_not_replace_reconstructed_placeholder(
+    ignored_cloud_record,
+):
+    """#148: an ignored product must not count as "the single Tuya robot" and
+    make getCloudDevices drop the account's reconstructed vacuum placeholder.
+    A placeholder of its own is dropped instead."""
+    login = _make_login()
+    cloud_list = [
+        {
+            "id": "eufy_id",
+            "product": {"product_code": "T2351", "name": "X10 Pro Omni"},
+            "alias_name": "X10",
+            "device_model": "T2351",
+        }
+    ]
+    if ignored_cloud_record:
+        cloud_list.append(ignored_cloud_record)
+    login.eufyApi.get_cloud_device_list = AsyncMock(return_value=cloud_list)
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+    await login.getDevices()
+    assert [d["deviceId"] for d in login.mqtt_devices] == [r["id"] for r in cloud_list]
+    assert all(d["reconstructed"] for d in login.mqtt_devices)
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(return_value=[_IGNORED_TUYA_RECORD])
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert not login.cloud_devices
+    assert [d["deviceId"] for d in login.mqtt_devices] == ["eufy_id"]
+
+
+@pytest.mark.asyncio
+async def test_ignored_tuya_product_placeholder_drop_keeps_safety_net():
+    """#148: dropping an ignored product's own placeholder is not a supersede,
+    so the single-robot safety net still pairs the one vacuum placeholder with
+    its Tuya device when their ids differ (#131)."""
+    login = _make_login()
+    login.eufyApi.get_cloud_device_list = AsyncMock(
+        return_value=[
+            {
+                "id": "eufy_id",
+                "product": {"product_code": "T2080A", "name": "S1 Pro"},
+                "alias_name": "S1 Pro",
+                "device_model": "T2080A",
+            },
+            _IGNORED_CLOUD_RECORD,
+        ]
+    )
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+    await login.getDevices()
+    assert len(login.mqtt_devices) == 2  # both reconstructed
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {"devId": "tuya_devid", "localKey": "k", "name": "S1 Pro", "dps": {}},
+            _IGNORED_TUYA_RECORD,
+        ]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert not login.mqtt_devices
+    assert [d["deviceId"] for d in login.cloud_devices] == ["tuya_devid"]
