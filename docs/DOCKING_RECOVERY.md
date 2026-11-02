@@ -39,7 +39,10 @@ HA reported docked / Washing Mop / raw work state 9 while the previous E75 numbe
 remained visible.
 
 For S1 Pro, a valid healthy WorkStatus confirms recovery and clears the active
-code, message and list. Standby, sleep, paused subtasks, manual control, abnormal
+movement and docking faults (the cleared number stays in the last-error
+attributes). Base-station codes (EBxx, such as a full dirty-water tank) and
+warnings that are still listed are kept, because the robot stays healthy while
+they are up, and the first of them becomes the active code. Standby, sleep, paused subtasks, manual control, abnormal
 charging, partial updates and command acknowledgements do not claim recovery.
 A newly raised error in the same packet is retained. A healthy full status
 snapshot does not reactivate an old latched error; its number remains in the

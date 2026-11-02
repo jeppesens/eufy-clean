@@ -353,7 +353,11 @@ class P2PSession:
         for segment in segments:
             conversation = self._conversations.get(segment.conversation)
             if conversation is not None:
-                conversation.input(segment)
+                try:
+                    conversation.input(segment)
+                except kcp.KcpError as err:  # e.g. a record that never ends
+                    self._fail(P2PError(str(err)))
+                    return
 
     def _send_consent(self, nominate: bool) -> None:
         if self._robot_ufrag and self._robot_pwd:

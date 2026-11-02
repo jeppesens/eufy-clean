@@ -33,9 +33,12 @@ def is_advisory_code(code: int, model: str, warn_codes: list[int]) -> bool:
     full) or a warning is up. Docking failures count as faults wherever listed.
     """
     label = screen_error_code(code, model)
-    if not isinstance(label, str) or label in _DOCKING_FAULTS:
-        return False
-    return label.startswith("EB") or code in warn_codes
+    if isinstance(label, str):
+        if label in _DOCKING_FAULTS:
+            return False
+        if label.startswith("EB"):
+            return True
+    return code in warn_codes
 
 
 def s1_error_message(code: int, model: str) -> str | None:

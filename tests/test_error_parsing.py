@@ -181,4 +181,18 @@ def test_recovery_clears_the_movement_fault_but_keeps_a_station_code_that_is_sti
         after = _recover(_docked_with(error=order))
         assert after.error_codes == [19988739] and after.error_code == 19988739
         assert "dirty water" in after.error_message.lower()
-        assert after.last_error_code == order[0]
+        assert after.last_error_code == 19924741  # the cleared E75, not the kept EB13
+
+
+def test_a_zero_entry_in_error_does_not_defeat_the_station_exemption():
+    assert _recover(_docked_with(error=[0], warn=[19988739])).error_code == 19988739
+
+
+def test_an_unmapped_warning_is_kept():
+    assert _recover(_docked_with(warn=[12345])).error_code == 12345
+
+
+@pytest.mark.parametrize("warn", [19923712, 19988739])  # E30, EB13
+def test_a_warning_that_outlives_the_fault_becomes_the_headline(warn):
+    after = _recover(_docked_with(error=[19924741], warn=[warn]))  # E75 cleared
+    assert after.error_code == warn and after.last_error_code == 19924741

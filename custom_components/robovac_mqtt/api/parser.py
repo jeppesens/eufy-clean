@@ -271,17 +271,21 @@ def update_state(
     # WorkStatus stays healthy while they are up, so only a movement fault clears.
     current = changes.get("error_code", state.error_code)
     warns = changes.get("warn_codes", state.warn_codes)
-    codes = changes.get("error_codes", state.error_codes)
+    codes = [c for c in changes.get("error_codes", state.error_codes) if c]
 
     def advisory(code: int) -> bool:
         return is_advisory_code(code, state.device_model, warns)
 
     keep = [c for c in codes if advisory(c)]  # still up: the robot will not re-push them
     if healthy and not new_fault and current and not (advisory(current) and len(keep) == len(codes)):
-        if state.error_code and "last_error_code" not in changes:
-            changes["last_error_code"] = state.error_code
-            changes["last_error_message"] = state.error_message
-        remaining = keep[0] if keep else 0
+        cleared = next((c for c in codes if not advisory(c)), current)
+        if "last_error_code" not in changes:
+            changes["last_error_code"] = cleared
+            changes["last_error_message"] = (
+                s1_error_message(cleared, state.device_model) or f"Unknown Error ({cleared})"
+            )
+        # What is still up becomes the headline: station codes, then warnings.
+        remaining = keep[0] if keep else next((w for w in warns if w and advisory(w)), 0)
         changes.update(
             error_code=remaining,
             error_message=(
