@@ -39,10 +39,9 @@ _RECV_TIMEOUT = 5.0
 _RECONNECT_BACKOFF_INITIAL = 5.0
 _RECONNECT_BACKOFF_MAX = 60.0
 
-# LOCAL PATCH (homelab): Tuya devices close an idle persistent
-# connection after ~30 s. tinytuya expects a regular heartbeat()
-# (monitor example: 12 s). Without it, the connection dropped every
-# 35 s and status updates were lost.
+# Tuya devices close an idle persistent connection after ~30 s. tinytuya
+# expects a regular heartbeat() (monitor example: 12 s). Without it, the
+# connection dropped every 35 s and status updates were lost.
 _HEARTBEAT_INTERVAL = 10.0
 
 
@@ -270,9 +269,15 @@ class LocalTuyaClient:
         if self._dev is None:
             return
         try:
-            self._dev.heartbeat(nowait=True)
+            result = self._dev.heartbeat(nowait=True)
         except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
             _LOGGER.debug("Local Tuya %s: heartbeat failed (%s)", self.device_id, e)
+            return
+        if isinstance(result, dict) and "Error" in result:
+            _LOGGER.debug(
+                "Local Tuya %s: heartbeat failed (%s)",
+                self.device_id, result.get("Error"),
+            )
 
     def _receive_with_timeout(self) -> Any:
         """Blocking receive() with a bounded timeout so the loop stays responsive."""
