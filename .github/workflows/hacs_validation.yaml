@@ -15,3 +15,5 @@ jobs:
         uses: "hacs/action@main"
         with:
           category: "integration"
+          # LICENSE.md is upstream's custom license, which isn't OSI-approved, so this check can't pass.
+          ignore: "license"
