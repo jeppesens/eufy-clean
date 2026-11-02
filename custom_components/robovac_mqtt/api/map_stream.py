@@ -132,9 +132,11 @@ class MapData:
         px = min(max(round(nx * w), 0), max(w - 1, 0))
         py = min(max(round((h - 1) - ny * h), 0), max(h - 1, 0))
         # the room mask has its own origin; this offset matches render_map_png's _ro_dx/_ro_dy.
+        # Both grids use world = origin + pixel * res, so map pixel px is mask column
+        # px + (origin_x - room_outline_origin_x) / res.
         ro_dx = round((self.origin_x - self.room_outline_origin_x) / res)
         ro_dy = round((self.origin_y - self.room_outline_origin_y) / res)
-        rx, ry = px - ro_dx, py - ro_dy
+        rx, ry = px + ro_dx, py + ro_dy
         if 0 <= rx < self.room_outline_width and 0 <= ry < self.room_outline_height:
             idx = ry * self.room_outline_width + rx
             if 0 <= idx < len(self.room_pixels):
@@ -230,6 +232,8 @@ def render_map_png(
     if room_px is not None and map_data.room_outline_width and map_data.room_outline_height:
         _ro_w = map_data.room_outline_width
         _ro_h = map_data.room_outline_height
+        # Map pixel (px, py) covers the same world point as mask cell
+        # (px + _ro_dx, py + _ro_dy); see MapData.room_id_at_normalized.
         _ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
         _ro_dy = round((map_data.origin_y - map_data.room_outline_origin_y) / res)
         palette_len = len(_ROOM_PALETTE)
@@ -239,7 +243,7 @@ def render_map_png(
                 byte_pos = i >> 2
                 bit_pos = (i & 3) * 2
                 pv = (raw[byte_pos] >> bit_pos) & 3 if byte_pos < len(raw) else 0
-                rx, ry = px_x - _ro_dx, py - _ro_dy
+                rx, ry = px_x + _ro_dx, py + _ro_dy
                 if 0 <= rx < _ro_w and 0 <= ry < _ro_h:
                     rpx = room_px[ry * _ro_w + rx]
                     rid = rpx >> 2

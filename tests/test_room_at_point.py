@@ -127,21 +127,43 @@ def test_hit_test_returns_raw_mask_id():
     assert md.room_id_at_normalized(0.9, 0.5) == 32  # right half -> background id
 
 
-def test_hit_test_honours_outline_origin_offset():
-    """The room mask can have a different origin than the map; the offset (the same
-    one render_map_png applies) must shift the lookup, and out-of-mask -> 0."""
-    # origin_x 0, room_outline_origin_x -10, res 5 -> ro_dx = (0 - -10)/5 = 2,
-    # so map pixel px maps to mask column px-2.
+def test_hit_test_honours_outline_origin_offset_x():
+    """The room mask can have a different origin than the map; the lookup must hit
+    the mask cell covering the same *world* point as the tapped map pixel.
+
+    Both grids use world = origin + pixel * res (as ``_pose_to_pixel`` does), so map
+    pixel px sits at world origin_x + px*res, which is mask column
+    px + (origin_x - room_outline_origin_x) / res.
+
+    Here the mask starts 10 cm (2 px) left of the map, so map px -> mask column px+2.
+    The mask is column-coded (rid = column + 1) so a wrong offset gives a wrong id
+    rather than the same id.
+    """
     md = _map_with_mask(
-        lambda px, py: 4,
+        lambda px, py: px + 1,
         resolution=5,
         origin_x=0,
         origin_y=0,
         room_outline_origin_x=-10,
         room_outline_origin_y=0,
     )
-    assert md.room_id_at_normalized(0.9, 0.5) == 4  # px 9 -> rx 7 (in bounds)
-    assert md.room_id_at_normalized(0.0, 0.5) == 0  # px 0 -> rx -2 (out of bounds)
+    assert md.room_id_at_normalized(0.3, 0.5) == 6  # px 3 -> world 15 cm -> mask col 5
+    assert md.room_id_at_normalized(0.0, 0.5) == 3  # px 0 -> world 0 cm  -> mask col 2
+    assert md.room_id_at_normalized(0.9, 0.5) == 0  # px 9 -> mask col 11 (out of mask)
+
+
+def test_hit_test_honours_outline_origin_offset_y():
+    """Same as the x case, on the y axis (through the render's Y-flip)."""
+    md = _map_with_mask(
+        lambda px, py: py + 1,
+        resolution=5,
+        origin_x=0,
+        origin_y=0,
+        room_outline_origin_x=0,
+        room_outline_origin_y=-10,
+    )
+    # ny 0.6 -> source py 3 (image is Y-flipped) -> world 15 cm -> mask row 5
+    assert md.room_id_at_normalized(0.5, 0.6) == 6
 
 
 def test_hit_test_clamps_normalized_input():
