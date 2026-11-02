@@ -6,7 +6,6 @@ import logging
 from typing import Any, cast
 
 from ..const import (
-    S1_PRO_MODELS,
     AUTO_CLEAN_TIMES_MAX,
     AUTO_CLEAN_TIMES_MIN,
     CLEAN_EXTENT_MAP,
@@ -19,6 +18,7 @@ from ..const import (
     HEIGHT_DETECTION_MODES,
     MOP_CORNER_MAP,
     MOP_LEVEL_MAP,
+    S1_PRO_MODELS,
     SCALAR_CLEAN_PATTERN_NAMES,
     SCALAR_DPS,
     SCALAR_WORK_MODE_GO_HOME,

@@ -14,11 +14,13 @@ from .const import S1_PRO_ERROR_DESCRIPTIONS, S1_PRO_MODELS, S1_PRO_SCREEN_CODES
 if TYPE_CHECKING:
     from .models import VacuumState
 
+
 def screen_error_code(code: int, model: str) -> str | int:
     """Return a verified screen code, keeping other models/numbers unchanged."""
     if model.upper() in S1_PRO_MODELS:
         return S1_PRO_SCREEN_CODES.get(code, code)
     return code
+
 
 def s1_error_message(code: int, model: str) -> str | None:
     """Describe a verified S1 code without guessing another model's mapping."""
@@ -26,6 +28,7 @@ def s1_error_message(code: int, model: str) -> str | None:
     if isinstance(label, str):
         return S1_PRO_ERROR_DESCRIPTIONS.get(label, f"Robot fault ({label})")
     return None
+
 
 def error_attributes(state: VacuumState) -> dict[str, Any]:
     """Expose current errors and the previous error without losing raw numbers."""
@@ -39,6 +42,7 @@ def error_attributes(state: VacuumState) -> dict[str, Any]:
         "last_error_code_raw": state.last_error_code,
         "last_error_message": state.last_error_message,
     }
+
 
 def error_sensor_value(state: VacuumState) -> str:
     """A short error code suitable for HA state triggers."""

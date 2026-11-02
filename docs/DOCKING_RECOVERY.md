@@ -9,7 +9,7 @@ describes E74/E75/E76 as return-to-base failures.
 These are verified mappings from the eufy Clean Android app version 3.20.0
 (build 1042), `assets/green_lantern/T2080A_prompt_json.json`, joined to its
 English `mach_robovac_bubble_title_error_*` strings. The runtime's canonical
-mapping is `errors.py` (81 raw-to-screen pairs), scoped to T2080/T2080A. The
+mapping is `errors.py` (81 raw-to-screen pairs), scoped to `S1_PRO_MODELS` (T2080A). The
 older protobuf file named `error_code_list_t2080.proto` is a different numbering
 scheme; neither taking the last two digits nor mapping integer 75 globally is
 correct. Other models and unknown codes retain their original numbers.
@@ -67,39 +67,10 @@ rolling budget.
 Create `input_text.eufy_dock_retry_history` with maximum length 255 and **no
 initial value**, then initialize it once to `[]`. Its epoch-second timestamps
 survive normal HA restarts; an unavailable or malformed history fails closed.
-Do not clear the helper to work around the retry limit. The local idempotent
-installer is `infra/ha/eufy-dock-retry/apply.py`; it preserves existing history.
+Do not clear the helper to work around the retry limit.
 The automation is editable and can be disabled in HA's Automations UI.
 
 The regression tests execute the actual HA automation/script engine with
 synthetic vacuum states and a fake robot service. They cover recovery, an eleventh
 attempt, expiry, malformed history, mixed physical/docking faults and cancellation
 while waiting. No physical fault is induced just to test retries.
-
-## Deployment verification
-
-The reviewed runtime and error changes were deployed to HA together in one full
-restart. The sensor reported `None` after recovery, and `vacuum.robovac`
-reported a healthy resumed cleaning state with active code/raw code 0. The
-installed automation `automation.eufy_retry_failed_docking_three_in_30_minutes`
-is enabled. A live trigger with conditions enforced dispatched no command while
-healthy and left `input_text.eufy_dock_retry_history` at `[]`.
-
-Real docking failures subsequently exercised the original three-retry policy.
-The traces show `resume` calls at 18:34:13 and 18:44:13 UTC on 2026-10-11,
-followed about three seconds later by the robot changing from `error` to
-`returning`. The third call at 19:01:39 completed without an HA service error,
-but did not produce a healthy state. The automation stopped at its three-command
-rolling limit and posted its persistent notification; detection had worked.
-
-At the owner's request, the policy was increased to ten attempts per rolling
-30 minutes, three minutes apart. Reloading automations required no HA restart
-and preserved the existing retry history. An owner-requested immediate resume
-at 19:28:38 UTC was counted through this updated automation. The robot reported
-`returning` at 19:28:41 and `docked` at 19:28:52, with raw work state 9 and active
-code/raw code 0. A later update reported Washing Mop at the station. The old
-retry-limit notification was dismissed after confirming recovery. No manual
-steering was used. This confirms one successful
-resume-to-station recovery under the updated policy, not ten physical attempts.
-The code and example pass 742 tests and all repository hooks; no synthetic
-physical fault was induced.

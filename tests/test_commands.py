@@ -3,7 +3,6 @@
 import base64
 import logging
 
-
 import pytest
 
 from custom_components.robovac_mqtt.api.commands import (

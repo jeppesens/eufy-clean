@@ -30,6 +30,7 @@ from ..const import (
     STATION_WATER_LEVEL_NAMES,
     TRIGGER_SOURCE_NAMES,
     WORK_MODE_NAMES,
+    WORK_STATE_REMOTE_CTRL,
     CleaningMode,
     MopWaterLevel,
     TriggerSource,
@@ -246,7 +247,7 @@ def update_state(
     healthy = (
         state.device_model.upper() in S1_PRO_MODELS
         and "status_code" in changes
-        and changes["status_code"] != 6
+        and changes["status_code"] != WORK_STATE_REMOTE_CTRL
         and changes.get("activity") in ("cleaning", "returning", "docked")
     )
     new_fault = False
@@ -928,7 +929,7 @@ def _iter_unsetting_fields(value: Any) -> Iterator[tuple[int, int, bytes]]:
 
 
 def _extract_video_switch(value: Any) -> bool | None:
-    """Read the camera switch (field 105) out of a DPS 176 payload.
+    """Read the camera switch (field 104) out of a DPS 176 payload.
 
     The field holds a bool wrapper: an absent or empty submessage is the proto3
     default, i.e. the camera is off.

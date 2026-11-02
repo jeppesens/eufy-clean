@@ -142,8 +142,8 @@ class EufyVideoCamera(CoordinatorEntity[EufyCleanCoordinator], Camera):
     The robot only streams after its camera has been switched on at the robot
     (hold Start/Pause and Recharge for 10 s), which is what this entity mirrors: it
     is unavailable until then and while manual control is disabled. The camera
-    never changes the robot's control mode. Viewing it opens the stream; the last viewer to leave
-    closes it again after a short linger.
+    never changes the robot's control mode. Viewing it opens the stream; the last
+    viewer to leave closes it again after a short linger.
     """
 
     supported_api_types = (API_TYPE_NOVEL,)

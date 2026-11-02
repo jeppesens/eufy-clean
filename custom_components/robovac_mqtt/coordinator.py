@@ -761,7 +761,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         ready for ``build_zone_clean_command``.  Returns ``[]`` if no map has been
         received yet.
 
-        This is the exact inverse of ``render_map_png``'s forward transform.  The
+        This is the exact inverse of ``render_map``'s forward transform.  The
         render scale cancels out — normalized coords are already relative to the
         scaled output, so only the grid dimensions, resolution and the baked-in
         Y-flip remain::

@@ -207,7 +207,8 @@ How to enable it:
 2.  Go to Settings → Devices & Services → **Eufy Robovac MQTT** → **Configure**.
 3.  Enter the host (IP or DNS name) for each cloud-discovered vacuum and
     pick the Tuya protocol version (3.3 fits most vacuums; try 3.4/3.5 if
-    your model is newer and 3.3 fails to connect).
+    your model is newer and 3.3 fails to connect). The live P2P map, room
+    list and camera need 3.3; on 3.4/3.5 they stay off.
 4.  Save. The integration reloads and switches that device to local push.
 
 If the local socket fails to open (wrong host, firewall, dock offline) the
