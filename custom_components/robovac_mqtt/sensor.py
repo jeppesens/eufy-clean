@@ -348,11 +348,13 @@ async def async_setup_entry(
         ]
 
         # Accessory Sensors. Filter/brushes/sensor are universal; cleaning tray
-        # and mopping cloth only exist on mop-capable (novel) devices.
+        # and mopping cloth only exist on mop-capable (novel) devices; dust bag
+        # and sewage tank filter only on models whose MODEL_ACCESSORY_MAX_LIFE
+        # entry lists them.
         # Novel devices only get a sensor for accessories their lifespan table
-        # lists, so a new accessory added here must also be added to
-        # ACCESSORY_MAX_LIFE (and any MODEL_ACCESSORY_MAX_LIFE entry that has
-        # it), or it silently gets no sensor.
+        # lists, so a new accessory added here must also be added to the table
+        # of every model that has it (ACCESSORY_MAX_LIFE for models without an
+        # override), or it silently gets no sensor.
         accessories = [
             ("filter_usage", "Filter Remaining", "mdi:air-filter", None),
             ("main_brush_usage", "Rolling Brush Remaining", "mdi:broom", None),
@@ -366,6 +368,12 @@ async def async_setup_entry(
             ),
             ("mop_usage", "Mopping Cloth Remaining", "mdi:water", (API_TYPE_NOVEL,)),
             ("dustbag_usage", "Dust Bag Remaining", "mdi:delete", (API_TYPE_NOVEL,)),
+            (
+                "dirty_waterfilter_usage",
+                "Sewage Tank Filter Remaining",
+                "mdi:filter-outline",
+                (API_TYPE_NOVEL,),
+            ),
         ]
         max_life_table = MODEL_ACCESSORY_MAX_LIFE.get(
             coordinator.device_model, ACCESSORY_MAX_LIFE

@@ -100,7 +100,7 @@ The vacuum entity also exposes `error_codes` and `warn_codes`, the lists from th
 | Total cleaning area / time / count | Lifetime stats |
 | Dock firmware version | Station FW |
 | Error code & description | Real-time |
-| Accessory life remaining | Filter, brushes, mop, tray; dust bag on models that report it (hours) |
+| Accessory life remaining | Filter, brushes, mop, tray; dust bag and sewage tank filter on models whose lifespan table lists them (hours) |
 
 **Extended device info:** Serial number, MAC address, firmware version in the HA device panel.
 
