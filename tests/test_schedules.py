@@ -215,3 +215,28 @@ async def test_coordinator_timer_request_correlation(mock_hass, mock_login):
     assert result["success"] is True
     assert [s["id"] for s in result["schedules"]] == [7]
     assert coordinator.data.schedules[0]["time"] == "09:00"
+
+
+async def test_local_send_dispatches_consumed_report():
+    """A DP report consumed inside tinytuya's set call (fast device answer)
+    must be dispatched like a push, or response-correlated requests hang."""
+    from custom_components.robovac_mqtt.api import local_tuya
+
+    with patch.object(local_tuya, "tinytuya", MagicMock()):
+        client = local_tuya.LocalTuyaClient(
+            device_id="dev", local_key="0123456789abcdef", host="127.0.0.1"
+        )
+    client._loop = asyncio.get_running_loop()
+    client._dev = MagicMock()
+    client._dev.set_multiple_values.return_value = {
+        "dps": {"164": "kwII"},
+        "t": 1,
+    }
+    received: list[bytes] = []
+    client.set_on_message(received.append)
+
+    await client.send_command({"164": "BQgGEOsH"})
+
+    assert len(received) == 1
+    envelope = json.loads(received[0])
+    assert json.loads(envelope["payload"])["data"] == {"164": "kwII"}
