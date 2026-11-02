@@ -18,7 +18,6 @@ from ..const import (
     HEIGHT_DETECTION_MODES,
     MOP_CORNER_MAP,
     MOP_LEVEL_MAP,
-    S1_PRO_MODELS,
     SCALAR_CLEAN_PATTERN_NAMES,
     SCALAR_DPS,
     SCALAR_WORK_MODE_GO_HOME,
@@ -27,6 +26,7 @@ from ..const import (
     VIDEO_MGR_STREAM_CLOSE,
     VIDEO_MGR_STREAM_OPEN,
     VOICE_CATALOG,
+    is_s1_pro,
 )
 from ..proto.cloud.clean_param_pb2 import CleanParam, CleanParamRequest, Fan
 from ..proto.cloud.common_pb2 import Point, Quadrangle
@@ -217,7 +217,7 @@ def build_room_clean_command(
     rooms_clean = SelectRoomsClean(
         rooms=[
             SelectRoomsClean.Room(id=rid, order=i)
-            for i, rid in enumerate(room_ids, start=0 if model in S1_PRO_MODELS else 1)
+            for i, rid in enumerate(room_ids, start=0 if is_s1_pro(model) else 1)
         ],
         mode=proto_mode,
         clean_times=1,
@@ -745,7 +745,7 @@ def build_command(
     if cmd == "stop_remote":
         return _build_mode_ctrl(EUFY_CLEAN_CONTROL.STOP_RC_CLEAN)
     if cmd == "remote_move":
-        return build_remote_move_command(kwargs.get("direction", ""), v2=kwargs.get("model") in S1_PRO_MODELS)
+        return build_remote_move_command(kwargs.get("direction", ""), v2=is_s1_pro(kwargs.get("model")))
     if cmd == "set_water_level":
         return build_set_water_level_command(kwargs.get("water_level", ""))
     if cmd == "scene_clean":

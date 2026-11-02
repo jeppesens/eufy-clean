@@ -56,8 +56,8 @@ from .const import (
     DEFAULT_NOTIFY_MOBILE_SERVICE,
     DEFAULT_ROBOT_STYLE,
     DOMAIN,
-    S1_PRO_MODELS,
     WORK_STATE_REMOTE_CTRL,
+    is_s1_pro,
 )
 from .errors import screen_error_code
 from .models import VacuumState
@@ -262,7 +262,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         return (
             self.api_type == "novel"
             and self.connection_type in ("local", "cloud")
-            and self.device_model in S1_PRO_MODELS
+            and is_s1_pro(self.device_model)
         )
 
     @property

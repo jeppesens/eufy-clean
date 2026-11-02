@@ -750,6 +750,12 @@ ACCESSORY_MAX_LIFE = {
 # numbering and behaviour are not known to match.
 S1_PRO_MODELS: Final = frozenset({"T2080A"})
 
+
+def is_s1_pro(model: str | None) -> bool:
+    """True for an S1 Pro model code, whatever its case."""
+    return (model or "").upper() in S1_PRO_MODELS
+
+
 # Per-model overrides of ACCESSORY_MAX_LIFE for novel devices whose app lists
 # different accessories/intervals. Only the accessories listed get a sensor.
 MODEL_ACCESSORY_MAX_LIFE = {

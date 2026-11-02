@@ -39,7 +39,7 @@ _LOGGER = logging.getLogger(__name__)
 # enough not to spin.
 _RECV_TIMEOUT = 0.5
 # Everything else (waited writes, status(), reconnects) keeps tinytuya's usual
-# timeout: set_socketTimeout also bounds the connection, and on a timeout
+# timeout (set_socketTimeout replaces the constructor's connection_timeout too): set_socketTimeout also bounds the connection, and on a timeout
 # tinytuya reconnects and re-sends, which would double-send a slow robot's writes.
 _COMMAND_TIMEOUT = 5.0
 _RECONNECT_BACKOFF_INITIAL = 5.0
@@ -127,7 +127,6 @@ class LocalTuyaClient:
             address=self.host,
             local_key=self.local_key,
             version=self.version,
-            connection_timeout=10,
             persist=True,
         )
         # Don't let tinytuya retry endlessly on missing replies — we manage

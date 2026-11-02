@@ -26,7 +26,6 @@ from ..const import (
     HEIGHT_DETECTION_MODES,
     KNOWN_UNPROCESSED_DPS,
     MOP_WATER_LEVEL_NAMES,
-    S1_PRO_MODELS,
     STATION_WATER_LEVEL_NAMES,
     TRIGGER_SOURCE_NAMES,
     WORK_MODE_NAMES,
@@ -34,8 +33,9 @@ from ..const import (
     CleaningMode,
     MopWaterLevel,
     TriggerSource,
+    is_s1_pro,
 )
-from ..errors import is_station_code, s1_error_message
+from ..errors import is_advisory_code, s1_error_message
 from ..models import AccessoryState, VacuumState, track_received_field
 from ..proto.cloud.app_device_info_pb2 import DeviceInfo
 from ..proto.cloud.clean_param_pb2 import CleanParamRequest, CleanParamResponse
@@ -245,7 +245,7 @@ def update_state(
     # Do not infer recovery from standby/pause, command echoes or manual mode.
     # A newly raised fault in the same packet wins over a healthy status snapshot.
     healthy = (
-        state.device_model.upper() in S1_PRO_MODELS
+        is_s1_pro(state.device_model)
         and "status_code" in changes
         and changes["status_code"] != WORK_STATE_REMOTE_CTRL
         and changes.get("activity") in ("cleaning", "returning", "docked")
@@ -270,15 +270,27 @@ def update_state(
     # Station (EBxx) and advisory (`warn`) codes are not movement faults and the
     # WorkStatus stays healthy while they are up, so only a movement fault clears.
     current = changes.get("error_code", state.error_code)
-    advisory = bool(current) and (
-        is_station_code(current, state.device_model)
-        or current in changes.get("warn_codes", state.warn_codes)
-    )
-    if healthy and not new_fault and current and not advisory:
+    warns = changes.get("warn_codes", state.warn_codes)
+    codes = changes.get("error_codes", state.error_codes)
+
+    def advisory(code: int) -> bool:
+        return is_advisory_code(code, state.device_model, warns)
+
+    keep = [c for c in codes if advisory(c)]  # still up: the robot will not re-push them
+    if healthy and not new_fault and current and not (advisory(current) and len(keep) == len(codes)):
         if state.error_code and "last_error_code" not in changes:
             changes["last_error_code"] = state.error_code
             changes["last_error_message"] = state.error_message
-        changes.update(error_code=0, error_message="", error_codes=[])
+        remaining = keep[0] if keep else 0
+        changes.update(
+            error_code=remaining,
+            error_message=(
+                (s1_error_message(remaining, state.device_model) or f"Unknown Error ({remaining})")
+                if remaining
+                else ""
+            ),
+            error_codes=keep,
+        )
 
     return replace(state, **changes), changes
 

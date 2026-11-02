@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from .const import S1_PRO_ERROR_DESCRIPTIONS, S1_PRO_MODELS, S1_PRO_SCREEN_CODES
+from .const import S1_PRO_ERROR_DESCRIPTIONS, S1_PRO_SCREEN_CODES, is_s1_pro
 
 if TYPE_CHECKING:
     from .models import VacuumState
@@ -17,15 +17,25 @@ if TYPE_CHECKING:
 
 def screen_error_code(code: int, model: str) -> str | int:
     """Return a verified screen code, keeping other models/numbers unchanged."""
-    if model.upper() in S1_PRO_MODELS:
+    if is_s1_pro(model):
         return S1_PRO_SCREEN_CODES.get(code, code)
     return code
 
 
-def is_station_code(code: int, model: str) -> bool:
-    """True for an S1 Pro base-station code (EBxx), e.g. water tank full."""
+# Return-to-base failures: movement faults even if the robot lists them in `warn`.
+_DOCKING_FAULTS = frozenset({"E74", "E75", "E76", "E77"})
+
+
+def is_advisory_code(code: int, model: str, warn_codes: list[int]) -> bool:
+    """True for a code a healthy WorkStatus must not clear.
+
+    The robot stays healthy while a base-station code (EBxx, e.g. water tank
+    full) or a warning is up. Docking failures count as faults wherever listed.
+    """
     label = screen_error_code(code, model)
-    return isinstance(label, str) and label.startswith("EB")
+    if not isinstance(label, str) or label in _DOCKING_FAULTS:
+        return False
+    return label.startswith("EB") or code in warn_codes
 
 
 def s1_error_message(code: int, model: str) -> str | None:

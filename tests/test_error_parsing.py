@@ -151,11 +151,34 @@ def test_a_healthy_work_status_does_not_clear_station_codes(code):
     assert after.error_code == code
 
 
-def test_a_healthy_work_status_does_not_clear_a_warning():
-    error = ErrorCode()
-    error.warn.append(19924741)
-    state, _ = update_state(VacuumState(device_model="T2080A", activity="docked"), {DPS_MAP["ERROR_CODE"]: encode_message(error)})
+def _recover(state):
     healthy = WorkStatus(state=9)
     healthy.go_wash.mode = 1
     after, _ = update_state(state, {DPS_MAP["WORK_STATUS"]: encode_message(healthy)})
-    assert after.error_code == 19924741
+    return after
+
+
+def _docked_with(*, error=(), warn=()):
+    report = ErrorCode()
+    report.error.extend(error)
+    report.warn.extend(warn)
+    state, _ = update_state(
+        VacuumState(device_model="T2080A", activity="docked"), {DPS_MAP["ERROR_CODE"]: encode_message(report)}
+    )
+    return state
+
+
+def test_a_healthy_work_status_does_not_clear_a_warning():
+    assert _recover(_docked_with(warn=[19923712])).error_code == 19923712  # E30 in warn[]
+
+
+def test_a_docking_fault_is_cleared_even_when_listed_in_warn():
+    assert _recover(_docked_with(warn=[19924741])).error_code == 0  # E75
+
+
+def test_recovery_clears_the_movement_fault_but_keeps_a_station_code_that_is_still_up():
+    for order in ([19988739, 19924741], [19924741, 19988739]):  # EB13 and E75, either order
+        after = _recover(_docked_with(error=order))
+        assert after.error_codes == [19988739] and after.error_code == 19988739
+        assert "dirty water" in after.error_message.lower()
+        assert after.last_error_code == order[0]
