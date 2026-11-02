@@ -18,8 +18,8 @@ from custom_components.robovac_mqtt.proto.cloud.clean_statistics_pb2 import (
     CleanStatistics,
 )
 from custom_components.robovac_mqtt.proto.cloud.common_pb2 import Numerical
-from custom_components.robovac_mqtt.proto.cloud.station_pb2 import StationResponse
 from custom_components.robovac_mqtt.proto.cloud.language_pb2 import LanguageResponse
+from custom_components.robovac_mqtt.proto.cloud.station_pb2 import StationResponse
 from custom_components.robovac_mqtt.utils import encode_message
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -717,12 +717,12 @@ def test_station_status_dirty_water_level():
     """STATION_STATUS maps StationResponse.dirty_level to station_dirty_water."""
     station = StationResponse(
         clean_water=Numerical(value=52),
-        dirty_level=4,  # FULL: dirty tank needs emptying
+        dirty_level=4,  # HIGH (>75%): dirty tank needs emptying
     )
     encoded = encode_message(station)
     state = VacuumState()
     new_state, _ = update_state(state, {DPS_MAP["STATION_STATUS"]: encoded})
-    assert new_state.station_dirty_water == "Full"
+    assert new_state.station_dirty_water == "High"
     assert "station_dirty_water" in new_state.received_fields
     # Existing clean-water parsing is unaffected
     assert new_state.station_clean_water == 52

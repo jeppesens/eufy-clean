@@ -124,10 +124,10 @@ def test_dirty_water_level_sensor(mock_coordinator):
 
     # Simulate receiving dirty water level data from the station
     mock_coordinator.data.received_fields.add("station_dirty_water")
-    mock_coordinator.data.station_dirty_water = "Full"
+    mock_coordinator.data.station_dirty_water = "High"
 
     assert entity.available is True
-    assert entity.native_value == "Full"
+    assert entity.native_value == "High"
 
     mock_coordinator.data.station_dirty_water = "Empty"
     assert entity.native_value == "Empty"
