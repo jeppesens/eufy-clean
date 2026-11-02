@@ -381,6 +381,44 @@ async def test_login_handles_region_redirect():
     assert client.region == "AY"
 
 
+@pytest.mark.asyncio
+async def test_login_does_not_log_credentials(caplog):
+    """Login must not expose the Tuya uid or other login credentials in debug logs."""
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    eufy_user_id = "sensitive-eufy-user-id"
+    uid = f"eh-{eufy_user_id}"
+    passwd = "sensitive-login-password"
+    token_response = {
+        "publicKey": _TEST_PUBLIC_KEY_N,
+        "exponent": "65537",
+        "token": "sensitive-login-token",
+    }
+    login_response = {"sid": "sensitive-session-id"}
+
+    with (
+        patch.object(
+            client, "request", new_callable=AsyncMock,
+            side_effect=[token_response, login_response],
+        ) as mock_request,
+        patch(
+            "custom_components.robovac_mqtt.api.tuya_cloud._encrypt_password",
+            return_value=passwd,
+        ),
+        caplog.at_level(
+            logging.DEBUG, logger="custom_components.robovac_mqtt.api.tuya_cloud"
+        ),
+    ):
+        await client.login(eufy_user_id)
+
+    assert mock_request.call_args.kwargs["data"]["uid"] == uid
+    assert uid not in caplog.text
+    assert eufy_user_id not in caplog.text
+    assert token_response["token"] not in caplog.text
+    assert passwd not in caplog.text
+    assert login_response["sid"] not in caplog.text
+    assert "Tuya login starting for region EU" in caplog.text
+
+
 # ── Cross-implementation signing (Python vs upstream JS) ──────────
 
 

@@ -102,7 +102,8 @@ class TuyaCloudClient:
         3. Authenticate and get session ID
         """
         uid = f"eh-{eufy_user_id}"
-        _LOGGER.debug("Tuya login starting for region %s, uid=%s", self.region, uid)
+        # The uid alone is enough to log in (passwd is derived from it); never log it.
+        _LOGGER.debug("Tuya login starting for region %s", self.region)
 
         # Step 1: Get token and RSA public key
         token_result = await self.request(
