@@ -142,7 +142,7 @@ Room segments with guaranteed unique names (duplicates auto-suffixed, e.g. `Kitc
 5. Enter your Eufy account email and password
 
 > [!NOTE]
-> This integration requires the [Pillow](https://python-pillow.org/) image library for live map rendering. Home Assistant installs it automatically from PyPI when the integration first loads — no manual action needed.
+> This integration requires the [Pillow](https://python-pillow.org/) image library for live map rendering. Pillow ships with Home Assistant itself — no manual action needed.
 
 ---
 
