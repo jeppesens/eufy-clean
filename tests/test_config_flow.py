@@ -14,9 +14,11 @@ from custom_components.robovac_mqtt.const import (
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
     CONF_MAP_MAX_PX,
+    CONF_MAP_STYLE,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROOM_NAMES,
     DOMAIN,
+    MAP_STYLE_CLEAN,
 )
 
 
@@ -109,14 +111,19 @@ async def test_options_settings_independent_edit(hass: HomeAssistant):
         result["data_schema"], custom_serializer=cv.custom_serializer
     )
 
-    # Change only the map size; leave everything else (incl. mobile) untouched.
+    # Change only the map size and style; leave everything else (incl. mobile) untouched.
     result2 = await hass.config_entries.options.async_configure(
         result["flow_id"],
-        {CONF_MAP_MAX_PX: "1024", CONF_NOTIFY_MOBILE_SERVICE: None},
+        {
+            CONF_MAP_MAX_PX: "1024",
+            CONF_MAP_STYLE: MAP_STYLE_CLEAN,
+            CONF_NOTIFY_MOBILE_SERVICE: None,
+        },
     )
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result2["data"][CONF_NOTIFY_MOBILE_SERVICE] == ""
     assert result2["data"][CONF_MAP_MAX_PX] == "1024"
+    assert result2["data"][CONF_MAP_STYLE] == MAP_STYLE_CLEAN
 
 
 def _fake_coordinator(device_id: str, *, local_key: str | None = None):

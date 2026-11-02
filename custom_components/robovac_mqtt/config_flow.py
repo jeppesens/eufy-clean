@@ -24,15 +24,19 @@ from .const import (
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
     CONF_MAP_MAX_PX,
+    CONF_MAP_STYLE,
     CONF_NOTIFY_DESKTOP,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROBOT_STYLE,
     CONF_ROOM_NAMES,
     DEFAULT_MAP_MAX_PX,
+    DEFAULT_MAP_STYLE,
     DEFAULT_NOTIFY_DESKTOP,
     DEFAULT_NOTIFY_MOBILE_SERVICE,
     DEFAULT_ROBOT_STYLE,
     DOMAIN,
+    MAP_STYLE_CLEAN,
+    MAP_STYLE_DETAILED,
     VACS,
 )
 
@@ -240,6 +244,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         opts = self._config_entry.options
         current_max_px = str(opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
         current_robot_style = opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
+        current_map_style = opts.get(CONF_MAP_STYLE, DEFAULT_MAP_STYLE)
         current_notify_desktop = opts.get(CONF_NOTIFY_DESKTOP, DEFAULT_NOTIFY_DESKTOP)
         current_notify_mobile_service = opts.get(
             CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE
@@ -267,6 +272,19 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                             selector.SelectOptionDict(value="512", label="512 px (default)"),
                             selector.SelectOptionDict(value="1024", label="1024 px (high)"),
                             selector.SelectOptionDict(value="2048", label="2048 px (ultra)"),
+                        ],
+                        mode=selector.SelectSelectorMode.LIST,
+                    )
+                ),
+                VOptional(CONF_MAP_STYLE, default=current_map_style): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=[
+                            selector.SelectOptionDict(
+                                value=MAP_STYLE_DETAILED, label="Detailed (raw lidar)"
+                            ),
+                            selector.SelectOptionDict(
+                                value=MAP_STYLE_CLEAN, label="Clean (app-style rooms)"
+                            ),
                         ],
                         mode=selector.SelectSelectorMode.LIST,
                     )

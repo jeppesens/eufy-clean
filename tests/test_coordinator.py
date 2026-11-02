@@ -255,6 +255,35 @@ async def test_async_forget_map_prunes_and_persists(mock_hass, mock_login):
     coordinator.async_update_listeners.assert_called_once()
 
 
+@pytest.mark.asyncio
+async def test_async_load_storage_rerenders_restored_map(mock_hass, mock_login):
+    """Restored map data is re-rendered so changed map options apply immediately,
+    instead of showing the cached PNG until the (possibly docked) robot sends data."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2118",
+        "deviceName": "Test Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator._rerender_map = MagicMock()  # pylint: disable=protected-access
+    coordinator._store = MagicMock()  # pylint: disable=protected-access
+    coordinator._store.async_load = AsyncMock(  # pylint: disable=protected-access
+        return_value={"map_data": {
+            "raw_pixels": "qqqq", "width": 4, "height": 3,
+            "origin_x": 0, "origin_y": 0, "resolution": 5,
+        }}
+    )
+    await coordinator.async_load_storage()
+    assert coordinator._map_data is not None  # pylint: disable=protected-access
+    coordinator._rerender_map.assert_called_once()  # pylint: disable=protected-access
+
+    # Nothing stored -> nothing to re-render.
+    coordinator._rerender_map.reset_mock()  # pylint: disable=protected-access
+    coordinator._store.async_load = AsyncMock(return_value={})  # pylint: disable=protected-access
+    await coordinator.async_load_storage()
+    coordinator._rerender_map.assert_not_called()  # pylint: disable=protected-access
+
+
 def test_handle_mqtt_message_seeds_startup_map(mock_hass, mock_login):
     """The map active at STARTUP is persisted even though it never arrives as a
     map_id 'change' — regression for the selector dropping it after a switch."""

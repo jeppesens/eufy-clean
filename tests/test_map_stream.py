@@ -180,6 +180,61 @@ def test_render_map_png_rejects_oversized():
         render_map_png(map_data)
 
 
+def _room_map(size: int = 40) -> MapData:
+    """Square map with one named 20x20 room (id 1) holding a furniture speckle.
+
+    Everything outside the room carries outline id 32 (unassigned), which is
+    not in ``room_names`` and so must never be painted as a room.
+    """
+    raw = bytearray(((size * size) + 3) // 4)
+    room = bytearray([32 << 2] * (size * size))
+    for y in range(10, 30):
+        for x in range(10, 30):
+            i = y * size + x
+            raw[i >> 2] |= 2 << ((i & 3) * 2)  # free floor
+            room[i] = (1 << 2) | 2
+    speckle = 13 * size + 13  # an obstacle inside the room, clear of the centre label
+    raw[speckle >> 2] = (raw[speckle >> 2] & ~(3 << ((speckle & 3) * 2))) | (1 << ((speckle & 3) * 2))
+    room[speckle] = (1 << 2) | 1
+    return MapData(
+        raw_pixels=bytes(raw),
+        width=size,
+        height=size,
+        room_pixels=bytes(room),
+        room_outline_width=size,
+        room_outline_height=size,
+        room_names={1: "Kitchen"},
+    )
+
+
+def _png(data: bytes):
+    from io import BytesIO  # pylint: disable=import-outside-toplevel
+
+    from PIL import Image  # pylint: disable=import-outside-toplevel
+
+    return Image.open(BytesIO(data)).convert("RGB")
+
+
+def test_render_map_png_clean_style_scales_up_and_hides_lidar_noise():
+    """Clean style upscales to max_px and paints the room solid over speckles."""
+    img = _png(render_map_png(_room_map(), max_px=80, map_style="clean"))
+    assert img.size == (80, 80)
+    # Source pixels scale 2x and Y-flip: source (x, y) -> output (2x, 2*(39 - y)).
+    room_colour = img.getpixel((52, 56))  # source (26, 11): plain floor, below the label
+    assert img.getpixel((26, 52)) == room_colour  # source (13, 13): the obstacle speckle
+    detailed = _png(render_map_png(_room_map(), max_px=80))
+    assert detailed.getpixel((13, 26)) != detailed.getpixel((26, 28))  # speckle visible there
+    # Outside the room (outline id 32, unnamed) stays background, not a room colour.
+    assert img.getpixel((2, 2)) != room_colour
+
+
+def test_render_map_png_clean_style_without_room_data_matches_detailed():
+    """With no RoomOutline the clean style falls back to the detailed render."""
+    map_data = _room_map()
+    map_data.room_pixels = None
+    assert render_map_png(map_data, map_style="clean") == render_map_png(map_data)
+
+
 # ---------------------------------------------------------------------------
 # try_extract_map_description — map id + name discovery
 # ---------------------------------------------------------------------------

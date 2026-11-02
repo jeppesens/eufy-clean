@@ -7,8 +7,9 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
+from ..const import MAP_STYLE_CLEAN, MAP_STYLE_DETAILED
 from ..proto.cloud import stream_pb2
 from ..utils import decode_varint
 
@@ -89,6 +90,12 @@ _HOUSE_DOOR: tuple[tuple[int, int], ...] = (
 )
 
 _MAX_PNG_PX = 512
+
+# Clean style: room outline / divider colour, and the smallest wall feature kept
+# (source pixels; ~35 cm at 5 cm/px). Bumps and notches narrower than this are
+# lidar noise (furniture legs, door frames) and get smoothed away.
+_CLEAN_OUTLINE = (235, 235, 235)
+_CLEAN_SMOOTH_PX = 7
 
 
 @dataclass
@@ -191,6 +198,134 @@ def _quad_points(q: Any) -> list[tuple[int, int]]:
 
 
 # ---------------------------------------------------------------------------
+# Clean (app-style) room rendering
+# ---------------------------------------------------------------------------
+
+# Single-entry cache: rooms only change on a MapBackup, but the map re-renders
+# every few seconds while the robot moves.
+_clean_cache: dict[tuple[Any, ...], tuple[Image.Image, dict[int, tuple[int, int]]]] = {}
+
+
+def _clean_room_grid(map_data: MapData) -> Image.Image:
+    """Return an L-mode grid (source orientation) of smoothed room ids, 0 = no room.
+
+    Only ids named in ``room_names`` count as rooms, so outline sentinels (e.g.
+    the "unassigned" id) never get painted. Each room is closed (fills furniture
+    pinholes), then opened and closed with a square kernel, which strips lidar
+    bumps and notches while keeping walls straight and corners square.
+    """
+    w, h = map_data.width, map_data.height
+    res = map_data.resolution or 5
+    ro_w, ro_h = map_data.room_outline_width, map_data.room_outline_height
+    ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
+    ro_dy = round((map_data.origin_y - map_data.room_outline_origin_y) / res)
+    room_px = map_data.room_pixels or b""
+    names = map_data.room_names
+
+    ids = bytearray(w * h)
+    for py in range(h):
+        ry = py - ro_dy
+        if not 0 <= ry < ro_h:
+            continue
+        for px in range(w):
+            rx = px - ro_dx
+            if 0 <= rx < ro_w:
+                rid = room_px[ry * ro_w + rx] >> 2
+                if rid in names:
+                    ids[py * w + px] = rid
+    grid = Image.frombytes("L", (w, h), bytes(ids))
+
+    k = _CLEAN_SMOOTH_PX
+    for rid in sorted(set(ids) - {0}):
+        own = grid.point(lambda v, r=rid: 255 if v == r else 0)
+        shape = own.filter(ImageFilter.MaxFilter(3)).filter(ImageFilter.MinFilter(3))
+        shape = shape.filter(ImageFilter.MinFilter(k)).filter(ImageFilter.MaxFilter(k))
+        shape = shape.filter(ImageFilter.MaxFilter(k)).filter(ImageFilter.MinFilter(k))
+        unassigned = grid.point(lambda v: 255 if v == 0 else 0)
+        grid.paste(rid, mask=ImageChops.multiply(shape, unassigned))  # grow into gaps only
+        grid.paste(0, mask=ImageChops.subtract(own, shape))  # trim what smoothing removed
+    return grid
+
+
+def _label_anchor(mask: Image.Image) -> tuple[int, int] | None:
+    """Return the point deepest inside a room mask (stays inside L-shaped rooms)."""
+    last = None
+    core = mask
+    while (bbox := core.getbbox()) is not None:
+        last = bbox
+        core = core.filter(ImageFilter.MinFilter(3))
+    if last is None:
+        return None
+    return (last[0] + last[2] - 1) // 2, (last[1] + last[3] - 1) // 2
+
+
+def _render_clean_rooms(
+    map_data: MapData, out_w: int, out_h: int, scale: float
+) -> tuple[Image.Image, dict[int, tuple[int, int]]] | None:
+    """Draw smoothed, app-style room shapes at the output size.
+
+    Returns the image plus a label anchor per room in source-pixel coordinates,
+    or None when there is no named RoomOutline to draw from.
+    """
+    if not (
+        map_data.room_pixels
+        and map_data.room_names
+        and map_data.room_outline_width
+        and map_data.room_outline_height
+    ):
+        return None
+    key = (
+        map_data.room_pixels,
+        tuple(sorted(map_data.room_names)),
+        map_data.width,
+        map_data.height,
+        map_data.origin_x,
+        map_data.origin_y,
+        map_data.room_outline_width,
+        map_data.room_outline_height,
+        map_data.room_outline_origin_x,
+        map_data.room_outline_origin_y,
+        out_w,
+        out_h,
+    )
+    if (cached := _clean_cache.get(key)) is not None:
+        return cached[0].copy(), cached[1]
+
+    grid = _clean_room_grid(map_data)
+    rooms = sorted(set(grid.tobytes()) - {0})
+    if not rooms:
+        return None
+    anchors: dict[int, tuple[int, int]] = {}
+    for rid in rooms:
+        anchor = _label_anchor(grid.point(lambda v, r=rid: 255 if v == r else 0))
+        if anchor is not None:
+            anchors[rid] = anchor
+
+    up = grid.transpose(Image.Transpose.FLIP_TOP_BOTTOM).resize(
+        (out_w, out_h), Image.Resampling.NEAREST
+    )
+    union = up.point(lambda v: 255 if v else 0)
+    wall_px = max(1, round(scale * 0.75))
+    img = Image.new("RGB", (out_w, out_h), _ROOM_PALETTE[0])
+    img.paste(_CLEAN_OUTLINE, mask=union.filter(ImageFilter.MaxFilter(2 * wall_px + 1)))
+    dividers = Image.new("L", (out_w, out_h), 0)
+    blur = scale * 0.4
+    palette_len = len(_ROOM_PALETTE)
+    for rid in rooms:
+        mask = up.point(lambda v, r=rid: 255 if v == r else 0)
+        if blur >= 0.5:  # round off the upscaled pixel staircase
+            mask = mask.filter(ImageFilter.GaussianBlur(blur)).point(lambda v: 255 if v >= 128 else 0)
+        img.paste(_ROOM_PALETTE[1 + (rid - 1) % (palette_len - 1)], mask=mask)
+        rim = ImageChops.subtract(mask.filter(ImageFilter.MaxFilter(3)), mask)
+        dividers = ImageChops.lighter(dividers, ImageChops.multiply(rim, union))
+    img.paste(_CLEAN_OUTLINE, mask=dividers)
+
+    _clean_cache.clear()
+    _clean_cache[key] = (img, anchors)
+    return img.copy(), anchors
+
+
+# ---------------------------------------------------------------------------
 # Main render
 # ---------------------------------------------------------------------------
 
@@ -202,20 +337,32 @@ def render_map_png(
     robot_status: str | None = None,
     max_px: int = _MAX_PNG_PX,
     robot_style: str = "googly",
+    map_style: str = MAP_STYLE_DETAILED,
 ) -> bytes:
     """Render a PNG from MapData using Pillow.
 
     Pipeline:
-    1. Build flat color list from map pixels (room palette + lidar fallback).
+    1. Build flat color list from map pixels (room palette + lidar fallback),
+       or, for the clean style, smoothed room shapes from the RoomOutline.
     2. putdata() into PIL Image, Y-flip, LANCZOS scale.
     3. Draw restricted zones, room labels, dock icon, trail, robot marker.
     4. Encode to PNG bytes via img.save().
+
+    The detailed style only ever scales down; the clean style also scales up to
+    ``max_px`` (its shapes stay crisp), with markers and labels scaled to match.
     """
     width, height = map_data.width, map_data.height
     if width * height > 4000 * 4000:
         raise ValueError(f"Map dimensions {width}x{height} exceed safety limit (max 4000x4000)")
     res = map_data.resolution or 5
     room_px = map_data.room_pixels
+
+    clean: tuple[Image.Image, dict[int, tuple[int, int]]] | None = None
+    if map_style == MAP_STYLE_CLEAN:
+        scale = max_px / max(width, height)
+        out_w = max(1, round(width * scale))
+        out_h = max(1, round(height * scale))
+        clean = _render_clean_rooms(map_data, out_w, out_h, scale)
 
     # ------------------------------------------------------------------
     # Step 1 — build pixel color list + accumulate room centroids
@@ -227,7 +374,9 @@ def render_map_png(
     src_centroids: dict[int, list[int]] = {}
     _has_room_names = bool(room_px is not None and map_data.room_outline_width and map_data.room_names)
 
-    if room_px is not None and map_data.room_outline_width and map_data.room_outline_height:
+    if clean is not None:
+        pass  # rooms already drawn from the outline; the lidar grid is not used
+    elif room_px is not None and map_data.room_outline_width and map_data.room_outline_height:
         _ro_w = map_data.room_outline_width
         _ro_h = map_data.room_outline_height
         _ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
@@ -270,17 +419,33 @@ def render_map_png(
     # ------------------------------------------------------------------
     # Step 2 — create PIL image, Y-flip, scale
     # ------------------------------------------------------------------
-    img: Image.Image = Image.new("RGB", (width, height))
-    img.putdata(colors)
-    img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+    img: Image.Image
+    if clean is not None:
+        img = clean[0]
+    else:
+        img = Image.new("RGB", (width, height))
+        img.putdata(colors)
+        img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
 
-    scale = min(max_px / max(width, height), 1.0)
-    out_w = max(1, round(width * scale))
-    out_h = max(1, round(height * scale))
-    if scale < 1.0:
-        img = img.resize((out_w, out_h), Image.Resampling.LANCZOS)
+        scale = min(max_px / max(width, height), 1.0)
+        out_w = max(1, round(width * scale))
+        out_h = max(1, round(height * scale))
+        if scale < 1.0:
+            img = img.resize((out_w, out_h), Image.Resampling.LANCZOS)
+
+    # Overlay size multiplier: 1 whenever the map is not scaled up, so the
+    # detailed style draws exactly as before.
+    ui = max(1.0, scale)
+    u = round(ui)
 
     draw = ImageDraw.Draw(img)
+
+    # Pixel-art helper: one source pixel becomes a u×u block when scaled up.
+    def _block(bx: int, by: int, color: tuple[int, int, int]) -> None:
+        if u == 1:
+            draw.point((bx, by), fill=color)
+        else:
+            draw.rectangle([(bx, by), (bx + u - 1, by + u - 1)], fill=color)
 
     # Map pixel → output pixel (Y-flip baked in)
     def _to_out(mx: int, my: int) -> tuple[int, int]:
@@ -335,17 +500,17 @@ def render_map_png(
             if (nx, ny) not in _HOUSE_FILL
         }
         for ox, oy in _house_border:
-            bpx, bpy = dx + ox, dy + oy
+            bpx, bpy = dx + ox * u, dy + oy * u
             if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(100, 75, 0))
+                _block(bpx, bpy, (100, 75, 0))
         for ox, oy in _HOUSE_FILL:
-            bpx, bpy = dx + ox, dy + oy
+            bpx, bpy = dx + ox * u, dy + oy * u
             if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(255, 215, 0))
+                _block(bpx, bpy, (255, 215, 0))
         for ox, oy in _HOUSE_DOOR:
-            bpx, bpy = dx + ox, dy + oy
+            bpx, bpy = dx + ox * u, dy + oy * u
             if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(100, 75, 0))
+                _block(bpx, bpy, (100, 75, 0))
 
     # ------------------------------------------------------------------
     # Step 5 — cleaning trail
@@ -359,7 +524,7 @@ def render_map_png(
             ddx = raw_pts[i + 1][0] - raw_pts[i][0]
             ddy = raw_pts[i + 1][1] - raw_pts[i][1]
             if ddx * ddx + ddy * ddy <= _MAX_TRAIL_JUMP_SQ:
-                draw.line([out_pts[i], out_pts[i + 1]], fill=_TRAIL)
+                draw.line([out_pts[i], out_pts[i + 1]], fill=_TRAIL, width=u)
         ox, oy = out_pts[-1]
         if 0 <= ox < out_w and 0 <= oy < out_h:
             draw.point((ox, oy), fill=_TRAIL)
@@ -367,7 +532,29 @@ def render_map_png(
     # ------------------------------------------------------------------
     # Step 6 — room name labels (after trail so labels render on top)
     # ------------------------------------------------------------------
-    if src_centroids:
+    if clean is not None:
+        try:
+            clean_font: ImageFont.ImageFont | ImageFont.FreeTypeFont = ImageFont.load_default(
+                size=round(9 * ui)
+            )
+        except TypeError:
+            clean_font = ImageFont.load_default()
+        pad_x, pad_y = round(4 * ui), round(2 * ui)
+        for rid, (ax, ay) in clean[1].items():
+            label = map_data.room_names.get(rid, "")
+            if not label:
+                continue
+            ox, oy = _to_out(ax, ay)
+            bbox = draw.textbbox((0, 0), label, font=clean_font)
+            tw = bbox[2] - bbox[0]
+            th = bbox[3] - bbox[1]
+            draw.rounded_rectangle(
+                [(ox - tw // 2 - pad_x, oy - th // 2 - pad_y), (ox + tw // 2 + pad_x, oy + th // 2 + pad_y)],
+                radius=th // 2 + pad_y,
+                fill=(255, 255, 255),
+            )
+            draw.text((ox - tw // 2 - bbox[0], oy - th // 2 - bbox[1]), label, fill=(40, 40, 40), font=clean_font)
+    elif src_centroids:
         try:
             font: ImageFont.ImageFont | ImageFont.FreeTypeFont = ImageFont.load_default(size=9)
         except TypeError:
@@ -396,24 +583,24 @@ def render_map_png(
     if robot_pixel is not None:
         orx, ory = _to_out(robot_pixel[0], robot_pixel[1])
         if robot_style == "dot":
-            _circle(orx, ory, 5.0, (20, 20, 20))
-            _circle(orx, ory, 4.0, (55, 55, 55))
+            _circle(orx, ory, 5.0 * ui, (20, 20, 20))
+            _circle(orx, ory, 4.0 * ui, (55, 55, 55))
         else:  # "googly" (default)
-            _circle(orx, ory, 5.0, (160, 70, 0))
-            _circle(orx, ory, 4.0, (255, 140, 0))
+            _circle(orx, ory, 5.0 * ui, (160, 70, 0))
+            _circle(orx, ory, 4.0 * ui, (255, 140, 0))
             for ex, ey in ((-1, -1), (2, -1)):
-                _circle(orx + ex, ory + ey, 1.5, (255, 255, 255))
-                _circle(orx + ex, ory + ey, 0.6, (20, 20, 20))
+                _circle(orx + ex * ui, ory + ey * ui, 1.5 * ui, (255, 255, 255))
+                _circle(orx + ex * ui, ory + ey * ui, 0.6 * ui, (20, 20, 20))
 
         if robot_status and robot_status in _STATUS_BADGE:
             badge_color, icon_offsets = _STATUS_BADGE[robot_status]
-            bx, by = orx + 6, ory - 6
-            _circle(bx, by, 6.0, (30, 30, 30))
-            _circle(bx, by, 5.0, badge_color)
+            bx, by = orx + 6 * u, ory - 6 * u
+            _circle(bx, by, 6.0 * ui, (30, 30, 30))
+            _circle(bx, by, 5.0 * ui, badge_color)
             for ox2, oy2 in icon_offsets:
-                bpx, bpy = bx + ox2, by + oy2
+                bpx, bpy = bx + ox2 * u, by + oy2 * u
                 if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                    draw.point((bpx, bpy), fill=(20, 20, 20))
+                    _block(bpx, bpy, (20, 20, 20))
 
     # ------------------------------------------------------------------
     # Step 8 — encode PNG
