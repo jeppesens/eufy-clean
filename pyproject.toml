@@ -21,9 +21,7 @@ package = false
 # test (tests.yaml) jobs. Run lint with:  uv run pre-commit run --all-files
 # Run tests with:                          uv run pytest
 dev = [
-    # 0.13.358 is the first on Home Assistant 2026.9, which replaced voluptuous
-    # with probatio (tests/test_config_flow.py serializes schemas with it).
-    "pytest-homeassistant-custom-component>=0.13.358",
+    "pytest-homeassistant-custom-component>=0.13.325",
     "pre-commit",
     "pylint",
     "mypy",
