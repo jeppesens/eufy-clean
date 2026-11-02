@@ -53,3 +53,93 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
     # Verify negative handling (over usage)
     coordinator.data.accessories.main_brush_usage = 400
     assert rb_sensor.native_value == 0  # Should be 0, not -40 (max(0, ...))
+
+
+async def test_accessory_sensors_model_override(hass: HomeAssistant):
+    """A model with its own lifespan table gets exactly those accessories."""
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+
+    coordinator = MagicMock()
+    coordinator.device_name = "RoboVac"
+    coordinator.device_id = "test_device"
+    coordinator.device_info = {}
+    coordinator.device_model = "T2277"
+    coordinator.api_type = "novel"
+
+    # Values reported by an L60 SES; the app shows 170/200, 329/360,
+    # 229/250 and 1269/1440 hours remaining for the same device.
+    coordinator.data = VacuumState(
+        accessories=AccessoryState(
+            filter_usage=30,
+            main_brush_usage=31,
+            side_brush_usage=21,
+            sensor_usage=138,
+            dustbag_usage=171,
+        )
+    )
+
+    # A second, default-table vacuum set up after it must not leak its
+    # lifespans into the first one's sensors.
+    other = MagicMock()
+    other.device_name = "Other"
+    other.device_id = "other_device"
+    other.device_info = {}
+    other.device_model = "T2351"
+    other.api_type = "novel"
+    other.data = VacuumState(accessories=AccessoryState())
+
+    hass.data[DOMAIN] = {"test_entry": {"coordinators": [coordinator, other]}}
+
+    added_entities: list = []
+    await async_setup_entry(hass, entry, added_entities.extend)
+
+    remaining = {
+        e._attr_name: e
+        for e in added_entities
+        if e.coordinator is coordinator and e._attr_name.endswith("Remaining")
+    }
+    assert set(remaining) == {
+        "Filter Remaining",
+        "Rolling Brush Remaining",
+        "Side Brush Remaining",
+        "Dust Bag Remaining",
+    }
+    assert remaining["Filter Remaining"].native_value == 170
+    assert remaining["Rolling Brush Remaining"].native_value == 329
+    assert remaining["Side Brush Remaining"].native_value == 229
+    assert remaining["Dust Bag Remaining"].native_value == 1269
+    assert (
+        remaining["Dust Bag Remaining"].extra_state_attributes["total_life_hours"]
+        == 1440
+    )
+
+
+async def test_accessory_sensors_default_table_has_no_dustbag(hass: HomeAssistant):
+    """Models without an override keep the default accessories (no dust bag)."""
+    entry = MagicMock()
+    entry.entry_id = "test_entry"
+
+    coordinator = MagicMock()
+    coordinator.device_name = "RoboVac"
+    coordinator.device_id = "test_device"
+    coordinator.device_info = {}
+    coordinator.device_model = "T2351"
+    coordinator.api_type = "novel"
+    coordinator.data = VacuumState(accessories=AccessoryState())
+
+    hass.data[DOMAIN] = {"test_entry": {"coordinators": [coordinator]}}
+
+    added_entities: list = []
+    await async_setup_entry(hass, entry, added_entities.extend)
+
+    names = {e._attr_name for e in added_entities}
+    assert "Dust Bag Remaining" not in names
+    assert {
+        "Filter Remaining",
+        "Rolling Brush Remaining",
+        "Side Brush Remaining",
+        "Sensor Remaining",
+        "Cleaning Tray Remaining",
+        "Mopping Cloth Remaining",
+    } <= names

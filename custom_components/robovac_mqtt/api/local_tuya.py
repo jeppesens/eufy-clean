@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from collections.abc import Callable
 from typing import Any
 
@@ -37,6 +38,11 @@ _LOGGER = logging.getLogger(__name__)
 _RECV_TIMEOUT = 5.0
 _RECONNECT_BACKOFF_INITIAL = 5.0
 _RECONNECT_BACKOFF_MAX = 60.0
+
+# Tuya devices close an idle persistent connection after ~30 s. tinytuya
+# expects a regular heartbeat() (monitor example: 12 s). Without it, the
+# connection dropped every 35 s and status updates were lost.
+_HEARTBEAT_INTERVAL = 10.0
 
 
 class LocalTuyaError(Exception):
@@ -72,6 +78,7 @@ class LocalTuyaClient:
         # access run in the executor must be serialized through this lock so the
         # listen loop's receive() never overlaps a send/status/open/close.
         self._dev_lock = asyncio.Lock()
+        self._last_heartbeat = 0.0
 
     def set_on_message(self, callback: Callable[[bytes], None]) -> None:
         """Register the callback the coordinator listens on for DPS updates."""
@@ -185,6 +192,9 @@ class LocalTuyaClient:
         backoff = _RECONNECT_BACKOFF_INITIAL
         while not self._stop:
             try:
+                if time.monotonic() - self._last_heartbeat >= _HEARTBEAT_INTERVAL:
+                    async with self._dev_lock:
+                        await self._loop.run_in_executor(None, self._send_heartbeat)  # type: ignore[union-attr]
                 # Hold the lock for one bounded receive() cycle then release it
                 # between cycles so send_command() can acquire it promptly.
                 async with self._dev_lock:
@@ -251,6 +261,22 @@ class LocalTuyaClient:
                 "Local Tuya %s: status re-fetch after reconnect failed (%s); "
                 "will rely on gratuitous updates",
                 self.device_id, e,
+            )
+
+    def _send_heartbeat(self) -> None:
+        """Keep-alive for the persistent socket (blocking; caller holds the lock)."""
+        self._last_heartbeat = time.monotonic()
+        if self._dev is None:
+            return
+        try:
+            result = self._dev.heartbeat(nowait=True)
+        except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
+            _LOGGER.debug("Local Tuya %s: heartbeat failed (%s)", self.device_id, e)
+            return
+        if isinstance(result, dict) and "Error" in result:
+            _LOGGER.debug(
+                "Local Tuya %s: heartbeat failed (%s)",
+                self.device_id, result.get("Error"),
             )
 
     def _receive_with_timeout(self) -> Any:

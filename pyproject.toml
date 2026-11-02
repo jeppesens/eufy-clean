@@ -30,6 +30,7 @@ dev = [
     "types-requests",
     "types-setuptools",
     "protobuf",
+    "voluptuous-serialize",
 ]
 
 [tool.mypy]
