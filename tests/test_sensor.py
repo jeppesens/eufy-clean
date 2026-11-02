@@ -240,7 +240,7 @@ async def test_novel_coordinator_creates_all_sensors():
     # Full novel sensor set (universals + novel-only + device-info + accessories).
     # Exact count guarded against accidental duplicates from the merge.
     assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
-    assert len(added_entities) == 26
+    assert len(added_entities) == 27
     assert "novel_dev_current_room" in entity_ids
 
     # Universal sensors
@@ -252,6 +252,7 @@ async def test_novel_coordinator_creates_all_sensors():
         "cleaning_time",
         "cleaning_area",
         "water_level",
+        "dirty_water_level",
         "dock_status",
         "active_map",
     ]:
@@ -295,10 +296,10 @@ async def test_novel_cloud_or_local_skips_p2p_only_sensors():
         await async_setup_entry(hass, config_entry, added_entities.extend)
         entity_ids = [e.unique_id for e in added_entities]
 
-        # Full novel set minus the P2P-only active_map sensor (skipped on
-        # Tuya transports). One fewer than the MQTT novel case.
+        # Full novel set minus the P2P-only current_room and active_map
+        # sensors (skipped on Tuya transports). Two fewer than the MQTT case.
         assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
-        assert len(added_entities) == 24, (
+        assert len(added_entities) == 25, (
             f"transport={transport}: got {len(added_entities)} entities"
         )
         assert f"novel_{transport}_active_map" not in entity_ids
@@ -307,6 +308,7 @@ async def test_novel_cloud_or_local_skips_p2p_only_sensors():
             "cleaning_time",
             "cleaning_area",
             "water_level",
+            "dirty_water_level",
             "dock_status",
         ]:
             assert f"novel_{transport}_{suffix}" in entity_ids
