@@ -1,4 +1,6 @@
 # pylint: disable=redefined-outer-name
+import json
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import homeassistant.helpers.config_validation as cv
@@ -355,6 +357,7 @@ async def test_reconfigure_success(hass: HomeAssistant, mock_login_fixture):
         await hass.async_block_till_done()
 
     assert result2["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result2["reason"] == "reconfigure_successful"
     assert entry.data[CONF_PASSWORD] == "new_pass"
 
 
@@ -528,3 +531,17 @@ def test_format_map_ids_round_trips_stored_values():
     assert text == "2\n999: 1\n3001: 2"
     assert _parse_map_ids_text(text) == (2, {999: 1, 3001: 2})
     assert _format_map_ids_text(None, {}) == ""
+
+
+# ── Translations ──────────────────────────────────────────────────
+
+
+def test_en_translations_match_strings():
+    """HA loads a custom integration's strings only from translations/en.json,
+    never from strings.json, so the two must stay identical (#172)."""
+    component_dir = Path(__file__).parents[1] / "custom_components" / DOMAIN
+    strings = json.loads((component_dir / "strings.json").read_text(encoding="utf-8"))
+    en = json.loads(
+        (component_dir / "translations" / "en.json").read_text(encoding="utf-8")
+    )
+    assert en == strings
