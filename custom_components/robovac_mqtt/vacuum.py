@@ -531,6 +531,12 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                 while not self._remote_stop.is_set() and coordinator.data.status_code == WORK_STATE_REMOTE_CTRL:
                     await coordinator.async_send_command(command, wait=False)
                     if loop.time() + _REMOTE_REPEAT_SECONDS >= end:
+                        # Wait out the rest so the brake goes out at `end`, not a
+                        # repeat interval early; a brake call still ends it sooner.
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(
+                                self._remote_stop.wait(), max(0.0, end - loop.time())
+                            )
                         break
                     with suppress(TimeoutError):
                         await asyncio.wait_for(self._remote_stop.wait(), _REMOTE_REPEAT_SECONDS)

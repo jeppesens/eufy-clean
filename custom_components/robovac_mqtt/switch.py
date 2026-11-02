@@ -8,10 +8,11 @@ from typing import Any
 
 from homeassistant.components.switch import SwitchEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import EntityCategory
+from homeassistant.const import STATE_UNAVAILABLE, STATE_UNKNOWN, EntityCategory
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -139,7 +140,7 @@ def _current_dnd_schedule(coordinator: EufyCleanCoordinator) -> dict[str, Any]:
     }
 
 
-class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
+class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], RestoreEntity, SwitchEntity):
     """Switch for Dock/Station settings.
 
     Station features; scalar (Tuya) vacuum-only devices like the G50 have no
@@ -161,8 +162,11 @@ class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
         """Initialize the dock switch entity.
 
         ``requires_key`` names an auto-config field only some docks have. proto3
-        omits a false bool, so the switch stays available once the field has
-        been seen even after it is turned off.
+        omits a false bool, so the field is absent while the feature is off. The
+        switch is available once the field has been seen, and that is restored
+        from the entity's last recorded state so a restart with the feature off
+        does not make it unavailable (HA skips service calls to unavailable
+        entities, so it could then never be turned on from HA).
         """
         super().__init__(coordinator)
         self._requires_key = requires_key
@@ -178,6 +182,15 @@ class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
             self._attr_icon = icon
 
         self._attr_device_info = coordinator.device_info
+
+    async def async_added_to_hass(self) -> None:
+        """Remember that this dock has the feature if the switch was usable before."""
+        await super().async_added_to_hass()
+        if self._requires_key is None:
+            return
+        last = await self.async_get_last_state()
+        if last is not None and last.state not in (STATE_UNAVAILABLE, STATE_UNKNOWN):
+            self._seen_key = True
 
     @property
     def is_on(self) -> bool | None:

@@ -58,8 +58,13 @@ def build_overlay(
     robot_status: str | None = None,
     robot_style: str = "googly",
     docked: bool = False,
+    cleaning: bool = False,
 ) -> MapOverlay:
-    """Project the dynamic parts of ``state`` (pose, path, obstacles) onto ``md``."""
+    """Project the dynamic parts of ``state`` (pose, path, obstacles) onto ``md``.
+
+    The robot never clears its last targets, so they are drawn only while
+    ``cleaning``; afterwards they are stale and would dim every other room.
+    """
     dock = state.dock
     pose = state.pose
     robot = heading = None
@@ -78,6 +83,10 @@ def build_overlay(
         obstacles=[
             (*world_to_grid(md, *o.points[0]), o.object_type) for o in state.obstacles if o.points
         ],
-        target_rooms=frozenset(state.target_room_ids),
-        target_zones=[[world_to_grid(md, *p) for p in quad] for quad in state.target_zones],
+        target_rooms=frozenset(state.target_room_ids) if cleaning else frozenset(),
+        target_zones=(
+            [[world_to_grid(md, *p) for p in quad] for quad in state.target_zones]
+            if cleaning
+            else []
+        ),
     )

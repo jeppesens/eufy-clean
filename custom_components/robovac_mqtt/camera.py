@@ -5,7 +5,7 @@ import logging
 from collections.abc import Callable
 from typing import Any
 
-from homeassistant.components.camera import Camera
+from homeassistant.components.camera import Camera, async_get_still_stream
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.dispatcher import async_dispatcher_connect
@@ -84,6 +84,9 @@ class EufyMapCamera(CoordinatorEntity[EufyCleanCoordinator], Camera):
     _attr_has_entity_name = True
     _attr_name = "Map"
     _attr_content_type = "image/png"
+    # The pose changes every ~2 s while cleaning; recording the whole payload each
+    # time would write a new attributes row per state change.
+    _unrecorded_attributes = frozenset({"robot"})
 
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         CoordinatorEntity.__init__(self, coordinator)
@@ -148,6 +151,7 @@ class EufyVideoCamera(CoordinatorEntity[EufyCleanCoordinator], Camera):
     _attr_name = "Camera"
     _attr_content_type = "image/jpeg"
     _attr_frame_interval = 0.2
+    _unrecorded_attributes = frozenset({"frame_age_seconds"})
 
     def __init__(self, coordinator: EufyCleanCoordinator, video: RobotVideo) -> None:
         CoordinatorEntity.__init__(self, coordinator)
@@ -190,4 +194,6 @@ class EufyVideoCamera(CoordinatorEntity[EufyCleanCoordinator], Camera):
         """Hold the robot's stream open for as long as the viewer stays connected."""
         async with self._video.hold():
             await self._video.wait_for_frame()
-            return await self.handle_async_still_stream(request, self._attr_frame_interval)
+            return await async_get_still_stream(
+                request, self._video.wait_for_frame, self.content_type, self._attr_frame_interval
+            )

@@ -289,7 +289,6 @@ EUFY_CLEAN_NOVEL_CLEAN_SPEED = [
 
 
 # VideoMgrRequest.Control.Method (DP 181), from the app's own protobuf definitions.
-VIDEO_MGR_STATE_GET: Final = 1
 VIDEO_MGR_STATE_SET: Final = 2
 VIDEO_MGR_STREAM_OPEN: Final = 3
 VIDEO_MGR_STREAM_CLOSE: Final = 4

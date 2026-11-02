@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.robovac_mqtt import p2p_map
-from custom_components.robovac_mqtt.api.p2p import P2PRefused
+from custom_components.robovac_mqtt.api.p2p import P2PError, P2PRefused
 from custom_components.robovac_mqtt.api.p2p.mapdata import (
     CHANGED_MAP,
     CHANGED_ROOMS,
@@ -51,9 +51,13 @@ class _FakeSession:
         step = _FakeSession.script.pop(0) if _FakeSession.script else []
         if isinstance(step, Exception):
             raise step
+        # (objects, error): deliver the objects, then end with the error.
+        step, error = step if isinstance(step, tuple) else (step, None)
         for name, obj in step:
             self.on_object(name, obj)
         await asyncio.sleep(0)
+        if error is not None:
+            raise error
 
     async def close(self):
         self.closed = True
@@ -63,12 +67,15 @@ class _FakeSession:
 def fake_session():
     _FakeSession.script = []
     _FakeSession.instances = []
+    # Some tests replace run/close on the class; put them back afterwards.
+    run, close = _FakeSession.run, _FakeSession.close
     with (
         patch.object(p2p_map, "P2PSession", _FakeSession),
         # No real sockets in tests: the robot counts as reachable.
         patch.object(P2PMapFeed, "_robot_reachable", AsyncMock(return_value=True)),
     ):
         yield _FakeSession
+    _FakeSession.run, _FakeSession.close = run, close
 
 
 def _feed(hass, *, active=False, changes=None, rtc=None):
@@ -188,11 +195,11 @@ def test_feed_restore_ignores_garbage(hass):
 # ---------------------------------------------------------------------------
 
 
-def _local_coordinator(hass) -> EufyCleanCoordinator:
+def _local_coordinator(hass, **info_extra) -> EufyCleanCoordinator:
     login = MagicMock()
     login.openudid = "udid"
     login.tuya_client = MagicMock()
-    login.tuya_client.get_rtc_config = AsyncMock(return_value=_RTC)
+    login.get_rtc_config = AsyncMock(return_value=_RTC)
     info = {
         "deviceId": "dev",
         "deviceModel": "T2080A",
@@ -200,6 +207,7 @@ def _local_coordinator(hass) -> EufyCleanCoordinator:
         "connection_type": "local",
         "local_key": "0123456789abcdef",
         "local_host": "192.168.1.50",
+        **info_extra,
     }
     return EufyCleanCoordinator(hass, login, info)
 
@@ -328,7 +336,7 @@ async def test_no_config_is_fetched_when_the_robot_is_unreachable(hass, fake_ses
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("error", "failures", "cooldown"), [
     (OSError("unreachable"), 3, p2p_map._FAILURE_COOLDOWN),
-    (P2PRefused("robot sent disconnect"), 1, p2p_map._REFUSAL_COOLDOWN),
+    (P2PRefused("robot sent disconnect"), 1, p2p_map.REFUSAL_COOLDOWN),
 ])
 async def test_activity_changes_cannot_bypass_failure_cooldowns(hass, fake_session, error, failures, cooldown):
     fake_session.script = [error] * 10
@@ -337,7 +345,7 @@ async def test_activity_changes_cannot_bypass_failure_cooldowns(hass, fake_sessi
     real_sleep = asyncio.sleep
 
     async def sleep(delay):
-        if delay >= cooldown:
+        if delay >= cooldown - 5:  # the refusal deadline has ticked a little by now
             waiting.set()
             await release.wait()
         else:
@@ -411,3 +419,138 @@ async def test_idle_off_dock_uses_the_actual_pose(hass, activity, charging, dock
     with patch("custom_components.robovac_mqtt.coordinator.build_overlay", wraps=build_overlay) as overlay:
         await coordinator._async_rerender_map()
     assert overlay.call_args.kwargs["docked"] is docked
+
+
+@pytest.mark.asyncio
+async def test_a_session_that_delivered_objects_is_a_normal_end_even_when_it_raises(hass, fake_session):
+    """A docked robot closes the session ~15 s after the map arrives (an error here).
+
+    Those ends must not count towards the quick-failure cooldown, or after a few
+    docked refreshes the feed sleeps 30 minutes and ignores poke().
+    """
+    pose = [("navPath.bin", _pose_obj(1, 2, 3))]
+    fake_session.script = [(pose, P2PError("robot closed the session"))] * 5
+    feed = _feed(hass)  # idle: only poke() or the 15 min timer starts a session
+    feed.start()
+    for n in range(1, 5):
+        await _until(lambda n=n: feed.sessions == n)
+        feed.poke()
+    await _until(lambda: feed.sessions == 5)
+    await feed.stop()
+    assert feed._failures_in_a_row == 0 and feed.failures == 0
+
+
+@pytest.mark.asyncio
+async def test_sessions_that_never_connect_still_count_towards_the_cooldown(hass, fake_session):
+    fake_session.script = [P2PError("closed before any object")] * 10
+    with patch.object(p2p_map, "_ACTIVE_RETRY", 0.001):
+        feed = _feed(hass, active=True)
+        feed.start()
+        await _until(lambda: feed._failures_in_a_row >= p2p_map._MAX_QUICK_FAILURES)
+        await feed.stop()
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_noted_by_the_camera_holds_the_map_feed_off(hass, fake_session):
+    """One refusal deadline per robot: the poke after a refused camera session is not a licence to knock."""
+    waits: list[float] = []
+    release = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay):
+        if delay > 100:
+            waits.append(delay)
+            await release.wait()
+        else:
+            await real_sleep(delay)
+
+    feed = _feed(hass, active=True)
+    feed.note_refusal()
+    with patch.object(p2p_map.asyncio, "sleep", sleep):
+        feed.start()
+        await _until(lambda: waits)
+        feed.poke()
+        await real_sleep(0.02)
+        await feed.stop()
+    assert waits[0] > p2p_map.REFUSAL_COOLDOWN - 5
+    assert not fake_session.instances
+    feed._rtc_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_map_session_sets_the_shared_deadline(hass, fake_session):
+    fake_session.script = [P2PRefused("robot sent disconnect")]
+    release = asyncio.Event()
+    real_sleep = asyncio.sleep
+
+    async def sleep(delay):
+        if delay > 100:
+            await release.wait()
+        else:
+            await real_sleep(delay)
+
+    feed = _feed(hass, active=True)
+    with patch.object(p2p_map.asyncio, "sleep", sleep):
+        feed.start()
+        await _until(lambda: feed.failures == 1)
+        await real_sleep(0)
+        assert p2p_map.REFUSAL_COOLDOWN - 5 < feed.refusal_remaining() <= p2p_map.REFUSAL_COOLDOWN
+        await feed.stop()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", [3.4, 3.5])
+async def test_no_p2p_feed_for_tuya_versions_the_signalling_cannot_speak(hass, fake_session, version):
+    """3.4/3.5 framing is unsupported: every attempt would reserve a robot session and fail."""
+    coordinator = _local_coordinator(hass, local_version=version)
+    coordinator._start_p2p_feed()
+    assert coordinator.p2p is None
+    coordinator.eufy_login.get_rtc_config.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_station_state_flips_do_not_poke_the_feed(hass, fake_session):
+    """At the station the raw state moves between wash and charge; the activity stays docked."""
+    coordinator = _local_coordinator(hass)
+    coordinator._start_p2p_feed()
+    coordinator.data = replace(coordinator.data, activity="docked")
+    coordinator.p2p.poke = MagicMock()
+    with patch(
+        "custom_components.robovac_mqtt.coordinator.update_state",
+        return_value=(replace(coordinator.data, status_code=9), {"activity": "docked", "status_code": 9}),
+    ):
+        coordinator._handle_mqtt_message(b'{"payload": {"data": {"153": "x"}}}')
+    coordinator.p2p.poke.assert_not_called()
+    await coordinator.async_stop_p2p()
+
+
+def _targeted_state() -> P2PMap:
+    return P2PMap(
+        map_id=1, width=4, height=3, outline=bytes([2] * 12),
+        rooms=[{"id": 0, "name": "Kitchen"}, {"id": 2, "name": "Hall"}],
+        target_room_ids=[2], target_zones=[[(0, 0), (10, 0), (10, 10), (0, 10)]],
+    )
+
+
+@pytest.mark.parametrize(("cleaning", "rooms", "zones"), [(True, {2}, 1), (False, set(), 0)])
+def test_stale_targets_are_drawn_only_while_a_clean_runs(cleaning, rooms, zones):
+    """The robot never clears its last targets, so they must not dim rooms once the clean is over."""
+    state = _targeted_state()
+    overlay = build_overlay(build_map_data(state), state, cleaning=cleaning)
+    assert set(overlay.target_rooms) == rooms
+    assert len(overlay.target_zones) == zones
+
+
+@pytest.mark.asyncio
+async def test_the_coordinator_passes_whether_a_clean_is_running(hass):
+    coordinator = _local_coordinator(hass)
+    coordinator.data = replace(coordinator.data, activity="docked")
+    coordinator.p2p = _feed(hass)
+    coordinator.p2p.decoder.state = _targeted_state()
+    coordinator._map_data = build_map_data(coordinator.p2p.state)
+    coordinator._async_save_map_image = AsyncMock()
+    with patch("custom_components.robovac_mqtt.coordinator.build_overlay", wraps=build_overlay) as overlay:
+        await coordinator._async_rerender_map()
+        coordinator.data = replace(coordinator.data, activity="cleaning")
+        await coordinator._async_rerender_map()
+    assert [c.kwargs["cleaning"] for c in overlay.call_args_list] == [False, True]

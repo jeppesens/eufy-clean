@@ -9,7 +9,7 @@ import struct
 import subprocess
 import time
 from contextlib import asynccontextmanager
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
@@ -216,12 +216,16 @@ def coordinator():
     coord.data = VacuumState(api_type="novel", camera_enabled=True, status_code=WORK_STATE_REMOTE_CTRL)
     coord.build_device_command = MagicMock(side_effect=lambda name: {"181": name})
     coord.async_send_command = AsyncMock()
+    coord.p2p.refusal_remaining.return_value = 0.0
     return coord
 
 
 @pytest.fixture
-def video(coordinator):
-    return RobotVideo(MagicMock(), coordinator)
+def video(coordinator, monkeypatch):
+    hass = MagicMock()
+    hass.async_add_executor_job = AsyncMock(return_value="/usr/bin/ffmpeg")  # shutil.which finds it
+    monkeypatch.setattr("custom_components.robovac_mqtt.video_stream._ffmpeg_binary", lambda _hass: "ffmpeg")
+    return RobotVideo(hass, coordinator)
 
 
 @pytest.mark.asyncio
@@ -595,9 +599,8 @@ def test_other_disconnects_are_ordinary_failures(reason, connected):
     assert isinstance(session._failure, P2PError) and not isinstance(session._failure, P2PRefused)
 
 
-def test_the_camera_waits_a_long_time_after_a_refusal_and_backs_off_otherwise():
-    assert retry_delay(refused=True, attempt=0) == 30 * 60
-    assert [retry_delay(refused=False, attempt=n) for n in range(6)] == [5.0, 30.0, 300.0, 600.0, 600.0, 600.0]
+def test_the_camera_backs_off_between_attempts():
+    assert [retry_delay(n) for n in range(6)] == [5.0, 30.0, 300.0, 600.0, 600.0, 600.0]
 
 
 # -- one session at a time --------------------------------------------------------
@@ -607,6 +610,7 @@ def test_the_camera_waits_a_long_time_after_a_refusal_and_backs_off_otherwise():
 async def test_the_camera_waits_for_the_map_feed_to_release_the_session_slot(video, coordinator, monkeypatch):
     """The robot serves one P2P session at a time and refuses any other."""
     feed = MagicMock()
+    feed.refusal_remaining.return_value = 0.0
     feed.acquire_slot = AsyncMock(side_effect=TimeoutError)
     feed.get_rtc = AsyncMock()
     coordinator.p2p = feed
@@ -618,6 +622,7 @@ async def test_the_camera_waits_for_the_map_feed_to_release_the_session_slot(vid
 @pytest.mark.asyncio
 async def test_the_slot_is_released_when_the_stream_ends(video, coordinator):
     feed = MagicMock()
+    feed.refusal_remaining.return_value = 0.0
     feed.acquire_slot = AsyncMock()
     coordinator.p2p = feed
     video._stream_in_slot = AsyncMock(side_effect=HomeAssistantError("ended"))
@@ -639,8 +644,8 @@ async def test_a_new_viewer_wakes_a_stream_that_is_backing_off(video):
 
 
 @pytest.mark.asyncio
-async def test_a_new_viewer_does_not_wake_a_stream_the_robot_is_refusing(video):
-    video._cooling_down = True
+async def test_a_new_viewer_does_not_wake_a_stream_the_robot_is_refusing(video, coordinator):
+    coordinator.p2p.refusal_remaining.return_value = 60.0
     video._ensure_running = lambda: None
     async with video.hold():
         pass
@@ -675,7 +680,6 @@ async def test_old_frame_is_not_returned_after_manual_control_ends(video, coordi
     video._frame, video._frame_at = b"jpeg", time.monotonic()
     coordinator.data = VacuumState(camera_enabled=True, status_code=0)
     assert await video.wait_for_frame(timeout=1) is None
-    assert await video.latest() is None
 
 
 @pytest.mark.asyncio
@@ -702,7 +706,6 @@ async def test_manual_mode_is_allowed_even_when_ha_calls_its_activity_cleaning(v
 @pytest.mark.asyncio
 async def test_expired_frames_are_not_served_after_decoder_failure(video):
     video._frame, video._frame_at = b"old jpeg", time.monotonic() - 60
-    assert await video.latest() is None
     assert await video.wait_for_frame(timeout=0) is None
 
 
@@ -710,8 +713,152 @@ async def test_expired_frames_are_not_served_after_decoder_failure(video):
 async def test_turning_the_physical_camera_off_blocks_cached_images_and_stops_watchdog(video, coordinator, monkeypatch):
     video._frame, video._frame_at = b"jpeg", time.monotonic()
     coordinator.data = VacuumState(camera_enabled=False, status_code=WORK_STATE_REMOTE_CTRL)
-    assert await video.latest() is None
     assert await video.wait_for_frame(timeout=0) is None
     monkeypatch.setattr("custom_components.robovac_mqtt.video_stream.asyncio.sleep", AsyncMock())
     with pytest.raises(HomeAssistantError, match="switched off"):
         await video._watch_stall(20)
+
+
+# -- review follow-ups: one refusal deadline, no decoder, unload, MJPEG end -----------
+
+
+def _real_feed(hass_mock=None):
+    from custom_components.robovac_mqtt.p2p_map import P2PMapFeed
+
+    return P2PMapFeed(
+        hass_mock or MagicMock(), host="h", local_key="k" * 16, device_id="d",
+        rtc_config=AsyncMock(return_value={"device_password": "pw"}),
+        is_active=lambda: False, on_change=lambda _c: None, name="Vac",
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_outlives_the_task_that_saw_it(video, coordinator):
+    """Linger cancels the task mid-backoff; the next viewer must not knock on a refusing robot."""
+    feed = _real_feed()
+    feed.get_rtc = AsyncMock()
+    feed.acquire_slot = AsyncMock()
+    coordinator.p2p = feed
+    feed.note_refusal()  # what the first task recorded before it was cancelled
+
+    assert video._cooling_down
+    video._ensure_running = MagicMock()
+    async with video.hold():
+        pass
+    assert not video._kick.is_set()  # the new viewer does not wake the backoff
+
+    with pytest.raises(P2PRefused):  # a fresh task goes nowhere near the cloud or the robot
+        await video._stream_once()
+    feed.get_rtc.assert_not_awaited()
+    feed.acquire_slot.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_refused_camera_session_sets_the_shared_deadline(video, coordinator):
+    feed = _real_feed()
+    feed.acquire_slot = AsyncMock()
+    feed.release_slot = MagicMock()
+    coordinator.p2p = feed
+    video._stream_in_slot = AsyncMock(side_effect=P2PRefused("robot sent disconnect"))
+    assert feed.refusal_remaining() == 0
+    with pytest.raises(P2PRefused):
+        await video._stream_once()
+    assert feed.refusal_remaining() > 29 * 60
+    feed.release_slot.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_run_waits_out_the_shared_deadline_not_a_fixed_backoff(video, coordinator):
+    feed = _real_feed()
+    feed.note_refusal()
+    coordinator.p2p = feed
+    video._stream_once = AsyncMock(side_effect=P2PRefused("still refusing"))
+    video._close_robot_stream = AsyncMock()
+    waits: list[float] = []
+
+    async def wait_for(awaitable, timeout):
+        waits.append(timeout)
+        awaitable.close()
+        raise asyncio.CancelledError
+
+    with patch("custom_components.robovac_mqtt.video_stream.asyncio.wait_for", wait_for):
+        with pytest.raises(asyncio.CancelledError):
+            await video._run()
+    assert waits and waits[0] > 29 * 60
+
+
+@pytest.mark.asyncio
+async def test_without_ffmpeg_nothing_is_reserved_and_the_run_gives_up(video, coordinator):
+    """Each attempt that reserved a session and then could not decode would burn a robot slot."""
+    from custom_components.robovac_mqtt.video_stream import VideoDecoderUnavailable
+
+    feed = _real_feed()
+    feed.get_rtc = AsyncMock()
+    feed.acquire_slot = AsyncMock()
+    coordinator.p2p = feed
+    video._hass.async_add_executor_job = AsyncMock(return_value=None)  # shutil.which finds nothing
+    with pytest.raises(VideoDecoderUnavailable, match="ffmpeg not found"):
+        await video._stream_once()
+    feed.get_rtc.assert_not_awaited()
+    feed.acquire_slot.assert_not_awaited()
+
+    video._close_robot_stream = AsyncMock()
+    await asyncio.wait_for(video._run(), 1)  # terminal: returns instead of retrying
+    assert "ffmpeg not found" in video.last_error
+    feed.get_rtc.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_decoder_that_will_not_start_is_terminal_too(video, coordinator, monkeypatch):
+    from custom_components.robovac_mqtt.video_stream import VideoDecoderUnavailable
+
+    feed = _real_feed()
+    feed.get_rtc = AsyncMock(return_value={"device_password": "pw", "session": {"sessionId": "s"}})
+    coordinator.p2p = feed
+    monkeypatch.setattr(
+        "custom_components.robovac_mqtt.video_stream.asyncio.create_subprocess_exec",
+        AsyncMock(side_effect=FileNotFoundError("ffmpeg")),
+    )
+    monkeypatch.setattr("custom_components.robovac_mqtt.video_stream.VideoSession", MagicMock())
+    with pytest.raises(VideoDecoderUnavailable, match="would not start"):
+        await video._stream_in_slot(feed, "ffmpeg")
+
+
+@pytest.mark.asyncio
+async def test_a_stopped_camera_never_streams_again(video):
+    """A reload leaves the old coordinator behind; a viewer still on it must not start a session."""
+    await video.stop()
+    with pytest.raises(HomeAssistantError, match="shutting down"):
+        async with video.hold():
+            pytest.fail("must not stream after stop()")
+    video._hass.async_create_background_task = MagicMock()
+    video._ensure_running()
+    video._hass.async_create_background_task.assert_not_called()
+    assert video._holders == 0
+
+
+@pytest.mark.asyncio
+async def test_the_mjpeg_stream_ends_cleanly_when_manual_control_ends(coordinator, video):
+    """The still-stream loop must get None (end of stream), not a HomeAssistantError from hold()."""
+    camera = make_camera(coordinator, video)
+    seen: list[bytes | None] = []
+
+    async def fake_still_stream(request, image_cb, content_type, interval):
+        seen.append(await image_cb())
+        coordinator.data = VacuumState(api_type="novel", camera_enabled=True, status_code=0)
+        seen.append(await image_cb())  # manual control just ended
+        return "response"
+
+    video._frame, video._frame_at = b"jpeg", time.monotonic()
+    video._ensure_running = MagicMock()
+    with patch("custom_components.robovac_mqtt.camera.async_get_still_stream", fake_still_stream):
+        assert await camera.handle_async_mjpeg_stream(MagicMock()) == "response"
+    assert seen == [b"jpeg", None]
+
+
+def test_changing_camera_attributes_are_not_recorded():
+    """Every write of these would otherwise add a state_attributes row to the recorder."""
+    from custom_components.robovac_mqtt.camera import EufyMapCamera
+
+    assert "robot" in EufyMapCamera._unrecorded_attributes
+    assert "frame_age_seconds" in EufyVideoCamera._unrecorded_attributes

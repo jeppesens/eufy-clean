@@ -502,3 +502,41 @@ async def test_brake_interrupts_a_run_and_conflicting_moves_are_rejected(mock_co
     finally:
         run.cancel()
         await asyncio.gather(run, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", [0.05, 0.5])
+async def test_remote_drive_brakes_at_the_requested_end_not_a_repeat_early(
+    mock_coordinator, mock_config_entry, duration
+):
+    """The run lasts `duration`: no brake straight after the first move for short runs."""
+    mock_coordinator.data.status_code = 6
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.build_device_command = MagicMock(
+        side_effect=lambda cmd, **kw: {"cmd": kw["direction"]}
+    )
+    stamps: list[tuple[str, float]] = []
+    loop = asyncio.get_running_loop()
+
+    async def send(command, **_kw):
+        stamps.append((command["cmd"], loop.time()))
+
+    mock_coordinator.async_send_command = AsyncMock(side_effect=send)
+    with patch("custom_components.robovac_mqtt.vacuum._REMOTE_REPEAT_SECONDS", duration * 2):
+        await entity.async_remote_drive("forward", duration)
+    (name0, start), (name1, braked) = stamps[0], stamps[-1]
+    assert (name0, name1) == ("forward", "brake")
+    assert braked - start >= duration * 0.9
+
+
+@pytest.mark.asyncio
+async def test_a_brake_call_still_ends_a_run_early(mock_coordinator, mock_config_entry):
+    mock_coordinator.data.status_code = 6
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.build_device_command = MagicMock(
+        side_effect=lambda cmd, **kw: {"cmd": kw["direction"]}
+    )
+    run = asyncio.ensure_future(entity.async_remote_drive("forward", 5))
+    await asyncio.sleep(0.05)
+    await entity.async_remote_drive("brake")
+    await asyncio.wait_for(run, 1)

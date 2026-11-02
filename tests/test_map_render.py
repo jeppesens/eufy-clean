@@ -115,3 +115,31 @@ def test_rejects_oversized_maps():
 def test_rejects_empty_maps():
     with pytest.raises(ValueError):
         render_map(MapData(raw_pixels=b"", width=0, height=10))
+
+
+def _path_overlay(step_px: int, **kwargs) -> MapOverlay:
+    # A horizontal run of three samples, `step_px` grid cells apart.
+    return MapOverlay(show_labels=False, path=[(2 + i * step_px, 5, 2) for i in range(3)], **kwargs)
+
+
+def _path_pixels(overlay: MapOverlay) -> int:
+    md = _outline_map(60, 10, room_names={0: "A"}, rid_at=lambda x, y: 0)
+    plain = _png(render_map(md, MapOverlay(show_labels=False), max_px=600))
+    drawn = _png(render_map(md, overlay, max_px=600))
+    return sum(1 for a, b in zip(plain.getdata(), drawn.getdata()) if a != b)
+
+
+def test_a_wide_gap_is_a_break_in_the_p2p_path_but_the_limit_is_configurable():
+    """Pose-sampled (MQTT) paths are sparse: they pass a larger limit than the dense P2P path."""
+    dense_default = _path_pixels(_path_overlay(20))  # 100 cm steps > 60 cm: nothing joined
+    sparse_joined = _path_pixels(_path_overlay(20, max_path_step_cm=400 * 5))
+    assert dense_default == 0
+    assert sparse_joined > 0
+    assert _path_pixels(_path_overlay(8)) > 0  # 40 cm steps are joined by default
+
+
+def test_without_a_room_list_byte_zero_is_empty_space_not_room_zero():
+    """X-series room ids start at 1; with no names the outline's 0 bytes are background."""
+    md = _outline_map(rid_at=lambda x, y: 0, room_names={})
+    image = _png(render_map(md, MapOverlay(show_labels=False), max_px=200))
+    assert image.getpixel((100, 50))[:3] != room_color(0)

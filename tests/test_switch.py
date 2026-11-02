@@ -267,3 +267,26 @@ def test_dock_switch_unavailable_no_cfg(mock_coordinator):
     )
 
     assert entity.available is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("last_state", "available"), [("off", True), ("on", True), ("unavailable", False), (None, False)])
+async def test_feature_switch_stays_available_after_a_restart_with_the_feature_off(
+    hass, mock_coordinator, last_state, available
+):
+    """proto3 omits a false bool, so the key is absent after a restart while the feature is off.
+
+    Without restoring that the switch would be unavailable and could never be turned on from HA.
+    """
+    mock_coordinator.data.dock_auto_cfg = {"wash": {"cfg": "CLOSE"}}  # no `detergent` key
+    mock_coordinator.last_update_success = True
+    entity = DockSwitchEntity(
+        mock_coordinator, "detergent", "Detergent", lambda cfg: cfg.get("detergent", False),
+        lambda cfg, state: cfg.update(detergent=state), requires_key="detergent",
+    )
+    entity.hass = hass
+    entity.entity_id = "switch.test_vac_detergent"
+    state = None if last_state is None else unittest.mock.MagicMock(state=last_state)
+    with unittest.mock.patch.object(DockSwitchEntity, "async_get_last_state", AsyncMock(return_value=state)):
+        await entity.async_added_to_hass()
+    assert entity.available is available

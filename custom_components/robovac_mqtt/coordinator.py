@@ -163,7 +163,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._map_data_chan_id: int | None = None
         self._map_data: MapData | None = None
         self._robot_pixel: tuple[int, int] | None = None
-        self._current_room: tuple[int, str | None] = (0, None)
+        self._current_room: tuple[int | None, str | None] = (None, None)
         self._robot_trail: list[tuple[int, int]] = []
         self._dock_pixel: tuple[int, int] | None = None
         self._dock_arrival_time: float | None = None
@@ -338,17 +338,27 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         without a Tuya cloud session the feed is skipped and manual room
         overrides still work.
         """
-        tuya = self.eufy_login.tuya_client
         if self.p2p is None:
-            if not tuya or not self._local_key or not self._local_host:
+            if not self.eufy_login.tuya_client or not self._local_key or not self._local_host:
                 _LOGGER.debug("P2P map feed unavailable for %s (no Tuya session)", self.device_name)
+                return
+            if self._local_version != 3.3:
+                # The signalling only speaks Tuya 3.3 framing. On 3.4/3.5 every
+                # attempt would fetch an RTC config, reserve a session on the
+                # robot and then fail, and unused reservations make it refuse
+                # every session, the Eufy app's included.
+                _LOGGER.debug(
+                    "P2P map feed unavailable for %s (needs Tuya 3.3, configured %s)",
+                    self.device_name,
+                    self._local_version,
+                )
                 return
             self.p2p = P2PMapFeed(
                 self.hass,
                 host=self._local_host,
                 local_key=self._local_key,
                 device_id=self.device_id,
-                rtc_config=lambda: tuya.get_rtc_config(self.device_id),
+                rtc_config=lambda: self.eufy_login.get_rtc_config(self.device_id),
                 is_active=self._robot_is_moving,
                 on_change=self._on_p2p_change,
                 name=self.device_name,
@@ -490,8 +500,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                         self._clear_error_notification()
 
                 _rerender_after_update = False
+                # WorkStatus pushes always carry `activity`, so compare: at the
+                # station the raw state flips between wash and charge while the
+                # activity stays "docked", and each poke opens a session.
                 if (
-                    "activity" in changes
+                    new_state.activity != prev_activity
                     and self.p2p is not None
                     and new_state.status_code != WORK_STATE_REMOTE_CTRL
                 ):
@@ -873,6 +886,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 robot_status=robot_status,
                 robot_style=robot_style,
                 docked=at_dock,
+                cleaning=self.data.activity == "cleaning",
             )
         else:
             # MQTT pose stream: pixel-space robot + trail; when docked show the
@@ -888,6 +902,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 robot_style=robot_style,
                 dock=self._dock_pixel,
                 path=[(x, y, 0) for x, y in self._robot_trail],
+                # Pose samples arrive every ~2 s, so steps are far longer than
+                # the P2P path's; keep joining them as the old renderer did.
+                max_path_step_cm=400 * (map_data.resolution or 5),
             )
 
         def _render() -> bytes:

@@ -31,7 +31,7 @@ from google.protobuf.message import DecodeError
 from ...proto.cloud.p2pdata_pb2 import CompletePath, MapChannelMsg, MapInfo
 from ...proto.cloud.stream_pb2 import DynamicData
 from ...utils import decode_varint
-from ..map_stream import _lz4_block_decompress
+from ..map_stream import _lz4_block_decompress, _quad_points
 from .streams import CLEAN_PATH_STREAM, MAP_STREAM, NAV_PATH_STREAM
 
 _LOGGER = logging.getLogger(__name__)
@@ -109,10 +109,6 @@ def _decompress(pixels) -> bytes:
     if pixels.pixel_size and len(pixels.pixels) != pixels.pixel_size:
         return _lz4_block_decompress(pixels.pixels, pixels.pixel_size)
     return bytes(pixels.pixels)
-
-
-def _quad(q) -> list[tuple[int, int]]:
-    return [(q.p0.x, q.p0.y), (q.p1.x, q.p1.y), (q.p2.x, q.p2.y), (q.p3.x, q.p3.y)]
 
 
 def decode_path(raw: bytes) -> list[tuple[int, int, int]]:
@@ -220,15 +216,15 @@ class P2PMapDecoder:
         elif kind == MapInfo.RESTRICT_ZONES:
             zones = info.restricted_zones
             walls = [((w.p0.x, w.p0.y), (w.p1.x, w.p1.y)) for w in zones.virtual_walls]
-            forbidden = [_quad(z) for z in zones.forbidden_zones]
-            ban_mop = [_quad(z) for z in zones.ban_mop_zones]
+            forbidden = [_quad_points(z) for z in zones.forbidden_zones]
+            ban_mop = [_quad_points(z) for z in zones.ban_mop_zones]
             if (walls, forbidden, ban_mop) != (s.virtual_walls, s.forbidden_zones, s.ban_mop_zones):
                 s.virtual_walls, s.forbidden_zones, s.ban_mop_zones = walls, forbidden, ban_mop
                 changed.add(CHANGED_ZONES)
         elif kind == MapInfo.TEMPORARY_DATA:
             temp = info.temporary_data
             room_ids = [r.id for r in temp.select_rooms_clean.rooms]
-            target_zones = [_quad(z.quadrangle) for z in temp.select_zones_clean.zones]
+            target_zones = [_quad_points(z.quadrangle) for z in temp.select_zones_clean.zones]
             if (room_ids, target_zones) != (s.target_room_ids, s.target_zones):
                 s.target_room_ids, s.target_zones = room_ids, target_zones
                 changed.add(CHANGED_TARGET)

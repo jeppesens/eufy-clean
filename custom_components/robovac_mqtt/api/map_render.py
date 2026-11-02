@@ -31,6 +31,8 @@ from typing import TYPE_CHECKING
 
 from PIL import Image, ImageDraw, ImageFont
 
+from ..proto.cloud.p2pdata_pb2 import CompletePath
+
 if TYPE_CHECKING:
     from .map_stream import MapData
 
@@ -40,8 +42,6 @@ _MAX_SUPERSAMPLED_PX = 4096
 _SUPERSAMPLE = 2
 
 # Path point flags (CompletePath): low nibble = type, bit 4 = new segment.
-_PATH_GO_HOME = 4
-_PATH_NAVIGATE = 3
 _PATH_NEW = 0x10
 
 # --- palette -----------------------------------------------------------------
@@ -101,6 +101,10 @@ class MapOverlay:
     target_rooms: frozenset[int] = frozenset()
     target_zones: list[list[tuple[float, float]]] = field(default_factory=list)
     show_labels: bool = True
+    # Consecutive path points further apart than this start a new run instead of
+    # being joined. 60 cm suits the dense P2P path; pose-sampled paths (MQTT) are
+    # sparse and pass a larger limit.
+    max_path_step_cm: float = 60.0
 
 
 def room_color(room_id: int) -> tuple[int, int, int]:
@@ -118,7 +122,9 @@ def _outline_palette(
     palette: list[tuple[int, int, int, int]] = []
     for value in range(256):
         rid, kind = value >> 2, value & 3
-        is_room = rid <= MAX_ROOM_ID and (room_ids is None or rid in room_ids)
+        # With no room list, byte 0 is empty space (X-series room ids start at 1);
+        # with one, room 0 is a room if it is listed (S1 Pro numbers from 0).
+        is_room = rid <= MAX_ROOM_ID and (rid in room_ids if room_ids is not None else rid > 0)
         if kind == 1 or rid == 62:
             palette.append(_WALL)
         elif is_room:
@@ -217,7 +223,7 @@ def _room_label_anchors(md: MapData) -> dict[int, tuple[float, float]]:
         row = y * ow
         for x in range(0, ow, 2):
             rid = outline[row + x] >> 2
-            if rid > MAX_ROOM_ID or (md.room_names and rid not in md.room_names):
+            if rid > MAX_ROOM_ID or (rid not in md.room_names if md.room_names else rid == 0):
                 continue
             entry = sums.setdefault(rid, [0, 0, 0])
             entry[0] += x
@@ -296,7 +302,7 @@ def render_map(
     # Cleaning path: one polyline per continuous run of the same kind.
     if len(overlay.path) > 1:
         path_w = max(1, round(k * 0.35))
-        max_jump = (60 / res) ** 2  # >60 cm between samples is a gap, not a line
+        max_jump = (overlay.max_path_step_cm / res) ** 2
         run: list[tuple[float, float]] = []
         run_home = False
         prev_x = prev_y = math.inf
@@ -307,7 +313,7 @@ def render_map(
 
         for x, y, flags in overlay.path:
             kind = flags & 0x0F
-            home = kind in (_PATH_GO_HOME, _PATH_NAVIGATE)
+            home = kind in (CompletePath.GOHOME, CompletePath.NAVI)
             point = g2s(x, y)
             dist2 = (x - prev_x) ** 2 + (y - prev_y) ** 2
             gap = bool(flags & _PATH_NEW) or dist2 > max_jump

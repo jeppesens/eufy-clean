@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
 import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
@@ -41,8 +42,6 @@ _STALL_SECONDS = 10.0  # no new frame for this long -> restart the session
 # so a refusing robot is retried rarely, not hammered.
 _RETRY_BACKOFF = (5.0, 30.0, 300.0, 600.0)
 _SLOT_WAIT = 45.0  # how long to wait for the map feed to finish its session
-# A robot that refuses a session refuses for longer the more it is asked.
-_REFUSAL_BACKOFF = 30 * 60
 _JPEG_START, _JPEG_END = b"\xff\xd8", b"\xff\xd9"
 
 # H.265 NAL units in on stdin, one JPEG per frame out on stdout.
@@ -59,10 +58,15 @@ FFMPEG_ARGS: tuple[str, ...] = (
 )
 
 
-def retry_delay(*, refused: bool, attempt: int) -> float:
-    """Seconds to wait before the next stream attempt (the nth in a row)."""
-    if refused:
-        return _REFUSAL_BACKOFF
+class VideoDecoderUnavailable(HomeAssistantError):
+    """ffmpeg is missing or won't start: retrying cannot help, so don't."""
+
+
+def retry_delay(attempt: int) -> float:
+    """Seconds to wait before the next stream attempt (the nth in a row).
+
+    A refusing robot is held off separately, by the map feed's refusal deadline.
+    """
     return _RETRY_BACKOFF[min(attempt, len(_RETRY_BACKOFF) - 1)]
 
 
@@ -92,15 +96,20 @@ class RobotVideo:
         self._frame_at = 0.0
         self._frame_event = asyncio.Event()
         self.last_error: str | None = None
-        self.sessions = 0
         self._kick = asyncio.Event()  # a new viewer wakes a stream that is backing off
-        self._cooling_down = False  # ...unless the robot is refusing sessions
+        self._stopped = False  # latched by stop(): an unloaded entry never streams again
 
     # -- public ------------------------------------------------------------
 
     @property
     def streaming(self) -> bool:
         return self._task is not None and not self._task.done()
+
+    @property
+    def _cooling_down(self) -> bool:
+        """True while the robot is refusing sessions: viewers must not knock."""
+        feed = self._coordinator.p2p
+        return feed is not None and feed.refusal_remaining() > 0
 
     @property
     def frame_age(self) -> float | None:
@@ -119,6 +128,8 @@ class RobotVideo:
     @asynccontextmanager
     async def hold(self) -> AsyncIterator[RobotVideo]:
         """Keep the stream open for the duration of the ``async with`` block."""
+        if self._stopped:
+            raise HomeAssistantError("The robot camera is shutting down")
         if self._coordinator.data.camera_enabled is not True:
             raise HomeAssistantError(
                 "The robot's camera is switched off. Hold Start/Pause and Recharge on the "
@@ -156,10 +167,8 @@ class RobotVideo:
             with suppress(TimeoutError):
                 await asyncio.wait_for(self._frame_event.wait(), remaining)
 
-    async def latest(self) -> bytes | None:
-        return self._fresh_frame()
-
     async def stop(self) -> None:
+        self._stopped = True
         self._cancel_linger()
         task, self._task = self._task, None
         if task is not None:
@@ -170,7 +179,7 @@ class RobotVideo:
     # -- lifecycle ---------------------------------------------------------
 
     def _ensure_running(self) -> None:
-        if not self.streaming:
+        if not self.streaming and not self._stopped:
             self._task = self._hass.async_create_background_task(
                 self._run(), f"robovac_mqtt video {self._coordinator.device_name}"
             )
@@ -190,25 +199,25 @@ class RobotVideo:
         attempt = 0
         try:
             while True:
-                refused = False
                 try:
                     await self._stream_once()
                     attempt = 0
+                except VideoDecoderUnavailable as err:
+                    self.last_error = str(err)
+                    _LOGGER.warning("Robot camera for %s unavailable: %s", self._coordinator.device_name, err)
+                    break
                 except (HomeAssistantError, P2PError, OSError) as err:
                     self.last_error = str(err)
-                    refused = isinstance(err, P2PRefused)
                     if self._coordinator.data.status_code != WORK_STATE_REMOTE_CTRL:
                         break  # mode changed: close the camera, without changing the robot's mode
                     _LOGGER.debug("Video stream for %s ended: %s", self._coordinator.device_name, err)
-                delay = retry_delay(refused=refused, attempt=attempt)
+                feed = self._coordinator.p2p
+                delay = max(retry_delay(attempt), feed.refusal_remaining() if feed else 0.0)
                 attempt += 1
-                self._cooling_down = refused
                 self._kick.clear()
                 with suppress(TimeoutError):
                     await asyncio.wait_for(self._kick.wait(), delay)
-                self._cooling_down = False
         finally:
-            self._cooling_down = False
             await self._close_robot_stream()
             self._frame = None
             self._frame_event.set()
@@ -224,16 +233,29 @@ class RobotVideo:
             if coordinator.data.activity in ("cleaning", "returning"):
                 raise HomeAssistantError("The robot is busy; enable manual control before viewing its camera")
             raise HomeAssistantError("Enable manual control before viewing the robot camera")
+        # Checked before anything is reserved on the robot: each cloud config
+        # fetch holds a session slot until a session uses it, so an attempt that
+        # cannot run (no decoder, or the robot is refusing) must not make one.
+        binary = _ffmpeg_binary(self._hass)
+        if await self._hass.async_add_executor_job(shutil.which, binary) is None:
+            raise VideoDecoderUnavailable(
+                f"ffmpeg not found ({binary}); install it or set the ffmpeg integration's binary"
+            )
+        if (remaining := feed.refusal_remaining()) > 0:
+            raise P2PRefused(f"the robot refused a session; waiting {remaining / 60:.0f} min")
         try:
             await feed.acquire_slot(_SLOT_WAIT)
         except TimeoutError as err:
             raise HomeAssistantError("The robot is busy with the map; try again in a moment") from err
         try:
-            await self._stream_in_slot(feed)
+            await self._stream_in_slot(feed, binary)
+        except P2PRefused:
+            feed.note_refusal()
+            raise
         finally:
             feed.release_slot()
 
-    async def _stream_in_slot(self, feed: P2PMapFeed) -> None:
+    async def _stream_in_slot(self, feed: P2PMapFeed, binary: str) -> None:
         self._frame = None  # a new session must not serve the previous session's image
         rtc = await feed.get_rtc()
         stdin: asyncio.StreamWriter | None = None
@@ -253,16 +275,18 @@ class RobotVideo:
             open_stream=self._open_robot_stream,
             on_nal=write_nal,
         )
-        ffmpeg = await asyncio.create_subprocess_exec(
-            _ffmpeg_binary(self._hass),
-            *FFMPEG_ARGS,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
-        )
+        try:
+            ffmpeg = await asyncio.create_subprocess_exec(
+                binary,
+                *FFMPEG_ARGS,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+        except OSError as err:
+            raise VideoDecoderUnavailable(f"ffmpeg would not start ({binary}): {err}") from err
         assert ffmpeg.stdin is not None and ffmpeg.stdout is not None
         stdin = ffmpeg.stdin
-        self.sessions += 1
         reader = asyncio.ensure_future(self._read_frames(ffmpeg.stdout))
         watchdog = asyncio.ensure_future(self._watch_stall(session.connect_timeout))
         runner = asyncio.ensure_future(session.run())

@@ -168,7 +168,7 @@ class P2PSession:
         try:
             # The host may be a DNS name; ICE candidates carry IPv4 addresses.
             infos = await loop.getaddrinfo(self._host, ROBOT_PORT, family=socket.AF_INET)
-            self._host = infos[0][4][0]
+            self._host = str(infos[0][4][0])
             if self._host_ip:
                 host_ip = self._host_ip
             else:

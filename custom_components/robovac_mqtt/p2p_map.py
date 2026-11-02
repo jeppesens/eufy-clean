@@ -41,7 +41,8 @@ _FAILURE_COOLDOWN = 30 * 60
 # A robot that closes a session before it connects is refusing sessions, and every
 # further attempt makes it refuse for longer (observed: a lockout of well over half
 # an hour after a handful of quick retries), so wait a long time after even one.
-_REFUSAL_COOLDOWN = 30 * 60
+# One deadline per robot, shared by the map feed and the camera.
+REFUSAL_COOLDOWN = 30 * 60
 _REACHABLE_TIMEOUT = 3.0
 
 
@@ -73,6 +74,7 @@ class P2PMapFeed:
         self._session: P2PSession | None = None
         self._wake = asyncio.Event()
         self._failures_in_a_row = 0
+        self._refused_until = 0.0
         # The robot serves ONE P2P session at a time and refuses any other, so the map
         # feed and the camera take turns: whoever opens a session holds this.
         self.session_slot = asyncio.Lock()
@@ -141,6 +143,14 @@ class P2PMapFeed:
             except (asyncio.CancelledError, Exception):  # noqa: BLE001 - shutting down
                 pass
 
+    def note_refusal(self) -> None:
+        """Record that the robot refused a session; nothing may knock again soon."""
+        self._refused_until = time.monotonic() + REFUSAL_COOLDOWN
+
+    def refusal_remaining(self) -> float:
+        """Seconds left before another session may be offered to a refusing robot."""
+        return max(0.0, self._refused_until - time.monotonic())
+
     def poke(self) -> None:
         """Ask for a fresh session soon (activity changed, map may have changed)."""
         self._wake.set()
@@ -148,6 +158,9 @@ class P2PMapFeed:
     async def _supervise(self) -> None:
         backoff = _ACTIVE_RETRY
         while True:
+            # Also covers a refusal noted by the camera: its slot release pokes us.
+            while (wait := self.refusal_remaining()) > 0:
+                await asyncio.sleep(wait)
             self._wake.clear()
             started = time.monotonic()
             refused = False
@@ -157,13 +170,20 @@ class P2PMapFeed:
                 backoff = _ACTIVE_RETRY
                 self._failures_in_a_row = 0
             except Exception as err:  # noqa: BLE001 - keep supervising whatever happens
-                self.failures += 1
                 self.last_error = str(err)
                 refused = isinstance(err, P2PRefused)
                 _LOGGER.debug("P2P map session for %s ended: %s", self._name, err)
-                if time.monotonic() - started < 30:
-                    backoff = min(backoff * 2, _BACKOFF_MAX)
-                    self._failures_in_a_row += 1
+                if self.connected and not refused:
+                    # The session delivered objects before it ended (a docked
+                    # robot closes it ~15 s after the map arrives): a normal end,
+                    # not a failure. `connected` is cleared only in `finally`.
+                    backoff = _ACTIVE_RETRY
+                    self._failures_in_a_row = 0
+                else:
+                    self.failures += 1
+                    if time.monotonic() - started < 30:
+                        backoff = min(backoff * 2, _BACKOFF_MAX)
+                        self._failures_in_a_row += 1
             finally:
                 self.connected = False
                 self._session = None
@@ -172,11 +192,11 @@ class P2PMapFeed:
             if self._failures_in_a_row >= _MAX_QUICK_FAILURES:
                 delay = max(delay, _FAILURE_COOLDOWN)
             if refused:
-                delay = max(delay, _REFUSAL_COOLDOWN)
+                self.note_refusal()
             if refused or self._failures_in_a_row >= _MAX_QUICK_FAILURES:
                 # Activity changes must not bypass the refusal cooldown and
                 # repeatedly reserve cloud sessions on a robot that rejects them.
-                await asyncio.sleep(delay)
+                await asyncio.sleep(max(delay, self.refusal_remaining()))
             else:
                 try:
                     await asyncio.wait_for(self._wake.wait(), delay)
