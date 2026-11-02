@@ -729,15 +729,36 @@ def test_station_status_dirty_water_level():
     assert "station_clean_water" in new_state.received_fields
 
 
-def test_station_status_dirty_water_level_empty():
-    """STATION_STATUS maps dirty_level=EMPTY to 'Empty'."""
-    station = StationResponse(
-        clean_water=Numerical(value=100),
-        dirty_level=0,  # WaterLevel.EMPTY
-    )
+def test_station_status_dirty_water_level_very_low():
+    """dirty_level=VERY_LOW maps to 'Very low', also without clean_water."""
+    station = StationResponse(dirty_level=1)  # VERY_LOW (<25%)
     encoded = encode_message(station)
     state = VacuumState()
     new_state, _ = update_state(state, {DPS_MAP["STATION_STATUS"]: encoded})
+    assert new_state.station_dirty_water == "Very low"
+    assert "station_dirty_water" in new_state.received_fields
+    assert "station_clean_water" not in new_state.received_fields
+
+
+def test_station_status_dirty_water_level_absent():
+    """STATION_STATUS without dirty_level does not create station_dirty_water."""
+    station = StationResponse(clean_water=Numerical(value=58))
+    encoded = encode_message(station)
+    state = VacuumState()
+    new_state, changes = update_state(state, {DPS_MAP["STATION_STATUS"]: encoded})
+    assert "station_dirty_water" not in changes
+    assert "station_dirty_water" not in new_state.received_fields
+
+
+def test_station_status_dirty_water_level_absent_after_seen():
+    """Once dirty_level has been seen, a frame without it reads as 'Empty'."""
+    seen = encode_message(StationResponse(dirty_level=4))  # HIGH
+    state, _ = update_state(VacuumState(), {DPS_MAP["STATION_STATUS"]: seen})
+    assert state.station_dirty_water == "High"
+
+    # EMPTY is the proto3 default, so an emptied tank drops field 4
+    emptied = encode_message(StationResponse(clean_water=Numerical(value=58)))
+    new_state, _ = update_state(state, {DPS_MAP["STATION_STATUS"]: emptied})
     assert new_state.station_dirty_water == "Empty"
     assert "station_dirty_water" in new_state.received_fields
 
