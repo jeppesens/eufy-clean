@@ -118,6 +118,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         # devices whose UniversalData DPS reports the cloud map id while the
         # firmware only accepts the local map id (see CONF_MAP_ID in const.py).
         self.map_id_override: int | None = device_info.get("map_id_override")
+        # Per-map overrides keyed by the map id the device reports.
+        self.map_id_overrides: dict[int, int] = dict(
+            device_info.get("map_id_overrides") or {}
+        )
 
         update_interval = _CLOUD_POLL_INTERVAL if self.connection_type == "cloud" else None
 
@@ -185,12 +189,25 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
     def resolve_map_id(self) -> int:
         """Return the map id to use in room/zone clean commands.
 
-        Priority: the user's manual override (options flow), then the last
+        Priority: the user's override for the reported map, then their
+        override for all maps (both from the options flow), then the last
         device-reported map id, then 1 (the firmware default for the first
-        saved map). The override exists because some devices (T2080A) report
+        saved map). Overrides exist because some devices (T2080A) report
         their cloud map id, which room commands reject.
         """
-        return self.map_id_override or self.data.map_id or 1
+        reported = self.data.map_id
+        if reported in self.map_id_overrides:
+            return self.map_id_overrides[reported]
+        if self.map_id_override:
+            return self.map_id_override
+        if self.map_id_overrides and reported:
+            _LOGGER.warning(
+                "Map %s has no map id override; if room cleans fail, add a "
+                "'%s: <local id>' line to the device options",
+                reported,
+                reported,
+            )
+        return reported or 1
 
     def build_device_command(self, command: str, **kwargs: Any) -> dict[str, Any]:
         """Build a DPS command dict appropriate for this device's API type.

@@ -9,6 +9,7 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.robovac_mqtt import _int_keyed
 from custom_components.robovac_mqtt.api.cloud import EufyLoginError
 from custom_components.robovac_mqtt.const import DOMAIN
 
@@ -269,3 +270,13 @@ async def test_setup_network_failure_raises_config_entry_not_ready(hass: HomeAss
         await hass.async_block_till_done()
 
     assert config_entry.state == ConfigEntryState.SETUP_RETRY
+
+
+def test_int_keyed_restores_int_keys_and_drops_bad_entries(caplog):
+    """Stored override dicts come back from JSON with string keys: they are
+    coerced back to int, and an entry that doesn't convert is logged and
+    dropped instead of failing setup."""
+    raw = {"2154": "1", "3001": 2, "kitchen": 3, "4": "x"}
+    assert _int_keyed(raw, int, "dev1", "map id") == {2154: 1, 3001: 2}
+    assert "ignoring non-integer map id 'kitchen'" in caplog.text
+    assert "ignoring non-integer map id '4'" in caplog.text

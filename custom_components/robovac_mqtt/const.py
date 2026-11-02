@@ -40,6 +40,9 @@ CONF_ROOM_NAMES: Final = "rooms"
 # (e.g. 1) in SelectRoomsClean / SET_ROOMS_CUSTOM — commands referencing the
 # cloud id are ACKed but rejected (ModeCtrlResponse result=FAILED).
 CONF_MAP_ID: Final = "map_id"
+# Per-map variant of CONF_MAP_ID: maps the map id the device reports to the
+# local map id to send, for robots with more than one map or a re-created map.
+CONF_MAP_IDS: Final = "map_ids"
 
 # Eufy API URLs
 EUFY_API_BASE_URL: Final = "https://api.eufylife.com"

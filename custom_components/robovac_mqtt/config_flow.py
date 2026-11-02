@@ -24,6 +24,7 @@ from .const import (
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
     CONF_MAP_ID,
+    CONF_MAP_IDS,
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_DESKTOP,
     CONF_NOTIFY_MOBILE_SERVICE,
@@ -357,6 +358,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             self._config_entry.options.get(CONF_LOCAL_DEVICES, {})
         )
         current: dict[str, Any] = dict(existing_all.get(dev_id, {}))
+        map_ids_text = _format_map_ids_text(
+            current.get(CONF_MAP_ID), current.get(CONF_MAP_IDS) or {}
+        )
         errors: dict[str, str] = {}
 
         if user_input is not None:
@@ -365,17 +369,14 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             rooms_parsed = _parse_rooms_text(
                 user_input.get(CONF_ROOM_NAMES, "") or ""
             )
-            map_id_raw = str(user_input.get(CONF_MAP_ID, "") or "").strip()
-            map_id_parsed: int | None = None
+            map_ids_text = user_input.get(CONF_MAP_ID, "") or ""
             if host and not _is_valid_host(host):
                 errors[CONF_LOCAL_HOST] = "invalid_host"
-            if map_id_raw:
-                try:
-                    map_id_parsed = int(map_id_raw)
-                    if map_id_parsed <= 0:
-                        raise ValueError
-                except ValueError:
-                    errors[CONF_MAP_ID] = "invalid_map_id"
+            try:
+                map_id_all, map_ids = _parse_map_ids_text(map_ids_text)
+            except ValueError:
+                map_id_all, map_ids = None, {}
+                errors[CONF_MAP_ID] = "invalid_map_id"
             if not errors:
                 entry: dict[str, Any] = {}
                 if host and has_local_key:
@@ -383,8 +384,10 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     entry[CONF_LOCAL_VERSION] = float(version or 3.3)
                 if rooms_parsed:
                     entry[CONF_ROOM_NAMES] = rooms_parsed
-                if map_id_parsed is not None:
-                    entry[CONF_MAP_ID] = map_id_parsed
+                if map_id_all is not None:
+                    entry[CONF_MAP_ID] = map_id_all
+                if map_ids:
+                    entry[CONF_MAP_IDS] = map_ids
                 if entry:
                     existing_all[dev_id] = entry
                 else:
@@ -397,12 +400,12 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                         CONF_LOCAL_DEVICES: existing_all,
                     },
                 )
-            # Re-show with the submitted values preserved.
+            # Re-show with the submitted values preserved (the map id text is
+            # kept as typed so a malformed line can be corrected in place).
             current = {
                 CONF_LOCAL_HOST: host,
                 CONF_LOCAL_VERSION: version,
                 CONF_ROOM_NAMES: rooms_parsed,
-                CONF_MAP_ID: map_id_raw,
             }
 
         # Pre-fill with suggested_value, not default=: the frontend omits an
@@ -434,19 +437,25 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             selector.TextSelectorConfig(multiline=True)
         )
         schema_dict[
-            VOptional(
-                CONF_MAP_ID,
-                description={
-                    "suggested_value": str(current.get(CONF_MAP_ID, "") or "")
-                },
-            )
-        ] = cv.string
+            VOptional(CONF_MAP_ID, description={"suggested_value": map_ids_text})
+        ] = selector.TextSelector(
+            selector.TextSelectorConfig(multiline=True)
+        )
         return self.async_show_form(
             step_id="device",
             data_schema=Schema(schema_dict),
             description_placeholders={"device": f"{name} ({model})"},
             errors=errors,
         )
+
+
+def _option_lines(text: str) -> list[str]:
+    """Return the meaningful lines of a multi-line options field.
+
+    Whitespace is stripped; blank lines and ``#`` comments are dropped.
+    """
+    lines = (raw_line.strip() for raw_line in text.splitlines())
+    return [line for line in lines if line and not line.startswith("#")]
 
 
 def _parse_rooms_text(text: str) -> dict[int, str]:
@@ -458,10 +467,7 @@ def _parse_rooms_text(text: str) -> dict[int, str]:
     accept loose input than reject the whole form.
     """
     rooms: dict[int, str] = {}
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
+    for line in _option_lines(text):
         if ":" not in line:
             continue
         id_part, _, name_part = line.partition(":")
@@ -513,3 +519,47 @@ def _format_rooms_text(rooms: dict[int, str]) -> str:
         f"{rid}: {name}"
         for rid, name in sorted(rooms.items(), key=lambda kv: int(kv[0]))
     )
+
+
+def _parse_map_ids_text(text: str) -> tuple[int | None, dict[int, int]]:
+    """Parse the map id override field into (all-maps id, per-map ids).
+
+    A bare ``<local id>`` line applies to every map; a ``<reported id>:
+    <local id>`` line applies only while the device reports that map id. For
+    duplicates the LAST line wins. Unlike room names, a malformed line raises
+    ``ValueError``: silently ignoring it would send room cleans to a map id the
+    firmware rejects.
+    """
+    all_maps: int | None = None
+    per_map: dict[int, int] = {}
+    for line in _option_lines(text):
+        reported_part, separator, local_part = line.partition(":")
+        if separator:
+            per_map[_positive_int(reported_part)] = _positive_int(local_part)
+        else:
+            all_maps = _positive_int(line)
+    return all_maps, per_map
+
+
+def _positive_int(text: str) -> int:
+    """Return ``text`` as an int greater than zero, else raise ``ValueError``."""
+    value = int(text.strip())
+    if value <= 0:
+        raise ValueError(f"not a positive integer: {text!r}")
+    return value
+
+
+def _format_map_ids_text(all_maps: int | None, per_map: dict[int, int]) -> str:
+    """Render the saved map id overrides back as the textarea default.
+
+    The all-maps id comes first. Reported ids are sorted numerically because
+    JSON storage stringifies the int keys.
+    """
+    lines = [str(all_maps)] if all_maps else []
+    lines.extend(
+        f"{reported_id}: {local_id}"
+        for reported_id, local_id in sorted(
+            per_map.items(), key=lambda kv: int(kv[0])
+        )
+    )
+    return "\n".join(lines)

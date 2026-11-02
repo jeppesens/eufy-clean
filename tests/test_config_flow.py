@@ -9,11 +9,16 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.robovac_mqtt.config_flow import (
+    _format_map_ids_text,
+    _parse_map_ids_text,
+)
 from custom_components.robovac_mqtt.const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
     CONF_MAP_ID,
+    CONF_MAP_IDS,
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROOM_NAMES,
@@ -378,8 +383,9 @@ async def test_reconfigure_username_mismatch(hass: HomeAssistant):
 
 
 async def test_options_device_map_id_override_saved(hass: HomeAssistant):
-    """A manual map-id override entered in the device step is persisted as an
-    int alongside the other per-device overrides."""
+    """Map-id overrides entered in the device step are persisted as ints
+    alongside the other per-device overrides: a bare line for all maps and
+    'reported: local' lines per map."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test Vac",
@@ -400,12 +406,13 @@ async def test_options_device_map_id_override_saved(hass: HomeAssistant):
             CONF_LOCAL_HOST: "192.168.1.50",
             CONF_LOCAL_VERSION: 3.3,
             CONF_ROOM_NAMES: "0: Kitchen",
-            CONF_MAP_ID: "1",
+            CONF_MAP_ID: "2\n2154: 1",
         },
     )
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     saved = result2["data"][CONF_LOCAL_DEVICES]["loaded_dev"]
-    assert saved[CONF_MAP_ID] == 1
+    assert saved[CONF_MAP_ID] == 2
+    assert saved[CONF_MAP_IDS] == {2154: 1}
     # Room id 0 parses and persists too.
     assert saved[CONF_ROOM_NAMES] == {0: "Kitchen"}
 
@@ -451,6 +458,7 @@ async def test_options_device_cleared_override_is_removed(hass: HomeAssistant):
             CONF_LOCAL_VERSION: 3.3,
             CONF_ROOM_NAMES: {1: "Kitchen"},
             CONF_MAP_ID: 1,
+            CONF_MAP_IDS: {"2154": 1},
         }
     }
     entry = MockConfigEntry(
@@ -479,6 +487,7 @@ async def test_options_device_cleared_override_is_removed(hass: HomeAssistant):
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     saved = result2["data"][CONF_LOCAL_DEVICES]["loaded_dev"]
     assert CONF_MAP_ID not in saved
+    assert CONF_MAP_IDS not in saved
     assert saved[CONF_ROOM_NAMES] == {1: "Kitchen"}
     assert saved[CONF_LOCAL_HOST] == "192.168.1.50"
 
@@ -489,3 +498,33 @@ async def test_options_device_cleared_override_is_removed(hass: HomeAssistant):
     )
     assert result3["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert "loaded_dev" not in result3["data"][CONF_LOCAL_DEVICES]
+
+
+def test_parse_map_ids_all_maps_and_per_map():
+    """A bare line applies to all maps, 'reported: local' lines per map; blank
+    lines and comments are skipped and the last duplicate wins."""
+    text = "# local ids\n2\n\n 2154 : 1 \n3001: 3\n3001: 2"
+    assert _parse_map_ids_text(text) == (2, {2154: 1, 3001: 2})
+
+
+def test_parse_map_ids_empty_means_no_override():
+    assert _parse_map_ids_text("  \n# nothing\n") == (None, {})
+
+
+@pytest.mark.parametrize(
+    "text", ["abc", "0", "-1", "1.5", "2154:", "2154: x", "2154: 0", ": 1"]
+)
+def test_parse_map_ids_rejects_malformed_line(text: str):
+    """Unlike room names, a malformed map id is an error rather than ignored,
+    since a wrong map id makes the firmware reject room cleans."""
+    with pytest.raises(ValueError):
+        _parse_map_ids_text(text)
+
+
+def test_format_map_ids_round_trips_stored_values():
+    """Stored overrides render back for the form: the all-maps id first, then
+    per-map lines sorted numerically (JSON storage stringifies the keys)."""
+    text = _format_map_ids_text(2, {"3001": 2, "999": 1})
+    assert text == "2\n999: 1\n3001: 2"
+    assert _parse_map_ids_text(text) == (2, {999: 1, 3001: 2})
+    assert _format_map_ids_text(None, {}) == ""
