@@ -64,7 +64,7 @@ class MapData:
         # so the displayed top edge is the source bottom row.
         px = min(max(round(nx * w), 0), max(w - 1, 0))
         py = min(max(round((h - 1) - ny * h), 0), max(h - 1, 0))
-        # the room mask has its own origin; this offset matches render_map_png's _ro_dx/_ro_dy.
+        # the room mask has its own origin; this offset matches render_map's _ro_dx/_ro_dy.
         ro_dx = round((self.origin_x - self.room_outline_origin_x) / res)
         ro_dy = round((self.origin_y - self.room_outline_origin_y) / res)
         rx, ry = px - ro_dx, py - ro_dy
@@ -72,7 +72,9 @@ class MapData:
             idx = ry * self.room_outline_width + rx
             if 0 <= idx < len(self.room_pixels):
                 rid = self.room_pixels[idx] >> 2  # low 2 bits are the pixel type
-                if rid <= MAX_ROOM_ID and (not self.room_names or rid in self.room_names):
+                # With no room list byte 0 is empty space (X-series ids start at 1); with
+                # one, a room counts if listed (the S1 Pro numbers from 0).
+                if rid <= MAX_ROOM_ID and (rid in self.room_names if self.room_names else rid > 0):
                     return rid
         return None
 

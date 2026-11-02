@@ -143,3 +143,10 @@ def test_without_a_room_list_byte_zero_is_empty_space_not_room_zero():
     md = _outline_map(rid_at=lambda x, y: 0, room_names={})
     image = _png(render_map(md, MapOverlay(show_labels=False), max_px=200))
     assert image.getpixel((100, 50))[:3] != room_color(0)
+
+
+def test_a_point_outside_every_room_is_no_room_without_a_room_list():
+    """Same rule as the renderer: with no names, byte 0 is empty space, not room 0."""
+    md = _outline_map(rid_at=lambda x, y: 1 if x < 10 else 0, room_names={})
+    assert md.room_id_at_normalized(0.1, 0.5) == 1
+    assert md.room_id_at_normalized(0.9, 0.5) is None

@@ -540,3 +540,14 @@ async def test_a_brake_call_still_ends_a_run_early(mock_coordinator, mock_config
     await asyncio.sleep(0.05)
     await entity.async_remote_drive("brake")
     await asyncio.wait_for(run, 1)
+
+
+def test_vacuum_error_codes_attribute_holds_screen_codes_for_the_s1_pro(mock_coordinator, mock_config_entry):
+    """The docking-retry automation matches E74/E75/E76 against this attribute."""
+    mock_coordinator.data.device_model = "T2080A"
+    mock_coordinator.data.error_code = 19924741
+    mock_coordinator.data.error_codes = [19924741]
+    mock_coordinator.data.warn_codes = []
+    attrs = RoboVacMQTTEntity(mock_coordinator, mock_config_entry).extra_state_attributes
+    assert attrs["error_codes"] == ["E75"] and attrs["error_codes_raw"] == [19924741]
+    assert attrs["warn_codes"] == []

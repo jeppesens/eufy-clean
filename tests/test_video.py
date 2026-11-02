@@ -862,3 +862,20 @@ def test_changing_camera_attributes_are_not_recorded():
 
     assert "robot" in EufyMapCamera._unrecorded_attributes
     assert "frame_age_seconds" in EufyVideoCamera._unrecorded_attributes
+
+
+@pytest.mark.asyncio
+async def test_a_refusal_noted_while_queued_for_the_slot_stops_the_camera_fetching(video, coordinator):
+    feed = _real_feed()
+    feed.get_rtc = AsyncMock()
+    feed.release_slot = MagicMock()
+
+    async def acquire(_timeout):
+        feed.note_refusal()  # the map feed's session was refused while we waited
+
+    feed.acquire_slot = acquire
+    coordinator.p2p = feed
+    with pytest.raises(HomeAssistantError, match="refused"):
+        await video._stream_once()
+    feed.get_rtc.assert_not_awaited()
+    feed.release_slot.assert_called_once()

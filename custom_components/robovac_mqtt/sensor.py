@@ -469,7 +469,7 @@ async def async_setup_entry(
         # Active map ID sensor — populated by MQTT or the local P2P map feed.
         # Tuya Cloud polling never carries it; skip the entity there to avoid a
         # permanent `unavailable`.
-        if coordinator.connection_type in ("mqtt", "local"):
+        if coordinator.connection_type == "mqtt" or coordinator.p2p is not None:
             novel_sensors.append(CurrentRoomSensorEntity(coordinator))
             novel_sensors.append(
                 RoboVacSensor(

@@ -373,6 +373,7 @@ async def test_legacy_coordinator_excludes_novel_only_selects():
     coordinator.device_model = "T2210"
     coordinator.api_type = "legacy"
     coordinator.connection_type = "cloud"
+    coordinator.p2p = None
     coordinator.room_name_overrides = {}
     coordinator.data = VacuumState()
     coordinator.last_update_success = True

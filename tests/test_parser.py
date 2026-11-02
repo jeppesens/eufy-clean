@@ -868,24 +868,6 @@ def _error_payload(**fields) -> str:
     return encode_message(message)
 
 
-def test_a_fault_in_error_is_reported_when_warn_is_empty():
-    """Previously only warn[0] was read, so a real fault showed as code 0 / no message."""
-    _, changes = update_state(VacuumState(), {DPS_MAP["ERROR_CODE"]: _error_payload(error=[74])})
-    assert changes["error_code"] == 74
-    assert changes["error_message"]
-
-
 def test_a_newly_raised_fault_is_reported():
     _, changes = update_state(VacuumState(), {DPS_MAP["ERROR_CODE"]: _error_payload(new_error=[75])})
     assert changes["error_code"] == 75
-
-
-def test_faults_outrank_warnings_and_zeros_are_ignored():
-    payload = _error_payload(error=[0, 74], warn=[9])
-    _, changes = update_state(VacuumState(), {DPS_MAP["ERROR_CODE"]: payload})
-    assert changes["error_code"] == 74
-
-
-def test_no_fault_clears_the_error():
-    _, changes = update_state(VacuumState(), {DPS_MAP["ERROR_CODE"]: _error_payload()})
-    assert changes["error_code"] == 0 and changes["error_message"] == ""

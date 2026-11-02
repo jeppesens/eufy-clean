@@ -284,6 +284,7 @@ async def test_novel_cloud_skips_map_channel_sensors():
         coordinator.device_model = "T2080A"
         coordinator.api_type = "novel"
         coordinator.connection_type = transport
+        coordinator.p2p = MagicMock() if transport == "local" else None  # local robots have a P2P feed
         coordinator.data = VacuumState()
         coordinator.last_update_success = True
 
@@ -329,3 +330,25 @@ def test_current_room_sensor_values_and_unknown(mock_coordinator):
     mock_coordinator.current_room.return_value = (None, None)
     assert sensor.native_value is None
     assert sensor.extra_state_attributes == {"room_id": None, "room_name": None}
+
+
+@pytest.mark.asyncio
+async def test_local_robot_without_a_p2p_feed_gets_no_permanently_unavailable_map_sensors():
+    """E.g. Tuya 3.4/3.5 or no Tuya cloud session: nothing would ever fill active_map/current_room."""
+    coordinator = MagicMock()
+    coordinator.device_id = "novel_local"
+    coordinator.device_name = "Novel Vac"
+    coordinator.device_model = "T2080A"
+    coordinator.api_type = "novel"
+    coordinator.connection_type = "local"
+    coordinator.p2p = None
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "entry"
+    hass.data = {"robovac_mqtt": {"entry": {"coordinators": [coordinator]}}}
+    added: list = []
+    await async_setup_entry(hass, config_entry, added.extend)
+    ids = [e.unique_id for e in added]
+    assert "novel_local_active_map" not in ids and "novel_local_current_room" not in ids

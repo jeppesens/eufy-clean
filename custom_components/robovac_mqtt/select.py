@@ -149,7 +149,8 @@ async def async_setup_entry(
         # devices, fetched by the coordinator), or from a manual
         # {room_id: name} override supplied through the options flow.
         if (
-            coordinator.connection_type in ("mqtt", "local")
+            coordinator.connection_type == "mqtt"
+            or coordinator.p2p is not None
             or coordinator.room_name_overrides
         ):
             candidates.append(RoomSelectEntity(coordinator))

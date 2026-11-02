@@ -635,7 +635,6 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             "trigger_source": data.trigger_source,
             **error_attributes(data),
             "error_message": data.error_message,
-            "error_codes": data.error_codes,
             "warn_codes": data.warn_codes,
             "status_code": data.status_code,
             "work_mode": data.work_mode,

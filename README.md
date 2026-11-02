@@ -36,8 +36,8 @@ A live floor plan camera entity (`camera.<device>_map`) streams the robot's map 
 - **Room-coloured rendering** — rooms colour-coded and labelled with names from the Eufy app
 - **No-go zones and virtual walls** — forbidden zones (red), ban-mop zones (orange), virtual walls (red lines) as overlays
 - **Live robot position** — tracks position in two styles: orange with googly eyes (default) or plain dark dot
-- **Dock icon** — gold house icon marks the dock; robot snaps to it when docked
-- **Status badges** — coloured badge next to robot: lightning bolt (charging, disappears at 100%), water drop (washing), snowflake (drying), dust icon (emptying)
+- **Dock icon** — a house icon marks the dock; robot snaps to it when docked
+- **Status badge** — a coloured badge next to the robot shows charging, washing, drying or emptying
 - **Cleaning trail** — a line traces the robot's path; clears on new session, survives HA restarts, preserved across brief auto-empty dock visits
 - **Persistent map** — map and room data saved to storage and restored on restart
 
@@ -98,7 +98,7 @@ Sends a notification when the robot reports an error (Wheel Stuck, Sensor Dirty,
 > [!NOTE]
 > Error codes are reported by the **robot** via MQTT. Dock hardware faults (error light on the station) use a separate channel not currently accessible via MQTT and will not trigger notifications.
 
-The vacuum entity also exposes `error_codes` and `warn_codes`, the lists from the robot's latest error report. `error_code` is the first entry in `error_codes`, or the first in `warn_codes` if there are no errors, so it can hold a warning. Either list can contain a fault. Both lists stay empty on scalar and legacy devices, so use `error_code` there.
+The vacuum entity also exposes `error_codes` and `warn_codes`, the lists from the robot's latest error report. `error_code` is the first non-zero code in `error_codes`, then the robot's newly raised faults, then `warn_codes`, so it can hold a warning. Either list can contain a fault. Both lists stay empty on scalar and legacy devices, so use `error_code` there.
 
 ### Sensors
 

@@ -75,6 +75,7 @@ class P2PMapFeed:
         self._wake = asyncio.Event()
         self._failures_in_a_row = 0
         self._refused_until = 0.0
+        self._stopping = False
         # The robot serves ONE P2P session at a time and refuses any other, so the map
         # feed and the camera take turns: whoever opens a session holds this.
         self.session_slot = asyncio.Lock()
@@ -132,7 +133,12 @@ class P2PMapFeed:
                 self._supervise(), f"robovac_mqtt p2p map {self._name}"
             )
 
+    def begin_stop(self) -> None:
+        """Latch shutdown: no further session may start, even if the slot frees up."""
+        self._stopping = True
+
     async def stop(self) -> None:
+        self.begin_stop()
         task, self._task = self._task, None
         if self._session is not None:
             await self._session.close()
@@ -225,6 +231,11 @@ class P2PMapFeed:
             await self._run_session_in_slot()
 
     async def _run_session_in_slot(self) -> None:
+        # State can change while we queued for the slot (the camera was refused,
+        # the camera wants the slot, or the entry is unloading). Nothing has been
+        # reserved yet, so just step aside; the supervisor re-checks its deadline.
+        if self._stopping or self._yield_requested.is_set() or self.refusal_remaining() > 0:
+            return
         rtc = await self.get_rtc()
         self.decoder.start_session()
         self._session = P2PSession(

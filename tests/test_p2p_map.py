@@ -554,3 +554,37 @@ async def test_the_coordinator_passes_whether_a_clean_is_running(hass):
         coordinator.data = replace(coordinator.data, activity="cleaning")
         await coordinator._async_rerender_map()
     assert [c.kwargs["cleaning"] for c in overlay.call_args_list] == [False, True]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["refused", "yield", "stopping"])
+async def test_a_queued_session_steps_aside_if_things_changed_while_waiting_for_the_slot(hass, fake_session, reason):
+    """Nothing may be reserved on the robot after the refusal/yield/unload that happened in the queue."""
+    feed = _feed(hass, active=True)
+    if reason == "refused":
+        feed.note_refusal()
+    elif reason == "yield":
+        feed._yield_requested.set()
+    else:
+        feed.begin_stop()
+    await feed._run_session()
+    feed._rtc_config.assert_not_awaited()
+    assert not fake_session.instances
+
+
+@pytest.mark.asyncio
+async def test_current_room_comes_from_the_p2p_pose_on_local_tuya_robots(hass):
+    """There is no MQTT pose stream here, so the sensor must resolve the room from the P2P pose."""
+    coordinator = _local_coordinator(hass)
+    coordinator.p2p = _feed(hass)
+    # 4x3 grid, room 0 (Kitchen) on the left half, room 1 on the right.
+    outline = bytes(((0 if x < 2 else 1) << 2) | 2 for _y in range(3) for x in range(4))
+    coordinator.p2p.decoder.state = P2PMap(
+        map_id=1, width=4, height=3, outline=outline, origin_x=0, origin_y=0,
+        rooms=[{"id": 0, "name": "Kitchen"}, {"id": 1, "name": "Hall"}],
+        pose=Pose(5, 5, 0),  # world cm -> grid cell (1, 1) at 5 cm per cell
+    )
+    coordinator._map_data = build_map_data(coordinator.p2p.state)
+    assert coordinator.current_room() == (0, "Kitchen")  # room 0 is a real room
+    coordinator.p2p.decoder.state.pose = Pose(16, 5, 0)
+    assert coordinator.current_room() == (1, "Hall")

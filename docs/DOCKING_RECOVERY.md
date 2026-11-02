@@ -21,8 +21,8 @@ unknown raw number, or `None` when clear. The vacuum and code sensor expose:
 
 - `error_code`: the current screen code, with 0 meaning no error.
 - `error_code_raw`: the original current protocol integer.
-- `error_codes` / `error_codes_raw`: all reported faults and warnings, in priority
-  order. This prevents a docking fault from concealing a second physical fault.
+- `error_codes` / `error_codes_raw`: the faults in the robot's `error` list, as
+  screen codes and raw numbers (warnings are in the vacuum's `warn_codes`). This prevents a docking fault from concealing a second physical fault.
 - `error_active`: a nonzero code while the vacuum is actually in its error state.
 - `last_error_code`, `last_error_code_raw`, `last_error_message`: diagnostic history
   retained after recovery in the current integration session.

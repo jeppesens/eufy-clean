@@ -3,7 +3,6 @@
 import base64
 import logging
 
-import pytest
 
 import pytest
 

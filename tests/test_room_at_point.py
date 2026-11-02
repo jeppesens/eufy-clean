@@ -121,8 +121,9 @@ def test_hit_test_y_flip_orientation():
 
 def test_hit_test_room_zero_is_a_room():
     """Ids 0-31 are rooms (the S1 Pro numbers its first room 0); ids from 32 up
-    (60 = no room data, 61 = gap, 62 = obstacle, 63 = unknown) are not."""
-    md = _map_with_mask(lambda px, py: 0 if px < 5 else 60)
+    (60 = no room data, 61 = gap, 62 = obstacle, 63 = unknown) are not. Room 0 needs
+    a room list: without one byte 0 is empty space (X-series ids start at 1)."""
+    md = _map_with_mask(lambda px, py: 0 if px < 5 else 60, room_names={0: "Kitchen"})
     assert md.room_id_at_normalized(0.1, 0.5) == 0  # left half  -> room 0
     assert md.room_id_at_normalized(0.9, 0.5) is None  # right half -> background
 

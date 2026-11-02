@@ -248,6 +248,8 @@ class RobotVideo:
         except TimeoutError as err:
             raise HomeAssistantError("The robot is busy with the map; try again in a moment") from err
         try:
+            if feed.refusal_remaining() > 0:  # a refusal noted while we queued for the slot
+                raise HomeAssistantError("the robot refused a session; waiting before trying again")
             await self._stream_in_slot(feed, binary)
         except P2PRefused:
             feed.note_refusal()

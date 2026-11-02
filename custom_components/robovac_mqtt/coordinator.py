@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import time
 from dataclasses import replace
 from datetime import timedelta
@@ -42,8 +43,8 @@ from .api.map_stream import (
     try_extract_map_data,
     try_extract_map_description,
 )
-from .api.p2p.mapdata import CHANGED_MAP, CHANGED_ROOMS, CHANGED_ZONES
-from .api.p2p.mapimage import build_map_data, build_overlay
+from .api.p2p.mapdata import CHANGED_MAP, CHANGED_POSE, CHANGED_ROOMS, CHANGED_ZONES
+from .api.p2p.mapimage import build_map_data, build_overlay, world_to_grid
 from .api.parser import update_state
 from .const import (
     CONF_MAP_MAX_PX,
@@ -381,6 +382,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
     @callback
     def _on_p2p_change(self, changed: set[str]) -> None:
         self._apply_p2p_map(changed)
+        if CHANGED_POSE in changed or CHANGED_MAP in changed:
+            self._update_current_room()
 
     @callback
     def _apply_p2p_map(self, changed: set[str]) -> None:
@@ -425,6 +428,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._p2p_render_cancel = async_call_later(self.hass, wait, _fire)
 
     async def async_stop_p2p(self) -> None:
+        if self.p2p is not None:
+            # Video's shutdown frees the session slot; the feed must not take it.
+            self.p2p.begin_stop()
         if self.video is not None:
             await self.video.stop()
         if self._p2p_render_cancel:
@@ -813,9 +819,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
     def current_room(self) -> tuple[int | None, str | None]:
         """Resolve the physical room from the live map pose, not DPS coordinates."""
         md = self._map_data
-        if md is None or self._robot_pixel is None or md.width <= 0 or md.height <= 0:
+        pixel = self._robot_pixel
+        if pixel is None and self.p2p is not None and self.p2p.state.pose is not None and md is not None:
+            # Local-Tuya robots have no MQTT pose stream; use the P2P pose.
+            gx, gy = world_to_grid(md, self.p2p.state.pose.x, self.p2p.state.pose.y)
+            pixel = (math.floor(gx), math.floor(gy))
+        if md is None or pixel is None or md.width <= 0 or md.height <= 0:
             return None, None
-        px, py = self._robot_pixel
+        px, py = pixel
         if not (0 <= px < md.width and 0 <= py < md.height):
             return None, None
         nx = px / md.width
