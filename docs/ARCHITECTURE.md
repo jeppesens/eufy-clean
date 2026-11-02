@@ -194,7 +194,7 @@ DPS 153 (WORK_STATUS)     → _process_work_status()    → activity, task_statu
 DPS 173 (STATION_STATUS)  → _process_station_status()  → dock_status, clean_water, dock_auto_cfg
 DPS 163 (BATTERY_LEVEL)   → changes["battery_level"]
 DPS 158 (CLEAN_SPEED)     → _map_clean_speed()         → fan_speed
-DPS 177 (ERROR_CODE)      → ErrorCode proto             → error_code, error_message
+DPS 177 (ERROR_CODE)      → ErrorCode proto             → error_code, error_message, error_codes, warn_codes
 DPS 168 (ACCESSORIES)     → _parse_accessories()        → filter/brush/mop usage
 DPS 167 (CLEAN_STATS)     → CleanStatistics proto       → cleaning_time, cleaning_area
 DPS 180 (SCENE_INFO)      → _parse_scene_info()         → scenes list
@@ -278,6 +278,7 @@ VacuumState
 ├── battery_level: int         # 0-100
 ├── fan_speed: str             # "Quiet", "Standard", "Turbo", "Max"
 ├── error_code: int / error_message: str
+├── error_codes: list[int] / warn_codes: list[int]  # Novel only; empty on scalar and legacy
 ├── charging: bool
 ├── cleaning_time: int         # seconds
 ├── cleaning_area: int         # m²

@@ -87,6 +87,8 @@ Sends a notification when the robot reports an error (Wheel Stuck, Sensor Dirty,
 > [!NOTE]
 > Error codes are reported by the **robot** via MQTT. Dock hardware faults (error light on the station) use a separate channel not currently accessible via MQTT and will not trigger notifications.
 
+The vacuum entity also exposes `error_codes` and `warn_codes`, the lists from the robot's latest error report. `error_code` is the first entry in `error_codes`, or the first in `warn_codes` if there are no errors, so it can hold a warning. Either list can contain a fault. Both lists stay empty on scalar and legacy devices, so use `error_code` there.
+
 ### Sensors
 
 | Sensor | Notes |
@@ -98,9 +100,23 @@ Sends a notification when the robot reports an error (Wheel Stuck, Sensor Dirty,
 | Total cleaning area / time / count | Lifetime stats |
 | Dock firmware version | Station FW |
 | Error code & description | Real-time |
-| Accessory life remaining | Filter, brushes, mop, tray (hours) |
+| Accessory life remaining | Filter, brushes, mop, tray; dust bag on models that report it (hours) |
 
 **Extended device info:** Serial number, MAC address, firmware version in the HA device panel.
+
+#### Current Room
+
+Novel MQTT vacuums with a live map stream expose a **Current Room** sensor
+(`sensor.<device>_current_room`). It reports the robot's physical room using its
+live map position and room mask, with `room_id` and `room_name` attributes.
+The sensor updates when the resolved room changes, independently of the selected
+cleaning target. Tested on the Eufy X10 Pro Omni.
+
+The state is `unknown` until a valid position and room mask are available. An
+unnamed room displays `Room <ID>`. Doorway boundaries can briefly resolve to
+`unknown`; if the position stream stops, the last known location may remain.
+After switching maps, the position can remain in the previous coordinate frame
+until the robot moves and re-localizes.
 
 ### Accessory Reset Buttons
 Dedicated reset buttons for each consumable (filter, side brush, rolling brush, sensors, mop, cleaning tray).
