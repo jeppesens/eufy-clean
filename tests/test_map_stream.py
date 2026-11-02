@@ -1,9 +1,13 @@
 """Unit tests for api/map_stream.py: protocol parsing, LZ4 decompression, map render."""
+import io
 import json
 
 import pytest
+from PIL import Image
 
 from custom_components.robovac_mqtt.api.map_stream import (
+    _PIXEL_COLORS,
+    _ROOM_PALETTE,
     MapData,
     _lz4_block_decompress,
     parse_biz_protocol41,
@@ -178,6 +182,43 @@ def test_render_map_png_rejects_oversized():
     map_data = MapData(raw_pixels=b"", width=5000, height=5000)
     with pytest.raises(ValueError, match="exceed safety limit"):
         render_map_png(map_data)
+
+
+def test_render_map_png_aligns_offset_room_outline():
+    """Room colors land on the map pixels covering the same world area as the room.
+
+    The RoomOutline has its own origin, which only matches the map's until the
+    floor canvas grows (e.g. the lidar sees through a doorway). Both grids use
+    world = origin + pixel * res, so map pixel px covers mask column
+    px + (origin_x - room_outline_origin_x) / res.
+
+    Map: 20x4 px, origin (0, 0), res 5 -> world x 0..95 cm.
+    Room: a 15x4 mask of one room starting at world x 25 cm, i.e. map columns 5..19.
+    Columns 0..4 have no room and must keep the plain lidar color.
+    """
+    width, height, res = 20, 4, 5
+    ro_w, room_id = 15, 5
+    map_data = MapData(
+        raw_pixels=b"\xaa" * ((width * height + 3) // 4),  # every pixel FREE (2)
+        width=width,
+        height=height,
+        resolution=res,
+        origin_x=0,
+        origin_y=0,
+        room_pixels=bytes([room_id << 2]) * (ro_w * height),  # sub_type 0
+        room_outline_width=ro_w,
+        room_outline_height=height,
+        room_outline_origin_x=25,
+        room_outline_origin_y=0,
+    )
+    img = Image.open(io.BytesIO(render_map_png(map_data))).convert("RGB")
+    assert img.size == (width, height)  # small map: no rescale, 1 px per cell
+
+    room_color = _ROOM_PALETTE[1 + (room_id - 1) % (len(_ROOM_PALETTE) - 1)]
+    free_color = _PIXEL_COLORS[2]
+    row = 1  # uniform rows, so the Y-flip doesn't matter
+    assert [img.getpixel((x, row)) for x in range(5)] == [free_color] * 5
+    assert [img.getpixel((x, row)) for x in range(5, 20)] == [room_color] * 15
 
 
 # ---------------------------------------------------------------------------
