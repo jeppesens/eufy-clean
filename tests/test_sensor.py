@@ -108,6 +108,31 @@ def test_water_level_sensor(mock_coordinator):
     assert entity.native_value == 0
 
 
+def test_dirty_water_level_sensor(mock_coordinator):
+    """Test dirty water level sensor with availability based on received fields."""
+    entity = RoboVacSensor(
+        mock_coordinator,
+        "dirty_water_level",
+        "Dirty Water Level",
+        lambda s: s.station_dirty_water,
+        availability_fn=lambda s: "station_dirty_water" in s.received_fields,
+    )
+
+    # Unavailable until the station reports a dirty-water level
+    assert "station_dirty_water" not in mock_coordinator.data.received_fields
+    assert entity.available is False
+
+    # Simulate receiving dirty water level data from the station
+    mock_coordinator.data.received_fields.add("station_dirty_water")
+    mock_coordinator.data.station_dirty_water = "High"
+
+    assert entity.available is True
+    assert entity.native_value == "High"
+
+    mock_coordinator.data.station_dirty_water = "Empty"
+    assert entity.native_value == "Empty"
+
+
 def test_error_message_sensor(mock_coordinator):
     """Test error message sensor."""
     mock_coordinator.data.error_message = "Roller Brush Stuck"
@@ -215,7 +240,7 @@ async def test_novel_coordinator_creates_all_sensors():
     # Full novel sensor set (universals + novel-only + device-info + accessories).
     # Exact count guarded against accidental duplicates from the merge.
     assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
-    assert len(added_entities) == 26
+    assert len(added_entities) == 27
     assert "novel_dev_current_room" in entity_ids
 
     # Universal sensors
@@ -227,6 +252,7 @@ async def test_novel_coordinator_creates_all_sensors():
         "cleaning_time",
         "cleaning_area",
         "water_level",
+        "dirty_water_level",
         "dock_status",
         "active_map",
     ]:
@@ -270,10 +296,10 @@ async def test_novel_cloud_or_local_skips_p2p_only_sensors():
         await async_setup_entry(hass, config_entry, added_entities.extend)
         entity_ids = [e.unique_id for e in added_entities]
 
-        # Full novel set minus the P2P-only active_map sensor (skipped on
-        # Tuya transports). One fewer than the MQTT novel case.
+        # Full novel set minus the P2P-only current_room and active_map
+        # sensors (skipped on Tuya transports). Two fewer than the MQTT case.
         assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
-        assert len(added_entities) == 24, (
+        assert len(added_entities) == 25, (
             f"transport={transport}: got {len(added_entities)} entities"
         )
         assert f"novel_{transport}_active_map" not in entity_ids
@@ -282,6 +308,7 @@ async def test_novel_cloud_or_local_skips_p2p_only_sensors():
             "cleaning_time",
             "cleaning_area",
             "water_level",
+            "dirty_water_level",
             "dock_status",
         ]:
             assert f"novel_{transport}_{suffix}" in entity_ids

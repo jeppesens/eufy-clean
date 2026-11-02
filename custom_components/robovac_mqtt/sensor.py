@@ -208,6 +208,18 @@ async def async_setup_entry(
                 availability_fn=lambda s: "station_clean_water" in s.received_fields,
                 supported_api_types=(API_TYPE_NOVEL,),
             ),
+            # Dirty water level sensor (Station Dirty Water tank)
+            RoboVacSensor(
+                coordinator,
+                "dirty_water_level",
+                "Dirty Water Level",
+                lambda s: s.station_dirty_water,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                availability_fn=lambda s: "station_dirty_water" in s.received_fields,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
             # Dock status sensor
             RoboVacSensor(
                 coordinator,

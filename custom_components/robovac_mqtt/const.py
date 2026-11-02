@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Final
 
 from .proto.cloud.clean_param_pb2 import CleanExtent, CleanType, MopMode
+from .proto.cloud.station_pb2 import StationResponse
 
 DOMAIN: Final = "robovac_mqtt"
 VACS: Final = "vacs"
@@ -194,6 +195,15 @@ MOP_WATER_LEVEL_NAMES = {
     MopWaterLevel.LOW: "Low",
     MopWaterLevel.MIDDLE: "Medium",
     MopWaterLevel.HIGH: "High",
+}
+
+# Station tank levels (DPS 173 StationResponse.WaterLevel)
+STATION_WATER_LEVEL_NAMES = {
+    StationResponse.EMPTY: "Empty",
+    StationResponse.VERY_LOW: "Very low",
+    StationResponse.LOW: "Low",
+    StationResponse.MEDIUM: "Medium",
+    StationResponse.HIGH: "High",
 }
 
 

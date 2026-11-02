@@ -21,6 +21,7 @@ from ..const import (
     FAN_SUCTION_NAMES,
     KNOWN_UNPROCESSED_DPS,
     MOP_WATER_LEVEL_NAMES,
+    STATION_WATER_LEVEL_NAMES,
     TRIGGER_SOURCE_NAMES,
     WORK_MODE_NAMES,
     CleaningMode,
@@ -247,6 +248,18 @@ def _process_station_status(
         if station.HasField("clean_water"):
             changes["station_clean_water"] = station.clean_water.value
             track_received_field(state, changes, "station_clean_water")
+
+        # dirty_level is a proto3 enum without presence, so a dock that never
+        # sends it would read as EMPTY. Report it only once it has been on the
+        # wire; after that, a frame without it is read as EMPTY.
+        dirty_level_sent = any(
+            fd.name == "dirty_level" for fd, _ in station.ListFields()
+        )
+        if dirty_level_sent or "station_dirty_water" in state.received_fields:
+            changes["station_dirty_water"] = STATION_WATER_LEVEL_NAMES.get(
+                station.dirty_level, "Unknown"
+            )
+            track_received_field(state, changes, "station_dirty_water")
 
         # Auto Empty Config
         if station.HasField("auto_cfg_status"):
