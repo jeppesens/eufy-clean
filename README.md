@@ -104,6 +104,20 @@ The vacuum entity also exposes `error_codes` and `warn_codes`, the lists from th
 
 **Extended device info:** Serial number, MAC address, firmware version in the HA device panel.
 
+#### Current Room
+
+Novel MQTT vacuums with a live map stream expose a **Current Room** sensor
+(`sensor.<device>_current_room`). It reports the robot's physical room using its
+live map position and room mask, with `room_id` and `room_name` attributes.
+The sensor updates when the resolved room changes, independently of the selected
+cleaning target. Tested on the Eufy X10 Pro Omni.
+
+The state is `unknown` until a valid position and room mask are available. An
+unnamed room displays `Room <ID>`. Doorway boundaries can briefly resolve to
+`unknown`; if the position stream stops, the last known location may remain.
+After switching maps, the position can remain in the previous coordinate frame
+until the robot moves and re-localizes.
+
 ### Accessory Reset Buttons
 Dedicated reset buttons for each consumable (filter, side brush, rolling brush, sensors, mop, cleaning tray).
 

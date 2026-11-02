@@ -16,7 +16,8 @@ from homeassistant.const import (
     EntityCategory,
     UnitOfArea,
 )
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
@@ -436,6 +437,7 @@ async def async_setup_entry(
         # Tuya Cloud / local-Tuya don't carry MultiMapsManageResponse so the
         # ID never arrives; skip the entity to avoid permanent `unavailable`.
         if coordinator.connection_type == "mqtt":
+            novel_sensors.append(CurrentRoomSensorEntity(coordinator))
             novel_sensors.append(
                 RoboVacSensor(
                     coordinator,
@@ -551,6 +553,44 @@ class RoboVacSensor(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
         if self._extra_attrs_fn:
             return self._extra_attrs_fn(self.coordinator.data)
         return None
+
+
+class CurrentRoomSensorEntity(RoboVacSensor):
+    """Physical room determined from the robot's live map position."""
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        super().__init__(
+            coordinator,
+            "current_room",
+            "Current Room",
+            lambda _: self._room_value(),
+            icon="mdi:map-marker",
+            category=None,
+            extra_state_attributes_fn=lambda _: self._room_attributes(),
+            supported_api_types=(API_TYPE_NOVEL,),
+        )
+
+    def _room_value(self) -> str | None:
+        room_id, room_name = self.coordinator.current_room()
+        return (room_name or f"Room {room_id}") if room_id else None
+
+    def _room_attributes(self) -> dict[str, Any]:
+        room_id, room_name = self.coordinator.current_room()
+        return {"room_id": room_id or None, "room_name": room_name}
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            async_dispatcher_connect(
+                self.hass,
+                f"{DOMAIN}_{self.coordinator.device_id}_current_room_updated",
+                self._handle_room_update,
+            )
+        )
+
+    @callback
+    def _handle_room_update(self) -> None:
+        self.async_write_ha_state()
 
 
 class BatterySensorEntity(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):
