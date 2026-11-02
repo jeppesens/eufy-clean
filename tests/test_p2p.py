@@ -541,3 +541,24 @@ def test_a_new_map_discards_previous_geometry_rooms_and_motion():
     assert decoder.state.map_id == 2 and not decoder.state.has_map
     assert decoder.state.rooms[0]["name"] == "New room"
     assert not decoder.state.path and decoder.state.pose is None
+
+
+def test_kcp_drops_a_record_that_never_ends(monkeypatch):
+    """A peer that keeps sending `more fragments` must not make us buffer without limit."""
+    monkeypatch.setattr(kcp, "_MAX_RECORD", 4000)
+    sender, sent = _conversation()
+    sender.send(bytes(range(256)) * 40)  # ~10 KB, several fragments
+    receiver, _ = _conversation(on_message=lambda _m: None)
+    with pytest.raises(kcp.KcpError, match="size limit"):
+        _deliver(sent[:-1], receiver)
+    assert receiver._fragments == []  # noqa: SLF001
+
+
+def test_signaling_buffer_does_not_keep_junk_or_absurd_lengths():
+    junk = b"\x01" * 5000
+    frames, tail = framing.decode_frames(_KEY, junk)
+    assert frames == [] and len(tail) <= 3
+    marker = framing.PREFIX.to_bytes(4, "big")
+    bogus = marker + bytes(8) + b"\xff\xff\xff\xf0"  # claims a ~4 GB frame
+    frames, tail = framing.decode_frames(_KEY, bogus + junk)
+    assert frames == [] and len(tail) <= 3

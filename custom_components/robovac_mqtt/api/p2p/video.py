@@ -28,6 +28,7 @@ _LOGGER = logging.getLogger(__name__)
 RTP_PAYLOAD_TYPE = 95
 _RTP_HEADER = 12
 _MAX_PACKET = 1500
+_MAX_FRAGMENT = 4 * 1024 * 1024  # an open FU never legitimately grows past a frame
 _START_CODE = b"\x00\x00\x00\x01"
 _NAL_AGGREGATION = 48
 _NAL_FRAGMENT = 49
@@ -93,7 +94,9 @@ class RtpHevcReader:
                 )
             if self._fragment is not None:
                 self._fragment += payload[3:]
-                if header & 0x40:  # end
+                if len(self._fragment) > _MAX_FRAGMENT:
+                    self._fragment = None
+                elif header & 0x40:  # end
                     yield _START_CODE + bytes(self._fragment)
                     self._fragment = None
         elif nal_type == _NAL_AGGREGATION:

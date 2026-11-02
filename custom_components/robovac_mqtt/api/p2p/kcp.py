@@ -41,6 +41,7 @@ _WINDOW = 512
 _MAX_SEGMENT_DATA = 1376
 _RETRANSMIT_AFTER_MS = 300
 _MAX_TRANSMITS = 10
+_MAX_RECORD = 16 * 1024 * 1024  # same bound as a reassembled stream object
 
 
 class KcpError(Exception):
@@ -226,6 +227,9 @@ class KcpConversation:
         while (nxt := self._received.pop(self._receive_next, None)) is not None:
             self._receive_next += 1
             self._fragments.append(nxt.data)
+            if sum(map(len, self._fragments)) > _MAX_RECORD:
+                self._fragments = []
+                raise KcpError("record exceeds the size limit")
             if nxt.fragment:
                 continue
             record = b"".join(self._fragments)

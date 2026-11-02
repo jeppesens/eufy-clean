@@ -879,3 +879,12 @@ async def test_a_refusal_noted_while_queued_for_the_slot_stops_the_camera_fetchi
         await video._stream_once()
     feed.get_rtc.assert_not_awaited()
     feed.release_slot.assert_called_once()
+
+
+def test_an_endless_fragmentation_unit_is_dropped(monkeypatch):
+    monkeypatch.setattr("custom_components.robovac_mqtt.api.p2p.video._MAX_FRAGMENT", 100)
+    reader = RtpHevcReader()
+    fu = lambda header: bytes([49 << 1, 1, header])  # noqa: E731 - FU payload header
+    packets = [rtp(0, fu(0x80 | 19) + bytes(60))] + [rtp(n, fu(19) + bytes(60)) for n in range(1, 5)]
+    assert read_all(reader, b"".join(frame(p) for p in packets)) == []
+    assert reader._fragment is None  # noqa: SLF001

@@ -931,6 +931,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             png = await self.hass.async_add_executor_job(_render)
         except asyncio.CancelledError:
             return
+        except ValueError as err:  # e.g. an oversized or empty map
+            _LOGGER.warning("Could not render the map for %s: %s", self.device_name, err)
+            return
         self.map_image = png
         _LOGGER.debug("Map image updated (%d bytes PNG) for %s", len(png), self.device_name)
         self.hass.async_create_task(self._async_save_map_image())

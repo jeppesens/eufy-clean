@@ -56,6 +56,9 @@ def encode_frame(local_key: bytes, command: int, payload: dict[str, Any] | bytes
     return bytes(frame)
 
 
+_MAX_FRAME = 1024 * 1024
+
+
 def decode_frames(local_key: bytes, buffer: bytes) -> tuple[list[tuple[int, Any]], bytes]:
     """Decode every whole frame in ``buffer``.
 
@@ -70,6 +73,9 @@ def decode_frames(local_key: bytes, buffer: bytes) -> tuple[list[tuple[int, Any]
         if start < 0 or start + 16 > len(buffer):
             break
         length = int.from_bytes(buffer[start + 12 : start + 16], "big")
+        if length > _MAX_FRAME:  # not a real frame: skip this marker
+            pos = start + len(marker)
+            continue
         end = start + 16 + length
         if end > len(buffer):
             break
@@ -90,4 +96,6 @@ def decode_frames(local_key: bytes, buffer: bytes) -> tuple[list[tuple[int, Any]
                 payload = body
         out.append((command, payload))
         pos = end
+    if buffer.find(marker, pos) < 0:
+        pos = max(pos, len(buffer) - (len(marker) - 1))  # keep only a possible split marker
     return out, buffer[pos:]
