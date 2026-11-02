@@ -315,6 +315,12 @@ class EUFY_CLEAN_CONTROL(int, Enum):
     START_MAPPING_THEN_CLEAN = 25
 
 
+# Whole-house passes (AutoClean.clean_times) for START_AUTO_CLEAN. The Eufy app
+# offers x1 and x2; start_auto clamps clean_times to this range.
+AUTO_CLEAN_TIMES_MIN = 1
+AUTO_CLEAN_TIMES_MAX = 2
+
+
 EUFY_CLEAN_ERROR_CODES = {
     0: "NONE",
     1: "CRASH BUFFER STUCK",
