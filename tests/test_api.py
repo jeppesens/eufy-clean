@@ -88,6 +88,7 @@ def test_update_state_error_code(mock_decode):
 
     # Mock ErrorCode
     mock_error = MagicMock(spec=ErrorCode)
+    mock_error.error = []
     mock_error.warn = [1]  # CRASH BUFFER STUCK
     mock_decode.return_value = mock_error
 
@@ -96,6 +97,7 @@ def test_update_state_error_code(mock_decode):
 
     assert new_state.error_code == 1
     assert new_state.error_message == "CRASH BUFFER STUCK"
+    assert new_state.warn_codes == [1]
 
 
 @patch("custom_components.robovac_mqtt.api.parser.decode")
