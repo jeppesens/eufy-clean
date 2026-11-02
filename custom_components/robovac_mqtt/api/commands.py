@@ -278,7 +278,10 @@ def build_set_room_custom_command(
 
     for room_data in normalized_rooms:
         room_id = room_data.get("id")
-        if not room_id:
+        # Room id 0 is a real id on some maps (e.g. T2080A after room merges),
+        # so only skip when the id is actually missing — a falsy check would
+        # silently drop room 0 from the customization payload.
+        if room_id is None:
             continue
 
         custom_cfg = MapEditRequest.RoomsCustom.Parm.Room.Custom()

@@ -20,6 +20,7 @@ def mock_coordinator():
     coordinator.api_type = "novel"
     coordinator.data = VacuumState()
     coordinator.data.map_id = 1
+    coordinator.resolve_map_id.return_value = 1
     coordinator.async_send_command = AsyncMock()
     coordinator.build_device_command = MagicMock(return_value={"cmd": "val"})
     return coordinator

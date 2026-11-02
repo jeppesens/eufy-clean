@@ -6,12 +6,14 @@ from custom_components.robovac_mqtt.api.commands import (
     _build_off_peak_sub_bytes,
     build_command,
     build_map_load_command,
+    build_room_clean_command,
     build_set_boost_iq_command,
     build_set_child_lock_command,
     build_set_cleaning_intensity_command,
     build_set_cleaning_mode_command,
     build_set_cleaning_pattern_command,
     build_set_off_peak_charging_command,
+    build_set_room_custom_command,
     build_set_voice_command,
     build_set_volume_command,
     build_set_volume_novel_command,
@@ -25,6 +27,7 @@ from custom_components.robovac_mqtt.const import (
     SCALAR_DPS,
 )
 from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
+from custom_components.robovac_mqtt.proto.cloud.map_edit_pb2 import MapEditRequest
 from custom_components.robovac_mqtt.proto.cloud.multi_maps_pb2 import (
     MultiMapsManageRequest,
 )
@@ -330,3 +333,26 @@ def test_off_peak_command_dispatch():
         end_minute=30,
     )
     assert DPS_MAP["UNSETTING"] in result
+
+
+def test_build_room_clean_command_keeps_room_zero():
+    """Room id 0 is a real id on some maps (T2080A after room merges) and must
+    reach SelectRoomsClean alongside the requested map id."""
+    result = build_room_clean_command([0, 5], map_id=1)
+    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+    assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN
+    src = decoded.select_rooms_clean
+    assert src.map_id == 1
+    assert src.clean_times == 1
+    assert [(r.id, r.order) for r in src.rooms] == [(0, 1), (5, 2)]
+
+
+def test_set_room_custom_keeps_room_zero():
+    """Room id 0 is a real id on some maps (T2080A after room merges) and must
+    not be dropped from the SET_ROOMS_CUSTOM payload by a falsy check."""
+    result = build_set_room_custom_command([0, 2], map_id=1, fan_speed="Turbo")
+    assert DPS_MAP["MAP_EDIT_REQUEST"] in result
+    decoded = decode(MapEditRequest, result[DPS_MAP["MAP_EDIT_REQUEST"]])
+    assert decoded.method == MapEditRequest.SET_ROOMS_CUSTOM
+    assert decoded.map_id == 1
+    assert [r.id for r in decoded.rooms_custom.rooms_parm.rooms] == [0, 2]

@@ -73,17 +73,20 @@
         "data": {
           "host": "Local IP address or hostname",
           "version": "Tuya protocol version",
-          "rooms": "Room names"
+          "rooms": "Room names",
+          "map_id": "Map ID overrides"
         },
         "data_description": {
           "host": "The dock's LAN address, for direct local push instead of 30 s cloud polling. Leave blank to stay on cloud.",
           "version": "Tuya protocol version — 3.3 fits most vacuums; try 3.4/3.5 for newer models if 3.3 fails.",
-          "rooms": "Manual 'id: name' lines, one room per line (e.g. '1: Kitchen'). Used when the device's room list isn't delivered automatically."
+          "rooms": "Manual 'id: name' lines, one room per line (e.g. '1: Kitchen'). Used when the device's room list isn't delivered automatically.",
+          "map_id": "The local map id sent in room/zone clean commands. Set this if room cleans fail — some models (S1 Pro / T2080A) report a cloud map id that the firmware rejects. Leave blank to use the device-reported id. A single number (e.g. '1') applies to every map. With several maps, add one 'reported id: local id' line per map (e.g. '2154: 1'); if a map has no line, the log names its reported id. The first map saved on the robot is 1, but a re-created or additional map gets a new id (2, 3, …), so if 1 fails try the next number."
         }
       }
     },
     "error": {
-      "invalid_host": "Enter a bare IP address or hostname (no http:// prefix or :port)."
+      "invalid_host": "Enter a bare IP address or hostname (no http:// prefix or :port).",
+      "invalid_map_id": "Enter a positive whole number (e.g. 1), or 'reported id: local id' lines of positive whole numbers (e.g. 2154: 1)."
     },
     "abort": {
       "no_devices": "No devices are loaded to configure."
