@@ -11,7 +11,12 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.robovac_mqtt import _int_keyed
 from custom_components.robovac_mqtt.api.cloud import EufyLoginError
-from custom_components.robovac_mqtt.const import DOMAIN
+from custom_components.robovac_mqtt.const import (
+    CONF_LOCAL_DEVICES,
+    CONF_MAP_ID,
+    CONF_MAP_IDS,
+    DOMAIN,
+)
 
 
 async def test_load_unload_entry(hass: HomeAssistant):
@@ -270,6 +275,54 @@ async def test_setup_network_failure_raises_config_entry_not_ready(hass: HomeAss
         await hass.async_block_till_done()
 
     assert config_entry.state == ConfigEntryState.SETUP_RETRY
+
+
+async def test_setup_passes_map_id_overrides_to_coordinator(hass: HomeAssistant):
+    """Stored map id overrides reach the coordinator's device_info, with the
+    per-map keys (stringified by JSON storage) back as ints."""
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "test_user", CONF_PASSWORD: "test_password"},
+        options={
+            CONF_LOCAL_DEVICES: {
+                "test_device_id": {CONF_MAP_ID: 1, CONF_MAP_IDS: {"2154": 2}}
+            }
+        },
+        entry_id="test_map_id_entry",
+    )
+    config_entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator"
+    ) as mock_coord_cls:
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock()
+        mock_login.mqtt_devices = [
+            {
+                "deviceId": "test_device_id",
+                "deviceModel": "T2118",
+                "deviceName": "Test Vac",
+                "dps": {},
+            }
+        ]
+        mock_login.cloud_devices = []
+
+        mock_coord = mock_coord_cls.return_value
+        mock_coord.initialize = AsyncMock()
+        mock_coord.device_id = "test_device_id"
+        mock_coord.device_name = "Test Vac"
+        mock_coord.device_model = "T2118"
+        mock_coord.data = MagicMock()
+        mock_coord.client = MagicMock()
+        mock_coord.client.disconnect = AsyncMock()
+
+        result = await hass.config_entries.async_setup(config_entry.entry_id)
+        assert result is True
+        await hass.async_block_till_done()
+
+    device_info = mock_coord_cls.call_args.args[2]
+    assert device_info["map_id_override"] == 1
+    assert device_info["map_id_overrides"] == {2154: 2}
 
 
 def test_int_keyed_restores_int_keys_and_drops_bad_entries(caplog):

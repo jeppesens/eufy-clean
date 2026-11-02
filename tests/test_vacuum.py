@@ -122,8 +122,10 @@ async def test_zone_clean_dispatch(mock_coordinator, mock_config_entry):
     mock_coordinator.normalized_rects_to_quads_cm = MagicMock(return_value=quads)
     mock_coordinator.set_active_cleaning_targets = MagicMock()
     mock_coordinator.build_device_command = MagicMock(return_value={"152": "encoded"})
-    mock_coordinator.data.map_id = 3
-    mock_coordinator.resolve_map_id.return_value = 3
+    # The reported (cloud) map id differs from the resolved one, so the
+    # assertion below fails if zone_clean bypasses resolve_map_id().
+    mock_coordinator.data.map_id = 2154
+    mock_coordinator.resolve_map_id.return_value = 1
 
     await entity.async_send_command("zone_clean", {"zones": [[0.1, 0.2, 0.3, 0.4]]})
 
@@ -131,7 +133,7 @@ async def test_zone_clean_dispatch(mock_coordinator, mock_config_entry):
         [[0.1, 0.2, 0.3, 0.4]]
     )
     mock_coordinator.build_device_command.assert_called_once_with(
-        "zone_clean", zones_cm=quads, map_id=3, clean_times=1
+        "zone_clean", zones_cm=quads, map_id=1, clean_times=1
     )
     mock_coordinator.set_active_cleaning_targets.assert_called_once_with(zone_count=1)
     mock_coordinator.async_send_command.assert_called_with({"152": "encoded"})
@@ -192,11 +194,12 @@ async def test_async_send_command_raw(mock_coordinator, mock_config_entry):
     mock_build.assert_called_with("scene_clean", scene_id=5)
     mock_coordinator.set_active_scene.assert_called_with(5, "Evening")
 
-    # Test room_clean
-    mock_coordinator.data.map_id = 9
-    mock_coordinator.resolve_map_id.return_value = 9
+    # Test room_clean: the reported (cloud) map id differs from the resolved
+    # one, so the assertion fails if room_clean bypasses resolve_map_id().
+    mock_coordinator.data.map_id = 2154
+    mock_coordinator.resolve_map_id.return_value = 1
     await entity.async_send_command("room_clean", params={"room_ids": [1]})
-    mock_build.assert_called_with("room_clean", room_ids=[1], map_id=9)
+    mock_build.assert_called_with("room_clean", room_ids=[1], map_id=1)
 
 
 @pytest.mark.asyncio
@@ -387,7 +390,6 @@ async def test_map_load_empty_command_raises(mock_coordinator, mock_config_entry
 async def test_forget_map_delegates_to_coordinator(mock_coordinator, mock_config_entry):
     """Forgetting a non-active map delegates to the coordinator prune (local-only)."""
     mock_coordinator.data.map_id = 11
-    mock_coordinator.resolve_map_id.return_value = 11
     mock_coordinator.async_forget_map = AsyncMock(return_value=True)
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
@@ -400,7 +402,6 @@ async def test_forget_map_delegates_to_coordinator(mock_coordinator, mock_config
 async def test_forget_map_active_raises(mock_coordinator, mock_config_entry):
     """The active map cannot be forgotten (it would immediately re-seed)."""
     mock_coordinator.data.map_id = 11
-    mock_coordinator.resolve_map_id.return_value = 11
     mock_coordinator.async_forget_map = AsyncMock()
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 

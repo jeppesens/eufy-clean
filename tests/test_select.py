@@ -153,8 +153,10 @@ async def test_room_select_entity(mock_coordinator):
         {"id": 10, "name": "Kitchen"},
         {"id": 12, "name": "Living Room"},
     ]
-    mock_coordinator.data.map_id = 5
-    mock_coordinator.resolve_map_id.return_value = 5
+    # The reported (cloud) map id differs from the resolved one, so the
+    # assertion below fails if the select bypasses resolve_map_id().
+    mock_coordinator.data.map_id = 2154
+    mock_coordinator.resolve_map_id.return_value = 1
 
     entity = RoomSelectEntity(mock_coordinator)
     entity.hass = MagicMock()
@@ -167,7 +169,7 @@ async def test_room_select_entity(mock_coordinator):
     await entity.async_select_option("Kitchen (ID: 10)")
 
     mock_coordinator.build_device_command.assert_called_with(
-        "room_clean", room_ids=[10], map_id=5
+        "room_clean", room_ids=[10], map_id=1
     )
     mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
     mock_coordinator.set_active_cleaning_targets.assert_called_with(room_ids=[10])
