@@ -5,7 +5,6 @@ from unittest.mock import MagicMock, PropertyMock, patch
 from custom_components.robovac_mqtt.api.commands import (
     build_command,
     build_find_robot_command,
-    build_room_clean_command,
     build_scene_clean_command,
     build_set_auto_action_cfg_command,
     build_set_clean_speed_command,
@@ -199,19 +198,6 @@ def test_build_scene_clean_command(mock_encode):
     # args[1] is the data dict
     assert args[1]["method"] == EUFY_CLEAN_CONTROL.START_SCENE_CLEAN
     assert args[1]["scene_clean"]["scene_id"] == 1
-
-
-@patch("custom_components.robovac_mqtt.api.commands.encode_message")
-def test_build_room_clean_command(mock_encode_message):
-    """Test building room clean command."""
-    mock_encode_message.return_value = "encoded_room_cmd"
-
-    cmd = build_room_clean_command([10, 11])
-    assert cmd == {DPS_MAP["PLAY_PAUSE"]: "encoded_room_cmd"}
-
-    # Verify protobuf construction would be complex to check fully against the mock,
-    # but we checked that encode_message was called.
-    assert mock_encode_message.called
 
 
 @patch("custom_components.robovac_mqtt.api.commands.encode")

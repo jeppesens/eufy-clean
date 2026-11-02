@@ -10,8 +10,11 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.robovac_mqtt.api.map_stream import MapData
+from custom_components.robovac_mqtt.const import DPS_MAP
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
+from custom_components.robovac_mqtt.utils import decode
 
 
 @pytest.fixture
@@ -508,6 +511,34 @@ def test_build_device_command_novel(mock_hass, mock_login):
     cmd = coordinator.build_device_command("find_robot", active=True)
     # Novel find_robot uses DPS 160
     assert "160" in cmd
+
+
+@pytest.mark.parametrize(
+    "caller_kwargs,expected",
+    [
+        # The coordinator's own model: a T2080A gets zero-based room order.
+        ({}, [(6, 0), (2, 1)]),
+        # A model passed by the caller wins over the coordinator's.
+        ({"model": "T2351"}, [(6, 1), (2, 2)]),
+    ],
+)
+def test_build_device_command_passes_model(
+    mock_hass, mock_login, caller_kwargs, expected
+):
+    """build_device_command passes the device model unless the caller passes one."""
+    device_info = {
+        "deviceId": "dev1",
+        "deviceModel": "T2080A",
+        "deviceName": "Vac",
+        "apiType": "novel",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    cmd = coordinator.build_device_command(
+        "room_clean", room_ids=[6, 2], map_id=1, **caller_kwargs
+    )
+    rooms = decode(ModeCtrlRequest, cmd[DPS_MAP["PLAY_PAUSE"]]).select_rooms_clean.rooms
+    assert [(room.id, room.order) for room in rooms] == expected
 
 
 @pytest.mark.asyncio
