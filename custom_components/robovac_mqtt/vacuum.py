@@ -344,7 +344,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
     async def _async_handle_room_clean(self, params: dict[str, Any]) -> None:
         """Handle room_clean command with optional custom parameters."""
-        map_id = params.get("map_id") or self.coordinator.data.map_id or 1
+        map_id = params.get("map_id") or self.coordinator.resolve_map_id()
 
         # New-style: 'rooms' is a list of dicts with per-room config
         rooms_config = params.get("rooms")
@@ -441,7 +441,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             )
             return
 
-        map_id = params.get("map_id") or self.coordinator.data.map_id or 1
+        map_id = params.get("map_id") or self.coordinator.resolve_map_id()
         clean_times = int(params.get("clean_times", 1))
 
         command = self.coordinator.build_device_command(

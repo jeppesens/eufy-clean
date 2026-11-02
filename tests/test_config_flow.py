@@ -13,6 +13,7 @@ from custom_components.robovac_mqtt.const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
+    CONF_MAP_ID,
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROOM_NAMES,
@@ -374,3 +375,67 @@ async def test_reconfigure_username_mismatch(hass: HomeAssistant):
 
     assert result2["type"] == data_entry_flow.FlowResultType.FORM
     assert result2["errors"][CONF_USERNAME] == "username_mismatch"
+
+
+async def test_options_device_map_id_override_saved(hass: HomeAssistant):
+    """A manual map-id override entered in the device step is persisted as an
+    int alongside the other per-device overrides."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    _register_coordinators(
+        hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
+    )
+
+    result = await _open_device_step(hass, entry, "loaded_dev")
+
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: "0: Kitchen",
+            CONF_MAP_ID: "1",
+        },
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    saved = result2["data"][CONF_LOCAL_DEVICES]["loaded_dev"]
+    assert saved[CONF_MAP_ID] == 1
+    # Room id 0 parses and persists too.
+    assert saved[CONF_ROOM_NAMES] == {0: "Kitchen"}
+
+
+async def test_options_device_invalid_map_id_shows_error(hass: HomeAssistant):
+    """A non-numeric map id surfaces an ``invalid_map_id`` error on the field
+    and nothing is persisted."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    _register_coordinators(
+        hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
+    )
+
+    result = await _open_device_step(hass, entry, "loaded_dev")
+
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: "",
+            CONF_MAP_ID: "abc",
+        },
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.FORM
+    assert result2["errors"][CONF_MAP_ID] == "invalid_map_id"
+    assert entry.options.get(CONF_LOCAL_DEVICES, {}) == {}

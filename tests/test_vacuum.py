@@ -123,6 +123,7 @@ async def test_zone_clean_dispatch(mock_coordinator, mock_config_entry):
     mock_coordinator.set_active_cleaning_targets = MagicMock()
     mock_coordinator.build_device_command = MagicMock(return_value={"152": "encoded"})
     mock_coordinator.data.map_id = 3
+    mock_coordinator.resolve_map_id.return_value = 3
 
     await entity.async_send_command("zone_clean", {"zones": [[0.1, 0.2, 0.3, 0.4]]})
 
@@ -193,6 +194,7 @@ async def test_async_send_command_raw(mock_coordinator, mock_config_entry):
 
     # Test room_clean
     mock_coordinator.data.map_id = 9
+    mock_coordinator.resolve_map_id.return_value = 9
     await entity.async_send_command("room_clean", params={"room_ids": [1]})
     mock_build.assert_called_with("room_clean", room_ids=[1], map_id=9)
 
@@ -316,6 +318,7 @@ async def test_app_segment_clean_command(mock_coordinator, mock_config_entry):
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
     entity.hass = mock_coordinator.hass
     mock_coordinator.data.map_id = 5
+    mock_coordinator.resolve_map_id.return_value = 5
 
     await entity.async_send_command("app_segment_clean", params=[1, "2", 3.0])
 
@@ -384,6 +387,7 @@ async def test_map_load_empty_command_raises(mock_coordinator, mock_config_entry
 async def test_forget_map_delegates_to_coordinator(mock_coordinator, mock_config_entry):
     """Forgetting a non-active map delegates to the coordinator prune (local-only)."""
     mock_coordinator.data.map_id = 11
+    mock_coordinator.resolve_map_id.return_value = 11
     mock_coordinator.async_forget_map = AsyncMock(return_value=True)
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 
@@ -396,6 +400,7 @@ async def test_forget_map_delegates_to_coordinator(mock_coordinator, mock_config
 async def test_forget_map_active_raises(mock_coordinator, mock_config_entry):
     """The active map cannot be forgotten (it would immediately re-seed)."""
     mock_coordinator.data.map_id = 11
+    mock_coordinator.resolve_map_id.return_value = 11
     mock_coordinator.async_forget_map = AsyncMock()
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
 

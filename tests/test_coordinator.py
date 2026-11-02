@@ -659,3 +659,49 @@ async def test_cloud_poll_backoff_caps_at_max(mock_hass, mock_login):
         await coordinator._async_update_data()
 
     assert coordinator.update_interval <= timedelta(minutes=5)
+
+
+def test_resolve_map_id_priority(mock_hass, mock_login):
+    """resolve_map_id: manual override > device-reported id > 1.
+
+    The override exists because some devices (T2080A / S1 Pro) report their
+    cloud map id on the UniversalData DPS, which the firmware rejects in
+    SelectRoomsClean — the user can pin the local map id instead.
+    """
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2080A",
+        "deviceName": "Test Vac",
+        "dps": {},
+    }
+    with patch(
+        "custom_components.robovac_mqtt.coordinator.update_state"
+    ) as mock_update:
+        mock_update.return_value = (VacuumState(), {})
+        coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    # Nothing known yet -> firmware default (first saved map).
+    assert coordinator.resolve_map_id() == 1
+    # Device-reported id is used when present...
+    coordinator.data.map_id = 2154
+    assert coordinator.resolve_map_id() == 2154
+    # ...but a manual override always wins.
+    coordinator.map_id_override = 1
+    assert coordinator.resolve_map_id() == 1
+
+
+def test_map_id_override_from_device_info(mock_hass, mock_login):
+    """The map_id_override plumbed through device_info lands on the coordinator."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2080A",
+        "deviceName": "Test Vac",
+        "dps": {},
+        "map_id_override": 1,
+    }
+    with patch(
+        "custom_components.robovac_mqtt.coordinator.update_state"
+    ) as mock_update:
+        mock_update.return_value = (VacuumState(), {})
+        coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    assert coordinator.map_id_override == 1

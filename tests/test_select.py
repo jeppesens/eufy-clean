@@ -154,6 +154,7 @@ async def test_room_select_entity(mock_coordinator):
         {"id": 12, "name": "Living Room"},
     ]
     mock_coordinator.data.map_id = 5
+    mock_coordinator.resolve_map_id.return_value = 5
 
     entity = RoomSelectEntity(mock_coordinator)
     entity.hass = MagicMock()

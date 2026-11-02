@@ -114,6 +114,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self.room_name_overrides: dict[int, str] = dict(
             device_info.get("room_name_overrides") or {}
         )
+        # Manual map-id override for room/zone clean commands. Needed on
+        # devices whose UniversalData DPS reports the cloud map id while the
+        # firmware only accepts the local map id (see CONF_MAP_ID in const.py).
+        self.map_id_override: int | None = device_info.get("map_id_override")
 
         update_interval = _CLOUD_POLL_INTERVAL if self.connection_type == "cloud" else None
 
@@ -177,6 +181,16 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         if self.api_type == "legacy":
             return update_state_legacy(self.data, dps)
         return update_state(self.data, dps)
+
+    def resolve_map_id(self) -> int:
+        """Return the map id to use in room/zone clean commands.
+
+        Priority: the user's manual override (options flow), then the last
+        device-reported map id, then 1 (the firmware default for the first
+        saved map). The override exists because some devices (T2080A) report
+        their cloud map id, which room commands reject.
+        """
+        return self.map_id_override or self.data.map_id or 1
 
     def build_device_command(self, command: str, **kwargs: Any) -> dict[str, Any]:
         """Build a DPS command dict appropriate for this device's API type.

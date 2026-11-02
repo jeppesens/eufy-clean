@@ -34,6 +34,12 @@ CONF_LOCAL_DEVICES: Final = "local_devices"
 CONF_LOCAL_HOST: Final = "host"
 CONF_LOCAL_VERSION: Final = "version"
 CONF_ROOM_NAMES: Final = "rooms"
+# Manual override for the map id used in room/zone clean commands. Some
+# devices (T2080A / S1 Pro) report their *cloud* map id (e.g. 2154) on the
+# UniversalData DPS while the firmware only accepts the *local* map id
+# (e.g. 1) in SelectRoomsClean / SET_ROOMS_CUSTOM — commands referencing the
+# cloud id are ACKed but rejected (ModeCtrlResponse result=FAILED).
+CONF_MAP_ID: Final = "map_id"
 
 # Eufy API URLs
 EUFY_API_BASE_URL: Final = "https://api.eufylife.com"

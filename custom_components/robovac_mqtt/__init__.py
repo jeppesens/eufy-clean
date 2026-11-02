@@ -22,6 +22,7 @@ from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
+    CONF_MAP_ID,
     CONF_ROOM_NAMES,
     DOMAIN,
 )
@@ -184,6 +185,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     _LOGGER.info(
                         "Device %s using %d manual room name override(s)",
                         device_id, len(coerced),
+                    )
+            # Manual map-id override for room/zone clean commands (devices
+            # that report their cloud map id, which the firmware rejects).
+            if (map_override := override.get(CONF_MAP_ID)) is not None:
+                try:
+                    extras["map_id_override"] = int(map_override)
+                    _LOGGER.info(
+                        "Device %s using manual map id override %d",
+                        device_id, extras["map_id_override"],
+                    )
+                except (TypeError, ValueError):
+                    _LOGGER.warning(
+                        "Device %s: ignoring non-integer map id %r",
+                        device_id, map_override,
                     )
             if extras:
                 device_info = {**device_info, **extras}

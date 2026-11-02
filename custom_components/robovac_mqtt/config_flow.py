@@ -23,6 +23,7 @@ from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
+    CONF_MAP_ID,
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_DESKTOP,
     CONF_NOTIFY_MOBILE_SERVICE,
@@ -364,8 +365,17 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             rooms_parsed = _parse_rooms_text(
                 user_input.get(CONF_ROOM_NAMES, "") or ""
             )
+            map_id_raw = str(user_input.get(CONF_MAP_ID, "") or "").strip()
+            map_id_parsed: int | None = None
             if host and not _is_valid_host(host):
                 errors[CONF_LOCAL_HOST] = "invalid_host"
+            if map_id_raw:
+                try:
+                    map_id_parsed = int(map_id_raw)
+                    if map_id_parsed <= 0:
+                        raise ValueError
+                except ValueError:
+                    errors[CONF_MAP_ID] = "invalid_map_id"
             if not errors:
                 entry: dict[str, Any] = {}
                 if host and has_local_key:
@@ -373,6 +383,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                     entry[CONF_LOCAL_VERSION] = float(version or 3.3)
                 if rooms_parsed:
                     entry[CONF_ROOM_NAMES] = rooms_parsed
+                if map_id_parsed is not None:
+                    entry[CONF_MAP_ID] = map_id_parsed
                 if entry:
                     existing_all[dev_id] = entry
                 else:
@@ -390,6 +402,7 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
                 CONF_LOCAL_HOST: host,
                 CONF_LOCAL_VERSION: version,
                 CONF_ROOM_NAMES: rooms_parsed,
+                CONF_MAP_ID: map_id_raw,
             }
 
         schema_dict: dict = {}
@@ -410,6 +423,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         ] = selector.TextSelector(
             selector.TextSelectorConfig(multiline=True)
         )
+        schema_dict[
+            VOptional(CONF_MAP_ID, default=str(current.get(CONF_MAP_ID, "") or ""))
+        ] = cv.string
         return self.async_show_form(
             step_id="device",
             data_schema=Schema(schema_dict),
