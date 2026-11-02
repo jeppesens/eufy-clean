@@ -701,6 +701,19 @@ ACCESSORY_MAX_LIFE = {
     "mop_usage": 180,
 }
 
+# Per-model overrides of ACCESSORY_MAX_LIFE for novel devices whose app lists
+# different accessories/intervals. Only the accessories listed get a sensor.
+MODEL_ACCESSORY_MAX_LIFE = {
+    # L60 SES: values from the app's Accessories screen. No mop, tray or
+    # sensor-cleaning interval; the station's dust bag is tracked instead.
+    "T2277": {
+        "filter_usage": 200,
+        "main_brush_usage": 360,
+        "side_brush_usage": 250,
+        "dustbag_usage": 1440,
+    },
+}
+
 # Dock statuses that indicate active dock operations
 # Used to determine when to reset to Idle
 DOCK_ACTIVITY_STATES = (

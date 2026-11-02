@@ -24,10 +24,16 @@ from ._orphan_cleanup import prune_orphan_entities
 from .const import (
     ACCESSORY_MAX_LIFE,
     DOMAIN,
+    MODEL_ACCESSORY_MAX_LIFE,
     SCALAR_ACCESSORY_MAX_LIFE,
 )
 from .coordinator import EufyCleanCoordinator, VacuumState
-from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
+from .entity import (
+    API_TYPE_NOVEL,
+    API_TYPE_SCALAR,
+    effective_api_type,
+    filter_supported_entities,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -330,6 +336,10 @@ async def async_setup_entry(
 
         # Accessory Sensors. Filter/brushes/sensor are universal; cleaning tray
         # and mopping cloth only exist on mop-capable (novel) devices.
+        # Novel devices only get a sensor for accessories their lifespan table
+        # lists, so a new accessory added here must also be added to
+        # ACCESSORY_MAX_LIFE (and any MODEL_ACCESSORY_MAX_LIFE entry that has
+        # it), or it silently gets no sensor.
         accessories = [
             ("filter_usage", "Filter Remaining", "mdi:air-filter", None),
             ("main_brush_usage", "Rolling Brush Remaining", "mdi:broom", None),
@@ -342,15 +352,29 @@ async def async_setup_entry(
                 (API_TYPE_NOVEL,),
             ),
             ("mop_usage", "Mopping Cloth Remaining", "mdi:water", (API_TYPE_NOVEL,)),
+            ("dustbag_usage", "Dust Bag Remaining", "mdi:delete", (API_TYPE_NOVEL,)),
         ]
+        max_life_table = MODEL_ACCESSORY_MAX_LIFE.get(
+            coordinator.device_model, ACCESSORY_MAX_LIFE
+        )
 
         for attr, name, icon, supported_api_types in accessories:
+            # Novel devices only get the accessories their lifespan table lists
+            # (scalar devices are gated by accessory_available below).
+            if (
+                effective_api_type(coordinator.api_type) == API_TYPE_NOVEL
+                and attr not in max_life_table
+            ):
+                continue
+
             # We must capture the specific attr value in the lambda default args
             # otherwise all lambdas will point to the last attr in the loop.
             # X-series report usage in hours; scalar-protocol (scalar protocol) report
             # usage in MINUTES with their own per-accessory max life (hours).
             def get_accessory_remaining(
-                state: VacuumState, a: str = attr
+                state: VacuumState,
+                a: str = attr,
+                life: dict[str, int] = max_life_table,
             ) -> int | None:
                 usage = getattr(state.accessories, a) or 0
                 if state.api_type == "scalar":
@@ -358,12 +382,16 @@ async def async_setup_entry(
                     if not max_h:
                         return None  # accessory not present on this device
                     return max(0, round(max_h - usage / 60))
-                max_life = ACCESSORY_MAX_LIFE.get(a, 0)
+                max_life = life.get(a, 0)
                 # Ensure we don't go negative if usage exceeds defaults
                 return max(0, max_life - usage)
 
             # Extra attributes explicitly using specific attr
-            def get_attributes(state: VacuumState, a: str = attr) -> dict[str, Any]:
+            def get_attributes(
+                state: VacuumState,
+                a: str = attr,
+                life: dict[str, int] = max_life_table,
+            ) -> dict[str, Any]:
                 usage = getattr(state.accessories, a) or 0
                 if state.api_type == "scalar":
                     max_h = SCALAR_ACCESSORY_MAX_LIFE.get(a, 0)
@@ -376,7 +404,7 @@ async def async_setup_entry(
                     }
                 return {
                     "usage_hours": usage,
-                    "total_life_hours": ACCESSORY_MAX_LIFE.get(a, 0),
+                    "total_life_hours": life.get(a, 0),
                 }
 
             def accessory_available(state: VacuumState, a: str = attr) -> bool:
