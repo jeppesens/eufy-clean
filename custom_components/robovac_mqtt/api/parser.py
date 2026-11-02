@@ -50,8 +50,18 @@ _LOGGER = logging.getLogger(__name__)
 
 _OFF_PEAK_RESPONSE_FIELD_NUM = 23  # UnisettingResponse field 23 = OffPeakCharging (undocumented)
 
-# ErrorCode.ObstacleReminder.Type enum -> human name (proto: POOP = 0).
-_OBSTACLE_TYPE_NAMES: dict[int, str] = {0: "poop"}
+
+def _obstacle_type_name(value: int) -> str:
+    """Name an ``ErrorCode.ObstacleReminder.Type`` from the proto enum itself.
+
+    Derived rather than tabulated so a new obstacle type added to
+    ``error_code.proto`` names itself. Unknown values fall back to the number,
+    which is what a device ahead of our compiled proto will send.
+    """
+    try:
+        return ErrorCode.ObstacleReminder.Type.Name(value).strip().lower()
+    except ValueError:
+        return str(value)
 
 
 def _extract_off_peak_charging(raw_b64: str) -> dict[str, int | bool] | None:
@@ -478,9 +488,11 @@ def _process_other_dps(
             elif key == DPS_MAP["ERROR_CODE"]:
                 error_proto = decode(ErrorCode, value)
                 _LOGGER.debug("Decoded ErrorCode: %s", error_proto)
-                # Capture the FULL proto. The old code read only warn[0] and NEVER
-                # read error[] — so real errors, simultaneous codes, timestamps,
-                # obstacle/poop reminders, and battery swaps were all discarded.
+                # Every ErrorCode frame is a FULL SNAPSHOT: error[] holds faults
+                # and warn[] advisories, so a fault wins for the primary code, and
+                # each field below is written on every frame (empty when absent)
+                # rather than only when present -- the replace() in update_state
+                # would otherwise carry a stale value forward indefinitely.
                 errors = list(error_proto.error)
                 warns = list(error_proto.warn)
                 changes["error_codes"] = errors
@@ -498,23 +510,19 @@ def _process_other_dps(
                     if code
                     else ""
                 )
-                if error_proto.battery.restored:
-                    changes["battery_restored"] = True
-                if len(error_proto.obstacle_reminder) > 0:
-                    changes["obstacle_reminders"] = [
-                        {
-                            "type": int(o.type),
-                            "type_name": _OBSTACLE_TYPE_NAMES.get(
-                                int(o.type), str(int(o.type))
-                            ),
-                            "photo_id": o.photo_id,
-                            "accuracy": o.accuracy,
-                            "map_id": o.map_id,
-                            "x": o.point.x,
-                            "y": o.point.y,
-                        }
-                        for o in error_proto.obstacle_reminder
-                    ]
+                changes["battery_restored"] = bool(error_proto.battery.restored)
+                changes["obstacle_reminders"] = [
+                    {
+                        "type": int(o.type),
+                        "type_name": _obstacle_type_name(int(o.type)),
+                        "photo_id": o.photo_id,
+                        "accuracy": o.accuracy,
+                        "map_id": o.map_id,
+                        "x": o.point.x,
+                        "y": o.point.y,
+                    }
+                    for o in error_proto.obstacle_reminder
+                ]
 
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug("Received ACCESSORIES_STATUS: %s", value)

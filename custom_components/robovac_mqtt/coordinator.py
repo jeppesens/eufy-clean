@@ -150,7 +150,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._store = Store(hass, 1, f"{DOMAIN}.{self.device_id}")
         # Separate store for the persisted error/warn history (the maps store
         # clobbers to a single key on save, so errors get their own store).
-        self._error_store = Store(hass, 1, f"{DOMAIN}.{self.device_id}.errors")
+        self._error_store: Store[dict[str, Any]] = Store(
+            hass, 1, f"{DOMAIN}.{self.device_id}.errors"
+        )
         self._map_data_chan_id: int | None = None
         self._map_data: MapData | None = None
         self._robot_pixel: tuple[int, int] | None = None
@@ -212,6 +214,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
     async def initialize(self) -> None:
         """Initialize connection to the device."""
         _LOGGER.debug("Initializing %s via %s", self.device_name, self.connection_type)
+        # Before any transport opens: connect() dispatches its first frame, and
+        # that frame can log an error event. See async_load_error_log.
+        await self.async_load_error_log()
         if self.connection_type == "cloud":
             await self._initialize_cloud()
         elif self.connection_type == "local":
@@ -325,19 +330,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 prev_activity = self.data.activity
                 new_state, changes = self._parse_dps(dps)
 
-                # Mine the errors we used to throw away: log fresh error/warn/
-                # obstacle/battery events to the persisted history.
-                if changes.keys() & {
-                    "error_code", "new_error_codes", "new_warn_codes",
-                    "obstacle_reminders", "battery_restored",
-                }:
-                    self._log_error_event(new_state, changes)
-
-                if "error_code" in changes:
-                    if new_state.error_code != 0:
-                        self._notify_error(new_state.error_code, new_state.error_message)
-                    elif self.data.error_code != 0:
-                        self._clear_error_notification()
+                self._handle_error_changes(new_state, changes)
 
                 _rerender_after_update = False
                 if "activity" in changes:
@@ -739,17 +732,46 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._last_notified_error_code = 0
         pn_async_dismiss(self.hass, notification_id=f"{DOMAIN}_{self.device_id}_error")
 
+    def _handle_error_changes(
+        self, new_state: VacuumState, changes: dict[str, Any]
+    ) -> None:
+        """React to the error fields of one parsed update: history + notification.
+
+        Shared by BOTH transports on purpose. The push handler and the cloud
+        poll are the only two places a parsed update appears, and when they each
+        carried their own copy the cloud one simply had none — so every
+        Tuya-cloud and legacy device was silently exempt from both effects.
+        """
+        if changes.keys() & {
+            "error_code", "new_error_codes", "new_warn_codes",
+            "obstacle_reminders", "battery_restored",
+        }:
+            self._log_error_event(new_state, changes)
+
+        if "error_code" in changes:
+            if new_state.error_code != 0:
+                self._notify_error(new_state.error_code, new_state.error_message)
+            elif self.data.error_code != 0:
+                self._clear_error_notification()
+
     def _log_error_event(self, new_state: VacuumState, changes: dict[str, Any]) -> None:
         """Append a fresh error/warn event to the persisted rolling history.
 
-        "Fresh" is judged from ``changes`` (this update's delta), NOT from
-        ``new_state`` fields — the list fields carry forward across the dataclass
-        replace(), so an ongoing fault would otherwise re-log on every update.
-        Fresh means: the device flagged new_code this update (novel/scalar), the
-        primary error_code changed to a (different) non-zero fault — the backstop
-        that also covers legacy, which has no new_code — or a fresh
-        obstacle-reminder / battery-swap arrived. ``self.data`` is still the
-        PREVIOUS state here (it is reassigned later in the update cycle).
+        Freshness is judged against the PREVIOUS state (``self.data``, which is
+        still the previous one here — it is reassigned later in the update
+        cycle), because neither source of truth is usable on its own:
+        ``new_state`` list fields carry forward across the dataclass replace(),
+        so an ongoing fault would re-log on every update, while the mere
+        PRESENCE of a key in ``changes`` says nothing now that every ErrorCode
+        frame writes battery_restored and obstacle_reminders as a full snapshot
+        (parser.py) — keying off presence alone would log every frame.
+
+        Fresh means any of: the device flagged new_code this update
+        (novel/scalar); the primary error_code moved to a different non-zero
+        fault — the backstop that also covers legacy, which has no new_code; the
+        battery-swap flag went False -> True; or the obstacle-reminder list is
+        non-empty AND differs from the previous one.
+
         Mutates ``new_state.error_log`` (carried forward across updates) and
         persists to the error store.
         """
@@ -760,8 +782,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 and new_state.error_code != 0
                 and new_state.error_code != self.data.error_code
             )
-            or "obstacle_reminders" in changes
-            or "battery_restored" in changes
+            or (new_state.battery_restored and not self.data.battery_restored)
+            or (
+                bool(new_state.obstacle_reminders)
+                and new_state.obstacle_reminders != self.data.obstacle_reminders
+            )
         )
         if not fresh:
             return
@@ -876,7 +901,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             try:
                 dps = await self.eufy_login.getCloudDevice(self.device_id)
                 if dps:
-                    new_state, _ = self._parse_dps(dps)
+                    new_state, changes = self._parse_dps(dps)
+                    # Cloud polling is the DEFAULT transport for Tuya-cloud
+                    # devices (api/cloud.py sets "mqtt": False; only a local-host
+                    # override moves a device to "local"), and legacy RoboVacs
+                    # live here. Dropping `changes` meant none of them ever
+                    # recorded history or raised an error notification, which the
+                    # clear->fault backstop in _log_error_event claims to cover.
+                    self._handle_error_changes(new_state, changes)
                     self._on_cloud_success()
                     return new_state
             except Exception as e:
@@ -921,9 +953,20 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 self.update_interval,
             )
 
-    async def async_load_storage(self) -> None:
-        """Load data from storage."""
-        # Persisted error/warn history (its own store).
+    async def async_load_error_log(self) -> None:
+        """Load the persisted error/warn history (its own store).
+
+        Loaded BEFORE the transport is connected, not with the rest of storage.
+        Every transport dispatches its first frame from inside connect() —
+        ``LocalTuyaClient.connect`` sends an initial ``status()`` into
+        ``_handle_mqtt_message``, and the MQTT client subscribes there too — so
+        a first frame carrying a fault can reach ``_log_error_event`` while
+        ``error_log`` is still the empty default. Loading afterwards then either
+        overwrites that fresh entry or, if the just-scheduled save has landed,
+        reads back a file holding only that one entry and drops the up to
+        ``_ERROR_LOG_MAX`` stored before it. Either way the history is lost,
+        which is why this is not simply part of ``async_load_storage``.
+        """
         if edata := await self._error_store.async_load():
             self.data.error_log = list(edata.get("error_log") or [])
             _LOGGER.debug(
@@ -931,6 +974,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 len(self.data.error_log),
                 self.device_name,
             )
+
+    async def async_load_storage(self) -> None:
+        """Load data from storage."""
         if data := await self._store.async_load():
             self.last_seen_segments = data.get("last_seen_segments")
             _LOGGER.debug(

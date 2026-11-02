@@ -1,4 +1,7 @@
-from custom_components.robovac_mqtt.api.parser import update_state
+from custom_components.robovac_mqtt.api.parser import (
+    _obstacle_type_name,
+    update_state,
+)
 from custom_components.robovac_mqtt.const import DPS_MAP
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.proto.cloud.error_code_pb2 import ErrorCode
@@ -68,3 +71,49 @@ def test_error_clears_to_empty():
     assert new_state.error_message == ""
     assert new_state.error_codes == []
     assert new_state.warn_codes == []
+
+
+def test_battery_and_obstacles_clear_as_snapshot():
+    """battery_restored and obstacle_reminders are SNAPSHOT fields, like the lists.
+
+    Each ErrorCode frame reports the robot's whole current error picture, and
+    update_state applies changes through dataclasses.replace() -- so a field only
+    written when present carries its old value forward for the life of the
+    config entry. Before this was fixed, one battery swap left battery_restored
+    True on every later state (and so in every later error_log entry), and the
+    last obstacle reminder stuck forever.
+    """
+    stale = {"type": 0, "type_name": "poop", "photo_id": "old",
+             "accuracy": 90, "map_id": 1, "x": 1, "y": 2}
+    state = VacuumState(battery_restored=True, obstacle_reminders=[stale])
+
+    dps = {DPS_MAP["ERROR_CODE"]: encode_message(ErrorCode())}
+    new_state, changes = update_state(state, dps)
+
+    assert new_state.battery_restored is False
+    assert new_state.obstacle_reminders == []
+    # Written on EVERY frame, not only when set -- the coordinator relies on
+    # that to tell a genuine swap from a carried-forward flag.
+    assert changes["battery_restored"] is False
+    assert changes["obstacle_reminders"] == []
+
+
+def test_obstacle_type_name_falls_back_to_the_number():
+    """An obstacle type our compiled proto does not know names itself numerically.
+
+    The device can be ahead of the proto we ship; a bare number is still a
+    usable label and must not raise.
+    """
+    assert _obstacle_type_name(7) == "7"
+
+
+def test_every_obstacle_type_in_the_proto_has_a_name():
+    """Every value of the proto enum resolves to a word, not a number.
+
+    RATCHET, not a bite: ErrorCode.ObstacleReminder.Type currently holds only
+    POOP = 0, so this cannot fail today -- it fails the day a new obstacle type
+    is added to error_code.proto and nothing else is updated, which is exactly
+    what deriving the name from the enum is for.
+    """
+    for value in ErrorCode.ObstacleReminder.Type.values():
+        assert _obstacle_type_name(value) != str(value)

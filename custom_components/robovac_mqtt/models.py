@@ -51,11 +51,17 @@ class VacuumState:
     # Error state
     error_code: int = 0          # primary code (a real error[] wins over a warn[])
     error_message: str = ""
-    # Full ErrorCode proto capture — the novel parser previously read only warn[0]
-    # and NEVER read error[]. Lists so simultaneous codes are preserved.
+    # Full ErrorCode proto capture. Lists, because the robot can report several
+    # codes at once; error[] holds faults and warn[] advisories, and error_code
+    # above is whichever of them is primary.
     error_codes: list[int] = field(default_factory=list)   # proto error[]
     warn_codes: list[int] = field(default_factory=list)    # proto warn[]
-    last_error_time: int = 0                                # proto last_time (ns, monotonic)
+    # proto last_time. Confirmed by error_code.proto's own field comment:
+    # nanoseconds of CLOCK_MONOTONIC since the robot booted -- NOT a wall clock,
+    # so it resets on reboot and is not comparable across them or between robots.
+    # The error_log carries a real timestamp ("time") for ordering; this is kept
+    # as the device's own reading.
+    last_error_time: int = 0
     # proto new_code — codes the device flags as FRESHLY reported this update; the
     # coordinator uses these to append to the persisted error_log.
     new_error_codes: list[int] = field(default_factory=list)
