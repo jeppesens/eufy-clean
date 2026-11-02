@@ -71,6 +71,7 @@ def _coord(room_overrides=None, p2p_rooms=None):
     c.data = MagicMock()
     c.data.rooms = p2p_rooms or []
     c.data.map_id = 3
+    c.resolve_map_id.return_value = 3
     c.build_device_command = MagicMock(return_value={"152": "encoded"})
     c.async_send_command = AsyncMock()
     c.device_info = MagicMock()

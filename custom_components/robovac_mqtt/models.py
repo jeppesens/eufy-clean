@@ -51,11 +51,8 @@ class VacuumState:
     # Error state
     error_code: int = 0          # primary code (a real error[] wins over a warn[])
     error_message: str = ""
-    # Full ErrorCode proto capture. Lists, because the robot can report several
-    # codes at once; error[] holds faults and warn[] advisories, and error_code
-    # above is whichever of them is primary.
-    error_codes: list[int] = field(default_factory=list)   # proto error[]
-    warn_codes: list[int] = field(default_factory=list)    # proto warn[]
+    error_codes: list[int] = field(default_factory=list)
+    warn_codes: list[int] = field(default_factory=list)
     # proto last_time. Confirmed by error_code.proto's own field comment:
     # nanoseconds of CLOCK_MONOTONIC since the robot booted -- NOT a wall clock,
     # so it resets on reboot and is not comparable across them or between robots.
@@ -95,6 +92,7 @@ class VacuumState:
     status_code: int = 0  # Raw status value if needed
     dock_status: str | None = None  # Text description (debounced in coordinator)
     station_clean_water: int = 0  # Percentage?
+    station_dirty_water: str = "Unknown"  # Station dirty-water tank level (WaterLevel name)
     station_waste_water: int = 0
     dock_auto_cfg: dict[str, Any] = field(default_factory=dict)
     trigger_source: str = "unknown"

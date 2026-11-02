@@ -21,6 +21,7 @@ from ..const import (
     FAN_SUCTION_NAMES,
     KNOWN_UNPROCESSED_DPS,
     MOP_WATER_LEVEL_NAMES,
+    STATION_WATER_LEVEL_NAMES,
     TRIGGER_SOURCE_NAMES,
     WORK_MODE_NAMES,
     CleaningMode,
@@ -261,6 +262,18 @@ def _process_station_status(
             changes["station_clean_water"] = station.clean_water.value
             track_received_field(state, changes, "station_clean_water")
 
+        # dirty_level is a proto3 enum without presence, so a dock that never
+        # sends it would read as EMPTY. Report it only once it has been on the
+        # wire; after that, a frame without it is read as EMPTY.
+        dirty_level_sent = any(
+            fd.name == "dirty_level" for fd, _ in station.ListFields()
+        )
+        if dirty_level_sent or "station_dirty_water" in state.received_fields:
+            changes["station_dirty_water"] = STATION_WATER_LEVEL_NAMES.get(
+                station.dirty_level, "Unknown"
+            )
+            track_received_field(state, changes, "station_dirty_water")
+
         # Auto Empty Config
         if station.HasField("auto_cfg_status"):
             changes["dock_auto_cfg"] = MessageToDict(
@@ -488,28 +501,30 @@ def _process_other_dps(
             elif key == DPS_MAP["ERROR_CODE"]:
                 error_proto = decode(ErrorCode, value)
                 _LOGGER.debug("Decoded ErrorCode: %s", error_proto)
-                # Every ErrorCode frame is a FULL SNAPSHOT: error[] holds faults
-                # and warn[] advisories, so a fault wins for the primary code, and
-                # each field below is written on every frame (empty when absent)
-                # rather than only when present -- the replace() in update_state
-                # would otherwise carry a stale value forward indefinitely.
-                errors = list(error_proto.error)
-                warns = list(error_proto.warn)
+                # Codes arrive in two lists; prefer `error` so a standing
+                # warning can't mask a fault, and expose both in full.
+                errors = [int(c) for c in error_proto.error]
+                warns = [int(c) for c in error_proto.warn]
                 changes["error_codes"] = errors
                 changes["warn_codes"] = warns
+                if errors or warns:
+                    code = errors[0] if errors else warns[0]
+                    changes["error_code"] = code
+                    changes["error_message"] = EUFY_CLEAN_ERROR_CODES.get(
+                        code, "Unknown Error"
+                    )
+                else:
+                    changes["error_code"] = 0
+                    changes["error_message"] = ""
+                # Everything above and below is written on EVERY frame, empty or
+                # not: an ErrorCode message is a full snapshot, and the
+                # dataclasses.replace() in update_state would otherwise carry a
+                # cleared fault forward for the life of the config entry.
                 changes["last_error_time"] = int(error_proto.last_time)
                 # new_code: what the device flags as freshly reported this update
                 # (drives the coordinator's persisted error_log).
-                changes["new_error_codes"] = list(error_proto.new_code.error)
-                changes["new_warn_codes"] = list(error_proto.new_code.warn)
-                # Primary code + message: a real error[] takes priority over a warn[].
-                code = errors[0] if errors else (warns[0] if warns else 0)
-                changes["error_code"] = code
-                changes["error_message"] = (
-                    EUFY_CLEAN_ERROR_CODES.get(code, f"Unknown Error ({code})")
-                    if code
-                    else ""
-                )
+                changes["new_error_codes"] = [int(c) for c in error_proto.new_code.error]
+                changes["new_warn_codes"] = [int(c) for c in error_proto.new_code.warn]
                 changes["battery_restored"] = bool(error_proto.battery.restored)
                 changes["obstacle_reminders"] = [
                     {

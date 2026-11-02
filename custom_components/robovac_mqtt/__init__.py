@@ -3,7 +3,9 @@ from __future__ import annotations
 import logging
 import random
 import string
+from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import aiohttp
 from homeassistant.components.frontend import add_extra_js_url
@@ -22,6 +24,8 @@ from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
+    CONF_MAP_ID,
+    CONF_MAP_IDS,
     CONF_ROOM_NAMES,
     DOMAIN,
 )
@@ -95,6 +99,26 @@ async def _register_card_when_frontend_ready(
     await _async_register_frontend_card(hass)
 
 
+def _int_keyed(
+    raw: dict, convert: Callable[[Any], Any], device_id: str, what: str
+) -> dict[int, Any]:
+    """Coerce a stored override dict back to int keys.
+
+    JSON storage stringifies int keys; coerce them back for correct sort order
+    and so downstream protobuf builders get the right type. Entries that don't
+    convert are logged and dropped.
+    """
+    coerced: dict[int, Any] = {}
+    for raw_key, raw_value in raw.items():
+        try:
+            coerced[int(raw_key)] = convert(raw_value)
+        except (TypeError, ValueError):
+            _LOGGER.warning(
+                "Device %s: ignoring non-integer %s %r", device_id, what, raw_key
+            )
+    return coerced
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
     # NOTE: the options update listener is registered later, AFTER the legacy
@@ -166,24 +190,36 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "Device %s promoted to local Tuya (host=%s)", device_id, host
                 )
             # Room ID → name overrides apply to any transport.
-            # JSON storage stringifies int keys, so coerce back to int for
-            # correct sort order and so downstream protobuf builders get the
-            # right type.
             if room_overrides := override.get(CONF_ROOM_NAMES):
-                coerced: dict[int, str] = {}
-                for raw_id, name in room_overrides.items():
-                    try:
-                        coerced[int(raw_id)] = str(name)
-                    except (TypeError, ValueError):
-                        _LOGGER.warning(
-                            "Device %s: ignoring non-integer room id %r",
-                            device_id, raw_id,
-                        )
+                coerced = _int_keyed(room_overrides, str, device_id, "room id")
                 if coerced:
                     extras["room_name_overrides"] = coerced
                     _LOGGER.info(
                         "Device %s using %d manual room name override(s)",
                         device_id, len(coerced),
+                    )
+            # Manual map-id override for room/zone clean commands (devices
+            # that report their cloud map id, which the firmware rejects).
+            if (map_override := override.get(CONF_MAP_ID)) is not None:
+                try:
+                    extras["map_id_override"] = int(map_override)
+                    _LOGGER.info(
+                        "Device %s using manual map id override %d",
+                        device_id, extras["map_id_override"],
+                    )
+                except (TypeError, ValueError):
+                    _LOGGER.warning(
+                        "Device %s: ignoring non-integer map id %r",
+                        device_id, map_override,
+                    )
+            # Per-map variant, keyed by the map id the device reports.
+            if map_overrides := override.get(CONF_MAP_IDS):
+                per_map = _int_keyed(map_overrides, int, device_id, "map id")
+                if per_map:
+                    extras["map_id_overrides"] = per_map
+                    _LOGGER.info(
+                        "Device %s using %d per-map map id override(s)",
+                        device_id, len(per_map),
                     )
             if extras:
                 device_info = {**device_info, **extras}

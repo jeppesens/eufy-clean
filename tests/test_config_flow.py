@@ -9,10 +9,16 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.robovac_mqtt.config_flow import (
+    _format_map_ids_text,
+    _parse_map_ids_text,
+)
 from custom_components.robovac_mqtt.const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
     CONF_LOCAL_VERSION,
+    CONF_MAP_ID,
+    CONF_MAP_IDS,
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROOM_NAMES,
@@ -374,3 +380,151 @@ async def test_reconfigure_username_mismatch(hass: HomeAssistant):
 
     assert result2["type"] == data_entry_flow.FlowResultType.FORM
     assert result2["errors"][CONF_USERNAME] == "username_mismatch"
+
+
+async def test_options_device_map_id_override_saved(hass: HomeAssistant):
+    """Map-id overrides entered in the device step are persisted as ints
+    alongside the other per-device overrides: a bare line for all maps and
+    'reported: local' lines per map."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    _register_coordinators(
+        hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
+    )
+
+    result = await _open_device_step(hass, entry, "loaded_dev")
+
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: "0: Kitchen",
+            CONF_MAP_ID: "2\n2154: 1",
+        },
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    saved = result2["data"][CONF_LOCAL_DEVICES]["loaded_dev"]
+    assert saved[CONF_MAP_ID] == 2
+    assert saved[CONF_MAP_IDS] == {2154: 1}
+    # Room id 0 parses and persists too.
+    assert saved[CONF_ROOM_NAMES] == {0: "Kitchen"}
+
+
+async def test_options_device_invalid_map_id_shows_error(hass: HomeAssistant):
+    """A non-numeric map id surfaces an ``invalid_map_id`` error on the field
+    and nothing is persisted."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    _register_coordinators(
+        hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
+    )
+
+    result = await _open_device_step(hass, entry, "loaded_dev")
+
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: "",
+            CONF_MAP_ID: "abc",
+        },
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.FORM
+    assert result2["errors"][CONF_MAP_ID] == "invalid_map_id"
+    assert entry.options.get(CONF_LOCAL_DEVICES, {}) == {}
+
+
+async def test_options_device_cleared_override_is_removed(hass: HomeAssistant):
+    """Emptying an optional field must drop its stored override. The frontend
+    leaves cleared optional fields out of the submission, so the form must not
+    re-insert the stored value (it pre-fills with suggested_value, not default)."""
+    stored = {
+        "loaded_dev": {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: {1: "Kitchen"},
+            CONF_MAP_ID: 1,
+            CONF_MAP_IDS: {"2154": 1},
+        }
+    }
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={CONF_LOCAL_DEVICES: stored},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    _register_coordinators(
+        hass, entry, [_fake_coordinator("loaded_dev", local_key="abc")]
+    )
+
+    result = await _open_device_step(hass, entry, "loaded_dev")
+
+    # Map id field cleared (omitted by the frontend); the rest kept.
+    result2 = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            CONF_LOCAL_HOST: "192.168.1.50",
+            CONF_LOCAL_VERSION: 3.3,
+            CONF_ROOM_NAMES: "1: Kitchen",
+        },
+    )
+    assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    saved = result2["data"][CONF_LOCAL_DEVICES]["loaded_dev"]
+    assert CONF_MAP_ID not in saved
+    assert CONF_MAP_IDS not in saved
+    assert saved[CONF_ROOM_NAMES] == {1: "Kitchen"}
+    assert saved[CONF_LOCAL_HOST] == "192.168.1.50"
+
+    # Host and rooms cleared too: nothing left, so the device entry is dropped.
+    result = await _open_device_step(hass, entry, "loaded_dev")
+    result3 = await hass.config_entries.options.async_configure(
+        result["flow_id"], {CONF_LOCAL_VERSION: 3.3}
+    )
+    assert result3["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
+    assert "loaded_dev" not in result3["data"][CONF_LOCAL_DEVICES]
+
+
+def test_parse_map_ids_all_maps_and_per_map():
+    """A bare line applies to all maps, 'reported: local' lines per map; blank
+    lines and comments are skipped and the last duplicate wins."""
+    text = "# local ids\n2\n\n 2154 : 1 \n3001: 3\n3001: 2"
+    assert _parse_map_ids_text(text) == (2, {2154: 1, 3001: 2})
+
+
+def test_parse_map_ids_empty_means_no_override():
+    assert _parse_map_ids_text("  \n# nothing\n") == (None, {})
+
+
+@pytest.mark.parametrize(
+    "text", ["abc", "0", "-1", "1.5", "2154:", "2154: x", "2154: 0", ": 1"]
+)
+def test_parse_map_ids_rejects_malformed_line(text: str):
+    """Unlike room names, a malformed map id is an error rather than ignored,
+    since a wrong map id makes the firmware reject room cleans."""
+    with pytest.raises(ValueError):
+        _parse_map_ids_text(text)
+
+
+def test_format_map_ids_round_trips_stored_values():
+    """Stored overrides render back for the form: the all-maps id first, then
+    per-map lines sorted numerically (JSON storage stringifies the keys)."""
+    text = _format_map_ids_text(2, {"3001": 2, "999": 1})
+    assert text == "2\n999: 1\n3001: 2"
+    assert _parse_map_ids_text(text) == (2, {999: 1, 3001: 2})
+    assert _format_map_ids_text(None, {}) == ""

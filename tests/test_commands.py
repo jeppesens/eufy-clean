@@ -1,17 +1,22 @@
 """Unit tests for api/commands.py: invalid command edge cases."""
 
 import base64
+import logging
+
+import pytest
 
 from custom_components.robovac_mqtt.api.commands import (
     _build_off_peak_sub_bytes,
     build_command,
     build_map_load_command,
+    build_room_clean_command,
     build_set_boost_iq_command,
     build_set_child_lock_command,
     build_set_cleaning_intensity_command,
     build_set_cleaning_mode_command,
     build_set_cleaning_pattern_command,
     build_set_off_peak_charging_command,
+    build_set_room_custom_command,
     build_set_voice_command,
     build_set_volume_command,
     build_set_volume_novel_command,
@@ -25,11 +30,17 @@ from custom_components.robovac_mqtt.const import (
     SCALAR_DPS,
 )
 from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
+from custom_components.robovac_mqtt.proto.cloud.map_edit_pb2 import MapEditRequest
 from custom_components.robovac_mqtt.proto.cloud.multi_maps_pb2 import (
     MultiMapsManageRequest,
 )
 from custom_components.robovac_mqtt.proto.cloud.unisetting_pb2 import UnisettingRequest
-from custom_components.robovac_mqtt.utils import decode, decode_varint, encode_varint
+from custom_components.robovac_mqtt.utils import (
+    decode,
+    decode_varint,
+    encode,
+    encode_varint,
+)
 
 
 def _build_fake_response_b64(
@@ -70,6 +81,45 @@ def test_set_cleaning_intensity_invalid():
 def test_build_command_unknown_returns_empty():
     """Test build_command with unknown command returns empty dict."""
     assert not build_command("nonexistent_command")
+
+
+def test_start_auto_default_payload():
+    """Default auto clean preserves the original single-pass payload."""
+    result = build_command("start_auto")
+    expected = encode(
+        ModeCtrlRequest,
+        {
+            "method": EUFY_CLEAN_CONTROL.START_AUTO_CLEAN,
+            "auto_clean": {"clean_times": 1, "force_mapping": False},
+        },
+    )
+    assert result == {DPS_MAP["PLAY_PAUSE"]: expected}
+    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+    assert decoded.method == EUFY_CLEAN_CONTROL.START_AUTO_CLEAN
+    assert decoded.auto_clean.clean_times == 1
+
+
+@pytest.mark.parametrize(("clean_times", "expected"), [(2, 2), ("2", 2)])
+def test_start_auto_clean_times(clean_times, expected, caplog):
+    """Auto clean accepts an in-range repeat count and coerces strings."""
+    with caplog.at_level(logging.WARNING):
+        result = build_command("start_auto", clean_times=clean_times)
+    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+    assert decoded.method == EUFY_CLEAN_CONTROL.START_AUTO_CLEAN
+    assert decoded.WhichOneof("Param") == "auto_clean"
+    assert decoded.auto_clean.clean_times == expected
+    assert decoded.auto_clean.force_mapping is False
+    assert "out of range" not in caplog.text
+
+
+@pytest.mark.parametrize(("clean_times", "expected"), [(0, 1), (-1, 1), (5, 2)])
+def test_start_auto_clean_times_clamped(clean_times, expected, caplog):
+    """Out-of-range repeat counts are clamped to the app's x1/x2 with a warning."""
+    with caplog.at_level(logging.WARNING):
+        result = build_command("start_auto", clean_times=clean_times)
+    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+    assert decoded.auto_clean.clean_times == expected
+    assert f"clean_times {clean_times} out of range" in caplog.text
 
 
 def test_set_child_lock_command():
@@ -330,3 +380,26 @@ def test_off_peak_command_dispatch():
         end_minute=30,
     )
     assert DPS_MAP["UNSETTING"] in result
+
+
+def test_build_room_clean_command_keeps_room_zero():
+    """Room id 0 is a real id on some maps (T2080A after room merges) and must
+    reach SelectRoomsClean alongside the requested map id."""
+    result = build_room_clean_command([0, 5], map_id=1)
+    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+    assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN
+    src = decoded.select_rooms_clean
+    assert src.map_id == 1
+    assert src.clean_times == 1
+    assert [(r.id, r.order) for r in src.rooms] == [(0, 1), (5, 2)]
+
+
+def test_set_room_custom_keeps_room_zero():
+    """Room id 0 is a real id on some maps (T2080A after room merges) and must
+    not be dropped from the SET_ROOMS_CUSTOM payload by a falsy check."""
+    result = build_set_room_custom_command([0, 2], map_id=1, fan_speed="Turbo")
+    assert DPS_MAP["MAP_EDIT_REQUEST"] in result
+    decoded = decode(MapEditRequest, result[DPS_MAP["MAP_EDIT_REQUEST"]])
+    assert decoded.method == MapEditRequest.SET_ROOMS_CUSTOM
+    assert decoded.map_id == 1
+    assert [r.id for r in decoded.rooms_custom.rooms_parm.rooms] == [0, 2]

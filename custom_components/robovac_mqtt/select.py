@@ -432,8 +432,8 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             return
 
         room_id = room["id"]
-        # Use discovered map_id if available, otherwise fallback to 1
-        map_id = self.coordinator.data.map_id or 1
+        # Manual override wins, then the discovered map_id, then 1.
+        map_id = self.coordinator.resolve_map_id()
         _LOGGER.info(
             "Triggering cleaning for room '%s' (ID: %s, Map ID: %s)",
             option,

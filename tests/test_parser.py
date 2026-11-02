@@ -17,7 +17,9 @@ from custom_components.robovac_mqtt.proto.cloud.app_device_info_pb2 import Devic
 from custom_components.robovac_mqtt.proto.cloud.clean_statistics_pb2 import (
     CleanStatistics,
 )
+from custom_components.robovac_mqtt.proto.cloud.common_pb2 import Numerical
 from custom_components.robovac_mqtt.proto.cloud.language_pb2 import LanguageResponse
+from custom_components.robovac_mqtt.proto.cloud.station_pb2 import StationResponse
 from custom_components.robovac_mqtt.utils import encode_message
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -709,6 +711,56 @@ def test_novel_device_info_dock_firmware():
     new_state, _ = update_state(state, {DPS_MAP["MAP_MANAGE"]: encoded})
     assert new_state.dock_firmware_version == "2.3.7"
     assert "dock_firmware_version" in new_state.received_fields
+
+
+def test_station_status_dirty_water_level():
+    """STATION_STATUS maps StationResponse.dirty_level to station_dirty_water."""
+    station = StationResponse(
+        clean_water=Numerical(value=52),
+        dirty_level=4,  # HIGH (>75%): dirty tank needs emptying
+    )
+    encoded = encode_message(station)
+    state = VacuumState()
+    new_state, _ = update_state(state, {DPS_MAP["STATION_STATUS"]: encoded})
+    assert new_state.station_dirty_water == "High"
+    assert "station_dirty_water" in new_state.received_fields
+    # Existing clean-water parsing is unaffected
+    assert new_state.station_clean_water == 52
+    assert "station_clean_water" in new_state.received_fields
+
+
+def test_station_status_dirty_water_level_very_low():
+    """dirty_level=VERY_LOW maps to 'Very low', also without clean_water."""
+    station = StationResponse(dirty_level=1)  # VERY_LOW (<25%)
+    encoded = encode_message(station)
+    state = VacuumState()
+    new_state, _ = update_state(state, {DPS_MAP["STATION_STATUS"]: encoded})
+    assert new_state.station_dirty_water == "Very low"
+    assert "station_dirty_water" in new_state.received_fields
+    assert "station_clean_water" not in new_state.received_fields
+
+
+def test_station_status_dirty_water_level_absent():
+    """STATION_STATUS without dirty_level does not create station_dirty_water."""
+    station = StationResponse(clean_water=Numerical(value=58))
+    encoded = encode_message(station)
+    state = VacuumState()
+    new_state, changes = update_state(state, {DPS_MAP["STATION_STATUS"]: encoded})
+    assert "station_dirty_water" not in changes
+    assert "station_dirty_water" not in new_state.received_fields
+
+
+def test_station_status_dirty_water_level_absent_after_seen():
+    """Once dirty_level has been seen, a frame without it reads as 'Empty'."""
+    seen = encode_message(StationResponse(dirty_level=4))  # HIGH
+    state, _ = update_state(VacuumState(), {DPS_MAP["STATION_STATUS"]: seen})
+    assert state.station_dirty_water == "High"
+
+    # EMPTY is the proto3 default, so an emptied tank drops field 4
+    emptied = encode_message(StationResponse(clean_water=Numerical(value=58)))
+    new_state, _ = update_state(state, {DPS_MAP["STATION_STATUS"]: emptied})
+    assert new_state.station_dirty_water == "Empty"
+    assert "station_dirty_water" in new_state.received_fields
 
 
 def test_cleaning_stats_user_total():

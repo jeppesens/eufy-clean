@@ -4,6 +4,7 @@ from enum import Enum
 from typing import Final
 
 from .proto.cloud.clean_param_pb2 import CleanExtent, CleanType, MopMode
+from .proto.cloud.station_pb2 import StationResponse
 
 DOMAIN: Final = "robovac_mqtt"
 VACS: Final = "vacs"
@@ -34,6 +35,15 @@ CONF_LOCAL_DEVICES: Final = "local_devices"
 CONF_LOCAL_HOST: Final = "host"
 CONF_LOCAL_VERSION: Final = "version"
 CONF_ROOM_NAMES: Final = "rooms"
+# Manual override for the map id used in room/zone clean commands. Some
+# devices (T2080A / S1 Pro) report their *cloud* map id (e.g. 2154) on the
+# UniversalData DPS while the firmware only accepts the *local* map id
+# (e.g. 1) in SelectRoomsClean / SET_ROOMS_CUSTOM — commands referencing the
+# cloud id are ACKed but rejected (ModeCtrlResponse result=FAILED).
+CONF_MAP_ID: Final = "map_id"
+# Per-map variant of CONF_MAP_ID: maps the map id the device reports to the
+# local map id to send, for robots with more than one map or a re-created map.
+CONF_MAP_IDS: Final = "map_ids"
 
 # Eufy API URLs
 EUFY_API_BASE_URL: Final = "https://api.eufylife.com"
@@ -196,6 +206,15 @@ MOP_WATER_LEVEL_NAMES = {
     MopWaterLevel.HIGH: "High",
 }
 
+# Station tank levels (DPS 173 StationResponse.WaterLevel)
+STATION_WATER_LEVEL_NAMES = {
+    StationResponse.EMPTY: "Empty",
+    StationResponse.VERY_LOW: "Very low",
+    StationResponse.LOW: "Low",
+    StationResponse.MEDIUM: "Medium",
+    StationResponse.HIGH: "High",
+}
+
 
 # Additional DPS 154 mappings for enhanced functionality
 CLEANING_INTENSITY_NAMES = {
@@ -294,6 +313,12 @@ class EUFY_CLEAN_CONTROL(int, Enum):
     START_SCHEDULE_CRUISE = 23
     START_SCENE_CLEAN = 24
     START_MAPPING_THEN_CLEAN = 25
+
+
+# Whole-house passes (AutoClean.clean_times) for START_AUTO_CLEAN. The Eufy app
+# offers x1 and x2; start_auto clamps clean_times to this range.
+AUTO_CLEAN_TIMES_MIN = 1
+AUTO_CLEAN_TIMES_MAX = 2
 
 
 EUFY_CLEAN_ERROR_CODES = {
@@ -699,6 +724,19 @@ ACCESSORY_MAX_LIFE = {
     "sensor_usage": 60,  # Maintain/clean interval
     "scrape_usage": 30,  # Cleaning Tray maintain/clean interval
     "mop_usage": 180,
+}
+
+# Per-model overrides of ACCESSORY_MAX_LIFE for novel devices whose app lists
+# different accessories/intervals. Only the accessories listed get a sensor.
+MODEL_ACCESSORY_MAX_LIFE = {
+    # L60 SES: values from the app's Accessories screen. No mop, tray or
+    # sensor-cleaning interval; the station's dust bag is tracked instead.
+    "T2277": {
+        "filter_usage": 200,
+        "main_brush_usage": 360,
+        "side_brush_usage": 250,
+        "dustbag_usage": 1440,
+    },
 }
 
 # Dock statuses that indicate active dock operations

@@ -102,7 +102,8 @@ class TuyaCloudClient:
         3. Authenticate and get session ID
         """
         uid = f"eh-{eufy_user_id}"
-        _LOGGER.debug("Tuya login starting for region %s, uid=%s", self.region, uid)
+        # The uid alone is enough to log in (passwd is derived from it); never log it.
+        _LOGGER.debug("Tuya login starting for region %s", self.region)
 
         # Step 1: Get token and RSA public key
         token_result = await self.request(
@@ -196,11 +197,11 @@ class TuyaCloudClient:
         # Sign the request
         params["sign"] = self._sign(params)
 
+        # Query parameters and signing inputs contain credentials; never log them.
         session = self._websession
         async with session.get(
             self.endpoint, params=params, timeout=_REQUEST_TIMEOUT
         ) as resp:
-            _LOGGER.debug("Tuya request actual URL: %s", resp.url)
             body = await resp.json(content_type=None)
 
         if body.get("success") is False:
@@ -275,7 +276,6 @@ class TuyaCloudClient:
                 parts.append(f"{key}={value}")
 
         sign_str = "||".join(parts)
-        _LOGGER.debug("Tuya sign string: %s", sign_str)
         return _hmac_sign(self._hmac_key, sign_str)
 
 

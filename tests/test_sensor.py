@@ -11,6 +11,7 @@ from homeassistant.const import PERCENTAGE, EntityCategory
 
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.sensor import (
+    CurrentRoomSensorEntity,
     ErrorMessageSensor,
     RoboVacSensor,
     _active_rooms_available,
@@ -106,6 +107,31 @@ def test_water_level_sensor(mock_coordinator):
     mock_coordinator.data.station_clean_water = 0
     assert entity.available is True
     assert entity.native_value == 0
+
+
+def test_dirty_water_level_sensor(mock_coordinator):
+    """Test dirty water level sensor with availability based on received fields."""
+    entity = RoboVacSensor(
+        mock_coordinator,
+        "dirty_water_level",
+        "Dirty Water Level",
+        lambda s: s.station_dirty_water,
+        availability_fn=lambda s: "station_dirty_water" in s.received_fields,
+    )
+
+    # Unavailable until the station reports a dirty-water level
+    assert "station_dirty_water" not in mock_coordinator.data.received_fields
+    assert entity.available is False
+
+    # Simulate receiving dirty water level data from the station
+    mock_coordinator.data.received_fields.add("station_dirty_water")
+    mock_coordinator.data.station_dirty_water = "High"
+
+    assert entity.available is True
+    assert entity.native_value == "High"
+
+    mock_coordinator.data.station_dirty_water = "Empty"
+    assert entity.native_value == "Empty"
 
 
 def test_error_message_sensor(mock_coordinator):
@@ -215,7 +241,8 @@ async def test_novel_coordinator_creates_all_sensors():
     # Full novel sensor set (universals + novel-only + device-info + accessories).
     # Exact count guarded against accidental duplicates from the merge.
     assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
-    assert len(added_entities) == 25
+    assert len(added_entities) == 27
+    assert "novel_dev_current_room" in entity_ids
 
     # Universal sensors
     for suffix in ["battery", "error_message", "task_status", "work_mode"]:
@@ -226,6 +253,7 @@ async def test_novel_coordinator_creates_all_sensors():
         "cleaning_time",
         "cleaning_area",
         "water_level",
+        "dirty_water_level",
         "dock_status",
         "active_map",
     ]:
@@ -269,10 +297,10 @@ async def test_novel_cloud_or_local_skips_p2p_only_sensors():
         await async_setup_entry(hass, config_entry, added_entities.extend)
         entity_ids = [e.unique_id for e in added_entities]
 
-        # Full novel set minus the P2P-only active_map sensor (skipped on
-        # Tuya transports). One fewer than the MQTT novel case.
+        # Full novel set minus the P2P-only current_room and active_map
+        # sensors (skipped on Tuya transports). Two fewer than the MQTT case.
         assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
-        assert len(added_entities) == 24, (
+        assert len(added_entities) == 25, (
             f"transport={transport}: got {len(added_entities)} entities"
         )
         assert f"novel_{transport}_active_map" not in entity_ids
@@ -281,9 +309,23 @@ async def test_novel_cloud_or_local_skips_p2p_only_sensors():
             "cleaning_time",
             "cleaning_area",
             "water_level",
+            "dirty_water_level",
             "dock_status",
         ]:
             assert f"novel_{transport}_{suffix}" in entity_ids
+
+
+def test_current_room_sensor_values_and_unknown(mock_coordinator):
+    mock_coordinator.current_room.return_value = (7, "Bathroom")
+    sensor = CurrentRoomSensorEntity(mock_coordinator)
+    assert sensor.unique_id == "test_id_current_room"
+    assert sensor.native_value == "Bathroom"
+    assert sensor.extra_state_attributes == {"room_id": 7, "room_name": "Bathroom"}
+    mock_coordinator.current_room.return_value = (7, None)
+    assert sensor.native_value == "Room 7"
+    mock_coordinator.current_room.return_value = (0, None)
+    assert sensor.native_value is None
+    assert sensor.extra_state_attributes == {"room_id": None, "room_name": None}
 
 
 def test_error_sensor_keeps_bulky_attributes_out_of_the_recorder():
