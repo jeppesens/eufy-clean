@@ -149,6 +149,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._map_data_chan_id: int | None = None
         self._map_data: MapData | None = None
         self._robot_pixel: tuple[int, int] | None = None
+        self._current_room: tuple[int, str | None] = (0, None)
         self._robot_trail: list[tuple[int, int]] = []
         self._dock_pixel: tuple[int, int] | None = None
         self._dock_arrival_time: float | None = None
@@ -482,10 +483,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                                 self._robot_trail.append(robot_px)
                     if robot_px != self._robot_pixel:
                         self._robot_pixel = robot_px
+                        self._update_current_room()
                         now = time.monotonic()
                         if now - self._last_robot_render >= 2.0 and self._map_data is not None:
                             self._last_robot_render = now
                             self._rerender_map()
+                else:
+                    self._robot_pixel = None
+                    self._update_current_room()
             return
 
         # Large channels: try as map data.
@@ -602,6 +607,34 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return 0, None
         return rid, md.room_names.get(rid)
 
+    def current_room(self) -> tuple[int, str | None]:
+        """Resolve the physical room from the live map pose, not DPS coordinates."""
+        md = self._map_data
+        if md is None or self._robot_pixel is None or md.width <= 0 or md.height <= 0:
+            return 0, None
+        px, py = self._robot_pixel
+        if not (0 <= px < md.width and 0 <= py < md.height):
+            return 0, None
+        nx = px / md.width
+        ny = (md.height - 1 - py) / md.height
+        room_id, room_name = self.room_id_at_normalized(nx, ny)
+        if room_id and not room_name:
+            room_name = next(
+                (room.get("name") for room in self.data.rooms if room.get("id") == room_id),
+                None,
+            )
+        return room_id, room_name
+
+    @callback
+    def _update_current_room(self) -> None:
+        """Notify only room subscribers when the resolved ID or name changes."""
+        room = self.current_room()
+        if room != self._current_room:
+            self._current_room = room
+            async_dispatcher_send(
+                self.hass, f"{DOMAIN}_{self.device_id}_current_room_updated"
+            )
+
     def _get_robot_status(self) -> str | None:
         """Return a status badge string for the current dock/activity state."""
         dock = self.data.dock_status
@@ -624,6 +657,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     def _rerender_map(self) -> None:
         """Schedule an async map re-render, cancelling any in-flight render."""
+        self._update_current_room()
         if self._map_data is None:
             return
         if self._render_task and not self._render_task.done():

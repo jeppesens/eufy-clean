@@ -51,6 +51,8 @@ class VacuumState:
     # Error state
     error_code: int = 0
     error_message: str = ""
+    error_codes: list[int] = field(default_factory=list)
+    warn_codes: list[int] = field(default_factory=list)
     charging: bool = False
 
     # Cleaning Stats
