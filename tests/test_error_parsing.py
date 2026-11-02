@@ -1,3 +1,5 @@
+import pytest
+
 from custom_components.robovac_mqtt.api.parser import update_state
 from custom_components.robovac_mqtt.const import DPS_MAP
 from custom_components.robovac_mqtt.errors import (
@@ -137,3 +139,23 @@ def test_a_paused_subtask_does_not_claim_recovery():
     paused.go_home.state = 1
     updated, _ = update_state(state, {DPS_MAP["WORK_STATUS"]: encode_message(paused)})
     assert updated.error_code == 19924741
+
+
+@pytest.mark.parametrize("code", [19988737, 19988739])  # EB11 clean water low, EB13 dirty tank full
+def test_a_healthy_work_status_does_not_clear_station_codes(code):
+    """The robot stays healthy while a base-station advisory is up, so it must not clear it."""
+    state, _ = update_state(VacuumState(device_model="T2080A", activity="docked"), _report(code))
+    healthy = WorkStatus(state=9)
+    healthy.go_wash.mode = 1
+    after, _ = update_state(state, {DPS_MAP["WORK_STATUS"]: encode_message(healthy)})
+    assert after.error_code == code
+
+
+def test_a_healthy_work_status_does_not_clear_a_warning():
+    error = ErrorCode()
+    error.warn.append(19924741)
+    state, _ = update_state(VacuumState(device_model="T2080A", activity="docked"), {DPS_MAP["ERROR_CODE"]: encode_message(error)})
+    healthy = WorkStatus(state=9)
+    healthy.go_wash.mode = 1
+    after, _ = update_state(state, {DPS_MAP["WORK_STATUS"]: encode_message(healthy)})
+    assert after.error_code == 19924741

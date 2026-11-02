@@ -35,7 +35,7 @@ from ..const import (
     MopWaterLevel,
     TriggerSource,
 )
-from ..errors import s1_error_message
+from ..errors import is_station_code, s1_error_message
 from ..models import AccessoryState, VacuumState, track_received_field
 from ..proto.cloud.app_device_info_pb2 import DeviceInfo
 from ..proto.cloud.clean_param_pb2 import CleanParamRequest, CleanParamResponse
@@ -267,7 +267,14 @@ def update_state(
             new_fault = any(decode(ErrorCode, dps[DPS_MAP["ERROR_CODE"]]).new_code.error)
         except Exception:  # The main parser logs malformed reports; retain the fault.
             new_fault = True
-    if healthy and not new_fault and changes.get("error_code", state.error_code):
+    # Station (EBxx) and advisory (`warn`) codes are not movement faults and the
+    # WorkStatus stays healthy while they are up, so only a movement fault clears.
+    current = changes.get("error_code", state.error_code)
+    advisory = bool(current) and (
+        is_station_code(current, state.device_model)
+        or current in changes.get("warn_codes", state.warn_codes)
+    )
+    if healthy and not new_fault and current and not advisory:
         if state.error_code and "last_error_code" not in changes:
             changes["last_error_code"] = state.error_code
             changes["last_error_message"] = state.error_message

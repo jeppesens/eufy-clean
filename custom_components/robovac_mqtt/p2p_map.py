@@ -80,6 +80,7 @@ class P2PMapFeed:
         # feed and the camera take turns: whoever opens a session holds this.
         self.session_slot = asyncio.Lock()
         self._yield_requested = asyncio.Event()
+        self._session_connected = asyncio.Event()
         self.connected = False
         self.last_object_at: float | None = None
         self.sessions = 0
@@ -242,6 +243,7 @@ class P2PMapFeed:
             return False
         rtc = await self.get_rtc()
         self.decoder.start_session()
+        self._session_connected.clear()
         self._session = P2PSession(
             host=self._host,
             local_key=self._local_key,
@@ -253,7 +255,10 @@ class P2PMapFeed:
         )
         self.sessions += 1
         runner = asyncio.ensure_future(self._session.run())
-        yielder = asyncio.ensure_future(self._yield_requested.wait())
+        # The RTC reservation fetched above is only spent by a session that gets
+        # going, so a camera request that arrived meanwhile is honoured once this
+        # session has connected (or failed), never before.
+        yielder = asyncio.ensure_future(self._yield_once_connected())
         try:
             await asyncio.wait({runner, yielder}, return_when=asyncio.FIRST_COMPLETED)
             if runner.done():
@@ -268,7 +273,12 @@ class P2PMapFeed:
                 await runner
         return True
 
+    async def _yield_once_connected(self) -> None:
+        await self._session_connected.wait()
+        await self._yield_requested.wait()
+
     def _on_object(self, name: str, obj: bytes) -> None:
+        self._session_connected.set()
         if not self.connected:
             self.connected = True
             self.last_error = None  # the channel is up again

@@ -387,6 +387,7 @@ async def test_the_camera_can_take_the_slot_from_a_long_running_map_session(hass
     ended = asyncio.Event()
 
     async def run(self):
+        self.on_object("navPath.bin", _pose_obj(1, 2, 3))  # connected: it can be asked to yield
         await ended.wait()  # a session that never ends by itself
 
     async def close(self):
@@ -613,3 +614,47 @@ async def test_stepping_aside_does_not_wipe_a_failure_streak(hass, fake_session)
     fake_session.script = [[]]
     feed._refused_until = 0.0
     assert await feed._run_session() is True
+
+
+@pytest.mark.asyncio
+async def test_a_camera_request_during_the_config_fetch_does_not_waste_the_reservation(hass, fake_session):
+    """The yield is honoured only once the session has connected, not before it has used its config."""
+    fetching = asyncio.Event()
+    go = asyncio.Event()
+    connected_before_close = []
+
+    async def slow_rtc():
+        fetching.set()
+        await go.wait()
+        return _RTC
+
+    async def run(self):
+        await asyncio.sleep(0.05)
+        self.on_object("navPath.bin", _pose_obj(1, 2, 3))
+        await asyncio.sleep(10)
+
+    async def close(self):
+        connected_before_close.append(feed.connected)
+
+    fake_session.run, fake_session.close = run, close
+    feed = _feed(hass)
+    feed._rtc_config = slow_rtc
+    feed.start()
+    await fetching.wait()
+    camera = asyncio.ensure_future(feed.acquire_slot(3))  # arrives mid-fetch
+    await asyncio.sleep(0.01)
+    go.set()
+    await asyncio.wait_for(camera, 3)
+    assert connected_before_close == [True]  # the session ran before it yielded
+    feed.release_slot()
+    await feed.stop()
+
+
+@pytest.mark.parametrize(("model", "transport", "expected"), [
+    ("T2080A", "local", True), ("T2080A", "cloud", True), ("T2080A", "mqtt", False),
+    ("T2351", "local", False), ("T2080", "cloud", False),
+])
+def test_string_suction_and_boost_dps_are_only_for_verified_s1_pro_robots(hass, model, transport, expected):
+    coordinator = _local_coordinator(hass)
+    coordinator.device_model, coordinator.connection_type = model, transport
+    assert coordinator.tuya_transport is expected

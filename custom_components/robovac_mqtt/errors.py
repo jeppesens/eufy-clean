@@ -22,6 +22,12 @@ def screen_error_code(code: int, model: str) -> str | int:
     return code
 
 
+def is_station_code(code: int, model: str) -> bool:
+    """True for an S1 Pro base-station code (EBxx), e.g. water tank full."""
+    label = screen_error_code(code, model)
+    return isinstance(label, str) and label.startswith("EB")
+
+
 def s1_error_message(code: int, model: str) -> str | None:
     """Describe a verified S1 code without guessing another model's mapping."""
     label = screen_error_code(code, model)

@@ -56,6 +56,7 @@ from .const import (
     DEFAULT_NOTIFY_MOBILE_SERVICE,
     DEFAULT_ROBOT_STYLE,
     DOMAIN,
+    S1_PRO_MODELS,
     WORK_STATE_REMOTE_CTRL,
 )
 from .errors import screen_error_code
@@ -252,12 +253,17 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     @property
     def tuya_transport(self) -> bool:
-        """True for protobuf robots reached over Tuya (local socket or Tuya Cloud).
+        """True for S1 Pro robots reached over Tuya (local socket or Tuya Cloud).
 
         Their Tuya DP schema types a few DPS differently from the MQTT robots:
         suction (158) is an enum string and BoostIQ is its own boolean DPS (159).
+        Only verified on the S1 Pro, so other protobuf robots keep the MQTT format.
         """
-        return self.api_type == "novel" and self.connection_type in ("local", "cloud")
+        return (
+            self.api_type == "novel"
+            and self.connection_type in ("local", "cloud")
+            and self.device_model in S1_PRO_MODELS
+        )
 
     @property
     def device_info(self) -> DeviceInfo:

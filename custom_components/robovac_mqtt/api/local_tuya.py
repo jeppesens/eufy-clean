@@ -38,6 +38,10 @@ _LOGGER = logging.getLogger(__name__)
 # (a drive command used to wait up to 5 s). Short enough to feel instant, long
 # enough not to spin.
 _RECV_TIMEOUT = 0.5
+# Everything else (waited writes, status(), reconnects) keeps tinytuya's usual
+# timeout: set_socketTimeout also bounds the connection, and on a timeout
+# tinytuya reconnects and re-sends, which would double-send a slow robot's writes.
+_COMMAND_TIMEOUT = 5.0
 _RECONNECT_BACKOFF_INITIAL = 5.0
 _RECONNECT_BACKOFF_MAX = 60.0
 
@@ -130,6 +134,7 @@ class LocalTuyaClient:
         # reconnect ourselves so we can surface failures to the coordinator.
         self._dev.set_socketRetryLimit(1)
         self._dev.set_socketRetryDelay(0)
+        self._dev.set_socketTimeout(_COMMAND_TIMEOUT)
 
     async def disconnect(self) -> None:
         """Cancel the listener task and close the socket."""
@@ -304,7 +309,11 @@ class LocalTuyaClient:
         if self._dev is None:
             return None
         self._dev.set_socketTimeout(_RECV_TIMEOUT)
-        return self._dev.receive()
+        try:
+            return self._dev.receive()
+        finally:
+            # The device lock is held, so nothing else runs on this socket meanwhile.
+            self._dev.set_socketTimeout(_COMMAND_TIMEOUT)
 
     def _dispatch(self, payload: Any) -> None:
         """Wrap a DPS payload into the MQTT envelope and fire the callback."""
