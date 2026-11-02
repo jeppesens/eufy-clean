@@ -37,6 +37,18 @@ def mock_login_fixture():
         yield mock_cls
 
 
+@pytest.fixture
+def mock_reload_fixture(hass: HomeAssistant):
+    """Record entry reloads instead of running them.
+
+    Request this in every test that saves changed options or completes a
+    reauth or reconfigure: the reload would otherwise set the entry up and
+    attempt a real Eufy login.
+    """
+    with patch.object(hass.config_entries, "async_schedule_reload") as mock_reload:
+        yield mock_reload
+
+
 async def test_duplicate_entry(hass: HomeAssistant, mock_login_fixture):
     """Test that duplicate entries are rejected."""
 
@@ -88,10 +100,13 @@ async def test_config_flow_entry_data_contains_vacs(
     assert "vacs" in entry_data
 
 
-async def test_options_settings_independent_edit(hass: HomeAssistant):
+async def test_options_settings_independent_edit(
+    hass: HomeAssistant, mock_reload_fixture
+):
     """The options menu's Settings step is independently editable: changing only
     the map size (and leaving the mobile-notify dropdown blank, which submits
-    None) saves without requiring the other fields to be filled."""
+    None) saves without requiring the other fields to be filled. The changed
+    options reload the entry once."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test Vac",
@@ -125,6 +140,7 @@ async def test_options_settings_independent_edit(hass: HomeAssistant):
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result2["data"][CONF_NOTIFY_MOBILE_SERVICE] == ""
     assert result2["data"][CONF_MAP_MAX_PX] == "1024"
+    mock_reload_fixture.assert_called_once_with(entry.entry_id)
 
 
 def _fake_coordinator(device_id: str, *, local_key: str | None = None):
@@ -160,10 +176,11 @@ async def _open_device_step(hass, entry, device_id):
 
 
 async def test_options_device_preserves_override_for_unloaded_device(
-    hass: HomeAssistant,
+    hass: HomeAssistant, mock_reload_fixture
 ):
     """B2: editing one device's override must not wipe a stored override for a
-    device that isn't currently loaded."""
+    device that isn't currently loaded. Saving unchanged options must not
+    reload the entry."""
     stored = {
         # Currently loaded and editable.
         "loaded_dev": {
@@ -209,6 +226,8 @@ async def test_options_device_preserves_override_for_unloaded_device(
     # The loaded device kept its host/rooms.
     assert saved["loaded_dev"][CONF_LOCAL_HOST] == "192.168.1.50"
     assert saved["loaded_dev"][CONF_ROOM_NAMES] == {1: "Lounge"}
+    # The options are unchanged, so nothing reloads.
+    mock_reload_fixture.assert_not_called()
 
 
 async def test_options_device_invalid_host_shows_error(hass: HomeAssistant):
@@ -260,8 +279,11 @@ async def test_reauth_shows_password_form(hass: HomeAssistant):
     assert result["step_id"] == "reauth_confirm"
 
 
-async def test_reauth_success_updates_entry(hass: HomeAssistant, mock_login_fixture):
-    """Successful reauth should update the entry password and abort."""
+async def test_reauth_success_updates_entry(
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
+):
+    """Successful reauth should update the entry password, reload it once and
+    abort."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -276,16 +298,15 @@ async def test_reauth_success_updates_entry(hass: HomeAssistant, mock_login_fixt
     result = await entry.start_reauth_flow(hass)
     assert result["step_id"] == "reauth_confirm"
 
-    with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_PASSWORD: "new_pass"},
-        )
-        await hass.async_block_till_done()
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_PASSWORD: "new_pass"},
+    )
 
     assert result2["type"] == data_entry_flow.FlowResultType.ABORT
     assert result2["reason"] == "reauth_successful"
     assert entry.data[CONF_PASSWORD] == "new_pass"
+    mock_reload_fixture.assert_called_once_with(entry.entry_id)
 
 
 async def test_reauth_invalid_credentials_shows_error(hass: HomeAssistant):
@@ -334,8 +355,10 @@ async def test_reconfigure_shows_form(hass: HomeAssistant):
     assert result["step_id"] == "reconfigure"
 
 
-async def test_reconfigure_success(hass: HomeAssistant, mock_login_fixture):
-    """Successful reconfigure updates the password."""
+async def test_reconfigure_success(
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
+):
+    """Successful reconfigure updates the password and reloads the entry once."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -349,16 +372,15 @@ async def test_reconfigure_success(hass: HomeAssistant, mock_login_fixture):
 
     result = await entry.start_reconfigure_flow(hass)
 
-    with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "new_pass"},
-        )
-        await hass.async_block_till_done()
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "new_pass"},
+    )
 
     assert result2["type"] == data_entry_flow.FlowResultType.ABORT
     assert result2["reason"] == "reconfigure_successful"
     assert entry.data[CONF_PASSWORD] == "new_pass"
+    mock_reload_fixture.assert_called_once_with(entry.entry_id)
 
 
 async def test_reconfigure_username_mismatch(hass: HomeAssistant):
@@ -385,7 +407,9 @@ async def test_reconfigure_username_mismatch(hass: HomeAssistant):
     assert result2["errors"][CONF_USERNAME] == "username_mismatch"
 
 
-async def test_options_device_map_id_override_saved(hass: HomeAssistant):
+async def test_options_device_map_id_override_saved(
+    hass: HomeAssistant, mock_reload_fixture
+):
     """Map-id overrides entered in the device step are persisted as ints
     alongside the other per-device overrides: a bare line for all maps and
     'reported: local' lines per map."""
@@ -451,7 +475,9 @@ async def test_options_device_invalid_map_id_shows_error(hass: HomeAssistant):
     assert entry.options.get(CONF_LOCAL_DEVICES, {}) == {}
 
 
-async def test_options_device_cleared_override_is_removed(hass: HomeAssistant):
+async def test_options_device_cleared_override_is_removed(
+    hass: HomeAssistant, mock_reload_fixture
+):
     """Emptying an optional field must drop its stored override. The frontend
     leaves cleared optional fields out of the submission, so the form must not
     re-insert the stored value (it pre-fills with suggested_value, not default)."""
