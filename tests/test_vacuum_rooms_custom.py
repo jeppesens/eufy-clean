@@ -39,6 +39,38 @@ async def test_room_clean_standard(mock_coordinator):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "room_ids,expected",
+    [
+        (3, [3]),  # a single id, as in `room_ids: 3`
+        ("3", [3]),
+        ((3, 4), [3, 4]),  # a tuple is read like a list
+        (["3", "x", 4], [3, 4]),  # invalid ids are skipped
+    ],
+)
+async def test_room_clean_coerces_room_ids(mock_coordinator, room_ids, expected):
+    """room_ids takes one id or a list; ids become ints and invalid ones are skipped."""
+    entity = RoboVacMQTTEntity(mock_coordinator)
+
+    await entity.async_send_command("room_clean", params={"room_ids": room_ids})
+
+    mock_coordinator.build_device_command.assert_called_once_with(
+        "room_clean", room_ids=expected, map_id=1
+    )
+
+
+@pytest.mark.asyncio
+async def test_room_clean_without_valid_room_ids_sends_nothing(mock_coordinator):
+    """No valid room id means no command is sent."""
+    entity = RoboVacMQTTEntity(mock_coordinator)
+
+    await entity.async_send_command("room_clean", params={"room_ids": "x"})
+
+    mock_coordinator.build_device_command.assert_not_called()
+    mock_coordinator.async_send_command.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_room_clean_custom(mock_coordinator):
     """Test room clean with custom parameters."""
     entity = RoboVacMQTTEntity(mock_coordinator)
