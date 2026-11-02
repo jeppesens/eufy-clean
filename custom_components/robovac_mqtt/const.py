@@ -60,6 +60,9 @@ EUFY_API_DEVICE_LIST: Final = (
 EUFY_API_DEVICE_V2: Final = f"{EUFY_API_BASE_URL}/v1/device/v2"
 # Home-api device list fallback (unified Eufy app)
 EUFY_API_DEVICE_LIST_HOME: Final = f"{EUFY_HOME_API_BASE_URL}/v1/device/"
+# product.appliance of a robot vacuum in the cloud device list; the list also
+# holds the account's other eufy products, e.g. a smart scale (issue #121).
+EUFY_APPLIANCE_CLEANING: Final = "Cleaning"
 
 # Tuya productId/productKey -> Eufy model code.
 # Tuya Cloud devices (legacy transport) report a productId that does NOT match

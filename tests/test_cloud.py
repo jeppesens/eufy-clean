@@ -577,6 +577,59 @@ async def test_get_devices_constructs_from_cloud_when_aiot_empty():
     assert dev["apiType"] == "legacy"
 
 
+# The scale that became a vacuum in #121; its appliance, when sent, is "Scale".
+_SCALE_PRODUCT = {"product_code": "eufy T9149", "name": "Smart Scale P2 Pro"}
+
+
+@pytest.mark.parametrize(
+    ("scale_product", "vacuum_product"),
+    [
+        pytest.param(
+            {**_SCALE_PRODUCT, "appliance": "Scale"},
+            {"product_code": "T2351", "name": "X10 Pro Omni", "appliance": "Cleaning"},
+            id="appliance",
+        ),
+        pytest.param(
+            _SCALE_PRODUCT,
+            {"product_code": "T2351", "name": "X10 Pro Omni"},
+            id="no-appliance",
+        ),
+        # A cleaning appliance whose model code is not in EUFY_CLEAN_DEVICES.
+        pytest.param(
+            {**_SCALE_PRODUCT, "appliance": "Scale"},
+            {"product_code": "T2999", "name": "New Robovac", "appliance": "Cleaning"},
+            id="appliance-unknown-model",
+        ),
+        # A record with "product": null is skipped, not a crash.
+        pytest.param(
+            None,
+            {"product_code": "T2351", "name": "X10 Pro Omni", "appliance": "Cleaning"},
+            id="product-null",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_devices_reconstructs_only_vacuums(scale_product, vacuum_product):
+    """#121: the cloud list holds every eufy product on the account, so with an
+    empty AIOT list only the robot vacuum is reconstructed — a smart scale must
+    not become vacuum.smart_scale_p2_pro."""
+    login = _make_login()
+    cloud_list = [
+        {"id": "scale_dev", "product": scale_product, "alias_name": "Scale"},
+        {"id": "vacuum_dev", "product": vacuum_product, "alias_name": "Robovac"},
+    ]
+    login.eufyApi.get_cloud_device_list = AsyncMock(return_value=cloud_list)
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+
+    await login.getDevices()
+
+    assert [d["deviceId"] for d in login.mqtt_devices] == ["vacuum_dev"]
+    assert login.mqtt_devices[0]["deviceModel"] == vacuum_product["product_code"]
+    # Only the reconstruction is filtered: findModel() still matches Tuya
+    # records against the full cloud list by id.
+    assert login.eufy_api_devices == cloud_list
+
+
 # ── Tuya-discovered device model resolution (issue #131) ─────────────
 
 

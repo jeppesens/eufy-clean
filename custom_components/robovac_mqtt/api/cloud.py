@@ -6,6 +6,7 @@ from typing import Any
 
 from ..const import (
     DPS_MAP,
+    EUFY_APPLIANCE_CLEANING,
     EUFY_CLEAN_DEVICES,
     SCALAR_DPS,
     TUYA_IGNORED_PRODUCT_IDS,
@@ -130,16 +131,31 @@ class EufyLogin:
         # Unified-app (v2) accounts often return an empty AIOT device list even
         # though the cloud device list has entries. Reconstruct minimal AIOT
         # entries from the cloud list so findModel (via aiot/v2 metadata) and
-        # MQTT setup still work.
+        # MQTT setup still work. Only robot vacuums are reconstructed, since the
+        # cloud list holds every eufy product on the account (issue #121);
+        # eufy_api_devices keeps them all for findModel()'s id lookup.
         if not devices and self.eufy_api_devices:
             _LOGGER.info(
                 "AIOT device list empty — constructing device entries from cloud device list"
             )
-            devices = [
-                {"device_sn": d["id"], "dps": {}, "_reconstructed": True}
-                for d in self.eufy_api_devices
-                if d.get("id")
-            ]
+            devices = []
+            for record in self.eufy_api_devices:
+                if not record.get("id"):
+                    continue
+                if not self._is_vacuum_record(record):
+                    product = record.get("product") or {}
+                    _LOGGER.debug(
+                        "Cloud list device %s: skipping (not a robot vacuum; "
+                        "product=%s, model=%s, appliance=%s)",
+                        record["id"],
+                        product.get("name"),
+                        self._cloud_record_model(record),
+                        product.get("appliance"),
+                    )
+                    continue
+                devices.append(
+                    {"device_sn": record["id"], "dps": {}, "_reconstructed": True}
+                )
         devices = [
             {
                 **self.findModel(device.get("device_sn", ""), aiot_device=device),
@@ -420,6 +436,29 @@ class EufyLogin:
         return code
 
     @staticmethod
+    def _cloud_record_model(record: dict[str, Any]) -> str:
+        """Model code of an Eufy cloud device list record."""
+        raw_code = (
+            (record.get("product") or {}).get("product_code", "")
+            or record.get("device_model", "")
+        )
+        return EufyLogin._resolve_model(raw_code)
+
+    @staticmethod
+    def _is_vacuum_record(record: dict[str, Any]) -> bool:
+        """Is an Eufy cloud device list record a robot vacuum?
+
+        Yes when eufy marks it a cleaning appliance or its model is a known
+        robovac; no for the account's other eufy products, e.g. a smart scale
+        (issue #121).
+        """
+        product = record.get("product") or {}
+        return (
+            product.get("appliance") == EUFY_APPLIANCE_CLEANING
+            or EufyLogin._cloud_record_model(record) in EUFY_CLEAN_DEVICES
+        )
+
+    @staticmethod
     def _tuya_product_id(tuya_device: dict[str, Any]) -> str:
         """Tuya product id of a Tuya cloud device record."""
         return tuya_device.get("productId") or tuya_device.get("productKey") or ""
@@ -454,17 +493,13 @@ class EufyLogin:
         device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
 
         if device:
-            raw_code = (
-                device.get("product", {}).get("product_code", "")
-                or device.get("device_model", "")
-            )
             return {
                 "deviceId": deviceId,
-                "deviceModel": self._resolve_model(raw_code),
+                "deviceModel": self._cloud_record_model(device),
                 "deviceName": device.get("alias_name")
                 or device.get("device_name")
                 or device.get("name"),
-                "deviceModelName": device.get("product", {}).get("name"),
+                "deviceModelName": (device.get("product") or {}).get("name"),
                 "invalid": False,
             }
 
