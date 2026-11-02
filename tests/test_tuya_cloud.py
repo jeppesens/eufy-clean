@@ -1,8 +1,11 @@
 """Unit tests for api/tuya_cloud.py: Tuya Cloud API client."""
 
+import json
+import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from yarl import URL
 
 from custom_components.robovac_mqtt.api.tuya_cloud import (
     TuyaCloudClient,
@@ -89,6 +92,27 @@ def test_sign_includes_post_data_hashed():
     assert sig_with != sig_without
 
 
+def test_sign_does_not_log_credentials(caplog):
+    """Signing must not expose authentication fields in debug logs."""
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    params = {
+        "a": "tuya.m.test",
+        "sid": "sensitive-session-id",
+        "h5Token": "sensitive-auth-token",
+        "time": 1234567890,
+    }
+
+    with caplog.at_level(
+        logging.DEBUG, logger="custom_components.robovac_mqtt.api.tuya_cloud"
+    ):
+        signature = client._sign(params)
+
+    assert len(signature) == 64
+    assert params["sid"] not in caplog.text
+    assert params["h5Token"] not in caplog.text
+    assert signature not in caplog.text
+
+
 # ── Client initialization ──────────────────────────────────────────
 
 
@@ -173,6 +197,47 @@ async def test_request_no_sid_required():
     result = await client.request("tuya.m.test", requires_sid=False)
 
     assert result == {"data": 1}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("requires_sid", [True, False], ids=["session", "login"])
+async def test_request_does_not_log_credentials(caplog, requires_sid):
+    """Realistic response URLs must not leak session or login credentials."""
+    mock_response = MagicMock()
+    mock_response.json = AsyncMock(return_value={"success": True, "result": {"data": 1}})
+    mock_response.__aenter__ = AsyncMock(return_value=mock_response)
+    mock_response.__aexit__ = AsyncMock(return_value=False)
+
+    def mock_get(url, *, params, timeout):
+        mock_response.url = URL(url).with_query(params)
+        return mock_response
+
+    mock_session = MagicMock()
+    mock_session.get.side_effect = mock_get
+    client = TuyaCloudClient("EU", websession=mock_session)
+    client.sid = "sensitive-session-id" if requires_sid else None
+    data = {"token": "sensitive-login-token", "passwd": "sensitive-login-password"}
+    action = "tuya.m.test"
+
+    with caplog.at_level(
+        logging.DEBUG, logger="custom_components.robovac_mqtt.api.tuya_cloud"
+    ):
+        result = await client.request(action, data=data, requires_sid=requires_sid)
+
+    assert result == {"data": 1}
+    params = mock_session.get.call_args.kwargs["params"]
+    assert json.loads(params["postData"]) == data
+    if requires_sid:
+        assert params["sid"] == client.sid
+        assert client.sid not in caplog.text
+    else:
+        assert "sid" not in params
+    assert data["token"] not in caplog.text
+    assert data["passwd"] not in caplog.text
+    assert params["sign"] not in caplog.text
+    assert str(mock_response.url) not in caplog.text
+    assert action in caplog.text
+    assert "Tuya request succeeded" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -314,6 +379,44 @@ async def test_login_handles_region_redirect():
 
     assert client.endpoint == "https://a1.tuyacn.com/api.json"
     assert client.region == "AY"
+
+
+@pytest.mark.asyncio
+async def test_login_does_not_log_credentials(caplog):
+    """Login must not expose the Tuya uid or other login credentials in debug logs."""
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    eufy_user_id = "sensitive-eufy-user-id"
+    uid = f"eh-{eufy_user_id}"
+    passwd = "sensitive-login-password"
+    token_response = {
+        "publicKey": _TEST_PUBLIC_KEY_N,
+        "exponent": "65537",
+        "token": "sensitive-login-token",
+    }
+    login_response = {"sid": "sensitive-session-id"}
+
+    with (
+        patch.object(
+            client, "request", new_callable=AsyncMock,
+            side_effect=[token_response, login_response],
+        ) as mock_request,
+        patch(
+            "custom_components.robovac_mqtt.api.tuya_cloud._encrypt_password",
+            return_value=passwd,
+        ),
+        caplog.at_level(
+            logging.DEBUG, logger="custom_components.robovac_mqtt.api.tuya_cloud"
+        ),
+    ):
+        await client.login(eufy_user_id)
+
+    assert mock_request.call_args.kwargs["data"]["uid"] == uid
+    assert uid not in caplog.text
+    assert eufy_user_id not in caplog.text
+    assert token_response["token"] not in caplog.text
+    assert passwd not in caplog.text
+    assert login_response["sid"] not in caplog.text
+    assert "Tuya login starting for region EU" in caplog.text
 
 
 # ── Cross-implementation signing (Python vs upstream JS) ──────────
