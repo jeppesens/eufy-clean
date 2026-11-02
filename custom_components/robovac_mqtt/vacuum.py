@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import base64
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import homeassistant.helpers.config_validation as cv
+import homeassistant.util.dt as dt_util
 import voluptuous as vol
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
@@ -28,14 +31,16 @@ from homeassistant.helpers.issue_registry import (
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
+from .api.commands import build_command, build_schedule_timer
 from .const import (
     DOMAIN,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     LEGACY_CLEAN_SPEEDS,
     SCALAR_SUCTION_LEVELS,
+    SCHEDULE_DAY_BITS,
 )
 from .coordinator import EufyCleanCoordinator
+from .proto.cloud.timing_pb2 import TimerInfo, TimerRequest
 
 if TYPE_CHECKING:
     from homeassistant.components.vacuum import Segment
@@ -178,6 +183,71 @@ async def async_setup_entry(
         },
         "async_forget_map",
     )
+    # Cleaning schedule (timer) management. Requests go out as TimerRequest
+    # on the TIMING DP; the device answers with a TimerResponse carrying the
+    # full timer list, which each service returns.
+    _TIME_RX = cv.matches_regex(r"^([01]?\d|2[0-3]):[0-5]\d$")
+    _DAYS = vol.All(cv.ensure_list, [vol.In(sorted(SCHEDULE_DAY_BITS))])
+    platform.async_register_entity_service(
+        "get_schedules",
+        {},
+        "async_get_schedules",
+        supports_response=SupportsResponse.ONLY,
+    )
+    platform.async_register_entity_service(
+        "add_schedule",
+        {
+            vol.Required("time"): _TIME_RX,
+            vol.Optional("days", default=[]): _DAYS,
+            vol.Optional("clean_type", default="auto"): vol.In(["auto", "rooms"]),
+            vol.Optional("room_ids"): vol.All(
+                cv.ensure_list, [vol.All(vol.Coerce(int), vol.Range(min=0))]
+            ),
+            vol.Optional("map_id"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            vol.Optional("enabled", default=True): cv.boolean,
+        },
+        "async_add_schedule",
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    platform.async_register_entity_service(
+        "update_schedule",
+        {
+            vol.Required("schedule_id"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+            vol.Optional("time"): _TIME_RX,
+            vol.Optional("days"): _DAYS,
+            vol.Optional("room_ids"): vol.All(
+                cv.ensure_list, [vol.All(vol.Coerce(int), vol.Range(min=0))]
+            ),
+            vol.Optional("map_id"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        },
+        "async_update_schedule",
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    platform.async_register_entity_service(
+        "delete_schedule",
+        {
+            vol.Required("schedule_id"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+        },
+        "async_delete_schedule",
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+    platform.async_register_entity_service(
+        "set_schedule_enabled",
+        {
+            vol.Required("schedule_id"): vol.All(vol.Coerce(int), vol.Range(min=0)),
+            vol.Required("enabled"): cv.boolean,
+        },
+        "async_set_schedule_enabled",
+        supports_response=SupportsResponse.OPTIONAL,
+    )
+
+
+def _days_to_bits(days: list[str]) -> int:
+    """Map weekday names to TimerInfo.Desc.Cycle.week_bits (bit0=Sunday)."""
+    bits = 0
+    for day in days:
+        bits |= SCHEDULE_DAY_BITS[day.lower()]
+    return bits
 
 
 class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEntity):
@@ -519,6 +589,157 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                 f"Cannot forget map {cloud_mapid} — it is the active map."
             )
         await self.coordinator.async_forget_map(cloud_mapid)
+
+    # --- Cleaning schedules (TimerRequest/TimerResponse on the TIMING DP) ---
+
+    @staticmethod
+    def _schedules_payload(result: dict[str, Any]) -> dict[str, Any]:
+        """Shape a coordinator timer result for a service response.
+
+        Strips the internal ``raw`` blob each schedule carries (it only
+        exists so update_schedule can round-trip unmodelled fields).
+        """
+        return {
+            "success": result["success"],
+            "err_code": result["err_code"],
+            "schedules": [
+                {k: v for k, v in sched.items() if k != "raw"}
+                for sched in result["schedules"]
+            ],
+        }
+
+    @staticmethod
+    def _require_timer_success(action: str, result: dict[str, Any]) -> None:
+        if not result["success"]:
+            raise HomeAssistantError(
+                f"Device rejected schedule {action} "
+                f"(err_code {result['err_code']})"
+            )
+
+    async def async_get_schedules(self) -> dict[str, Any]:
+        """Query the device's full schedule list (INQUIRY)."""
+        result = await self.coordinator.async_timer_request(TimerRequest.INQUIRY)
+        return self._schedules_payload(result)
+
+    async def async_add_schedule(
+        self,
+        time: str,
+        days: list[str],
+        clean_type: str,
+        room_ids: list[int] | None = None,
+        map_id: int | None = None,
+        enabled: bool = True,
+    ) -> dict[str, Any]:
+        """Add a schedule (ADD). The device assigns the new timer's id."""
+        hours, minutes = (int(part) for part in time.split(":"))
+        if clean_type == "rooms" and not room_ids:
+            raise HomeAssistantError(
+                "room_ids is required for a rooms-type schedule"
+            )
+        timer = build_schedule_timer(
+            hours=hours,
+            minutes=minutes,
+            week_bits=_days_to_bits(days),
+            action_type=clean_type,
+            room_ids=room_ids,
+            map_id=map_id or self.coordinator.resolve_map_id(),
+            enabled=enabled,
+            summer=bool(dt_util.now().dst()),
+        )
+        result = await self.coordinator.async_timer_request(
+            TimerRequest.ADD, timer
+        )
+        self._require_timer_success("add", result)
+        return self._schedules_payload(result)
+
+    def _stored_timer(self, schedule_id: int) -> TimerInfo:
+        """Rebuild the device-stored TimerInfo for *schedule_id*.
+
+        Uses the raw bytes captured from the last TimerResponse so a MOTIFY
+        (which must carry the FULL timer) preserves every field the device
+        stored — including action parameters this integration doesn't model.
+        """
+        stored = next(
+            (
+                sched
+                for sched in self.coordinator.data.schedules
+                if sched["id"] == schedule_id
+            ),
+            None,
+        )
+        if stored is None:
+            raise HomeAssistantError(
+                f"Unknown schedule id {schedule_id} — call "
+                "robovac_mqtt.get_schedules first to refresh the list"
+            )
+        timer = TimerInfo()
+        timer.ParseFromString(base64.b64decode(stored["raw"]))
+        return timer
+
+    async def async_update_schedule(
+        self,
+        schedule_id: int,
+        time: str | None = None,
+        days: list[str] | None = None,
+        room_ids: list[int] | None = None,
+        map_id: int | None = None,
+    ) -> dict[str, Any]:
+        """Modify a schedule (MOTIFY), preserving fields not being changed."""
+        timer = self._stored_timer(schedule_id)
+        if time is not None:
+            hours, minutes = (int(part) for part in time.split(":"))
+            timer.desc.timing.hours = hours
+            timer.desc.timing.minutes = minutes
+        if days is not None:
+            bits = _days_to_bits(days)
+            if bits:
+                timer.desc.trigger = TimerInfo.Desc.CYCLE
+                timer.desc.cycle.week_bits = bits
+            else:
+                timer.desc.trigger = TimerInfo.Desc.SINGLE
+                timer.desc.ClearField("cycle")
+        if room_ids is not None or map_id is not None:
+            if timer.action.type != TimerInfo.Action.SCHEDULE_ROOMS_CLEAN:
+                raise HomeAssistantError(
+                    f"Schedule {schedule_id} is not a rooms-type schedule"
+                )
+            general = timer.action.sche_rooms_clean.general
+            if map_id is not None:
+                general.map_id = int(map_id)
+            if room_ids is not None:
+                del general.rooms[:]
+                for i, rid in enumerate(room_ids):
+                    room = general.rooms.add()
+                    room.id = int(rid)
+                    room.order = i + 1
+        result = await self.coordinator.async_timer_request(
+            TimerRequest.MOTIFY, timer
+        )
+        self._require_timer_success("update", result)
+        return self._schedules_payload(result)
+
+    async def async_delete_schedule(self, schedule_id: int) -> dict[str, Any]:
+        """Delete a schedule (DELETE; id-only per protocol)."""
+        timer = TimerInfo()
+        timer.id.value = int(schedule_id)
+        result = await self.coordinator.async_timer_request(
+            TimerRequest.DELETE, timer
+        )
+        self._require_timer_success("delete", result)
+        return self._schedules_payload(result)
+
+    async def async_set_schedule_enabled(
+        self, schedule_id: int, enabled: bool
+    ) -> dict[str, Any]:
+        """Enable/disable a schedule (OPEN/CLOSE; id-only per protocol)."""
+        timer = TimerInfo()
+        timer.id.value = int(schedule_id)
+        method = TimerRequest.OPEN if enabled else TimerRequest.CLOSE
+        result = await self.coordinator.async_timer_request(method, timer)
+        self._require_timer_success(
+            "enable" if enabled else "disable", result
+        )
+        return self._schedules_payload(result)
 
     @property
     def supported_features(self) -> VacuumEntityFeature:

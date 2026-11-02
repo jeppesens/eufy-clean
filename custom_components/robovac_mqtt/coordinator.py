@@ -30,7 +30,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 
 from .api.client import EufyCleanClient
 from .api.cloud import EufyLogin
-from .api.commands import build_command
+from .api.commands import build_command, build_timer_request_command
 from .api.legacy_commands import build_legacy_command
 from .api.legacy_parser import update_state_legacy
 from .api.local_tuya import LocalTuyaClient, LocalTuyaError
@@ -153,6 +153,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         # Discovered saved maps {cloud_mapid: name}, learned from MapDescription
         # frames on the biz/ stream and persisted; backs the Active Map selector.
         self.last_seen_maps: dict[int, str] = {}
+        # Pending schedule (timer) requests awaiting their TimerResponse,
+        # keyed by request seq. Started high to stay clear of the app's own
+        # low two-digit sequence numbers.
+        self._timer_waiters: dict[int, asyncio.Future[dict[str, Any]]] = {}
+        self._timer_seq: int = 1000
         self._store = Store(hass, 1, f"{DOMAIN}.{self.device_id}")
         self._map_data_chan_id: int | None = None
         self._map_data: MapData | None = None
@@ -186,6 +191,49 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         if self.api_type == "legacy":
             return update_state_legacy(self.data, dps)
         return update_state(self.data, dps)
+
+    @callback
+    def _resolve_timer_waiter(
+        self, seq: int, result: int, err_code: int, schedules: list[dict[str, Any]]
+    ) -> None:
+        """Complete the pending schedule request matching a TimerResponse."""
+        fut = self._timer_waiters.pop(seq, None)
+        if fut is not None and not fut.done():
+            fut.set_result(
+                {
+                    "success": result == 0,
+                    "err_code": err_code,
+                    "schedules": schedules,
+                }
+            )
+
+    async def async_timer_request(
+        self, method: int, timer: Any = None, timeout: float = 10.0
+    ) -> dict[str, Any]:
+        """Send a TimerRequest and wait for the device's TimerResponse.
+
+        Returns {"success", "err_code", "schedules"} — schedules is the FULL
+        timer list the device reports back with every response. Raises
+        HomeAssistantError when no response arrives in *timeout* seconds.
+        """
+        self._timer_seq += 1
+        seq = self._timer_seq
+        fut: asyncio.Future[dict[str, Any]] = (
+            asyncio.get_running_loop().create_future()
+        )
+        self._timer_waiters[seq] = fut
+        try:
+            await self.async_send_command(
+                build_timer_request_command(method, seq, timer)
+            )
+            return await asyncio.wait_for(fut, timeout)
+        except TimeoutError as e:
+            raise HomeAssistantError(
+                f"No schedule response from {self.device_name} within "
+                f"{timeout:.0f}s (seq {seq})"
+            ) from e
+        finally:
+            self._timer_waiters.pop(seq, None)
 
     def resolve_map_id(self) -> int:
         """Return the map id to use in room/zone clean commands.
@@ -371,6 +419,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                         self._notify_error(new_state.error_code, new_state.error_message)
                     elif self.data.error_code != 0:
                         self._clear_error_notification()
+
+                if "last_timer_seq" in changes:
+                    self._resolve_timer_waiter(
+                        new_state.last_timer_seq,
+                        new_state.last_timer_result,
+                        new_state.last_timer_err,
+                        new_state.schedules,
+                    )
 
                 _rerender_after_update = False
                 if "activity" in changes:

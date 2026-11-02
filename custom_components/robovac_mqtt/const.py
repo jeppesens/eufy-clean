@@ -586,6 +586,11 @@ DPS_MAP = {
     "SCENE_INFO": "180",
     "MAP_DATA": "165",
     "MAP_EDIT": "164",
+    # Cleaning schedules (TimerRequest/TimerResponse) ride the same DP as the
+    # MapEditResponse ack: the device publishes TimerResponse (with the FULL
+    # timer list) on 164 after every schedule change, app-side or ours.
+    # Verified on T2080A fw 7.0.168 by capturing app schedule edits.
+    "TIMING": "164",
     "MULTI_MAP_SW": "156",
     "MAP_STREAM": "166",
     "UNSETTING": "176",
@@ -597,13 +602,27 @@ DPS_MAP = {
     "UNDISTURBED": "157",
 }
 
+# Schedule weekday bits (TimerInfo.Desc.Cycle.week_bits): bit 0 = Sunday,
+# bits 1-6 = Monday..Saturday (per the proto comment; verified against
+# captured T2080A timers: 31 = Sun-Thu, 64 = Saturday-only).
+SCHEDULE_DAY_BITS: Final[dict[str, int]] = {
+    "sun": 1 << 0,
+    "mon": 1 << 1,
+    "tue": 1 << 2,
+    "wed": 1 << 3,
+    "thu": 1 << 4,
+    "fri": 1 << 5,
+    "sat": 1 << 6,
+}
+
 # DPS keys that are known but intentionally not parsed.
 # Values are already stored in raw_dps for diagnostics.
 KNOWN_UNPROCESSED_DPS: frozenset[str] = frozenset(
     {
         DPS_MAP["DIRECTION"],  # 155 - RemoteCtrl echo
         DPS_MAP["MULTI_MAP_SW"],  # 156 - multi-map toggle (also in DPS 176)
-        DPS_MAP["MAP_EDIT"],  # 164 - MapEditResponse ack
+        # 164 is parsed as TimerResponse (schedules); a MapEditResponse ack on
+        # the same DP fails that decode and stays raw-only, as before.
         DPS_MAP[
             "MAP_STREAM"
         ],  # 166 - debug/metadata on T2351 (map data is local P2P only)

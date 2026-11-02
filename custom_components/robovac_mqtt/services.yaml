@@ -105,3 +105,165 @@ forget_map:
         number:
           min: 1
           mode: box
+
+get_schedules:
+  name: Get schedules
+  description: >-
+    Query the robot's cleaning schedules (timers). Returns the full list with
+    each schedule's id, enabled state, time, weekdays, type (auto/rooms) and —
+    for room schedules — the map id and room ids. Novel/protobuf devices only.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+
+add_schedule:
+  name: Add schedule
+  description: >-
+    Create a cleaning schedule on the robot. The robot assigns the new
+    schedule's id; the response contains the updated schedule list. Times are
+    the robot's local wall-clock time. Novel/protobuf devices only.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    time:
+      name: Time
+      description: Start time, 24h "HH:MM" (robot-local wall clock).
+      required: true
+      example: "09:30"
+      selector:
+        time:
+    days:
+      name: Days
+      description: >-
+        Weekdays to repeat on. Leave empty for a one-shot schedule that runs
+        once at the next occurrence of the time.
+      required: false
+      example: '["sun", "mon", "tue"]'
+      selector:
+        select:
+          multiple: true
+          options: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+    clean_type:
+      name: Clean type
+      description: Whole-house auto clean, or specific rooms.
+      required: false
+      default: auto
+      selector:
+        select:
+          options: ["auto", "rooms"]
+    room_ids:
+      name: Room IDs
+      description: Rooms to clean (required when clean_type is "rooms").
+      required: false
+      example: "[0, 6]"
+      selector:
+        object:
+    map_id:
+      name: Map ID
+      description: >-
+        Map the room ids belong to. Defaults to the device's resolved map id
+        (the "Map ID override" option, when set).
+      required: false
+      selector:
+        number:
+          min: 1
+          mode: box
+    enabled:
+      name: Enabled
+      description: Whether the schedule starts out enabled.
+      required: false
+      default: true
+      selector:
+        boolean:
+
+update_schedule:
+  name: Update schedule
+  description: >-
+    Modify an existing schedule. Only the provided fields change; everything
+    else — including cleaning parameters set from the Eufy app — is preserved
+    (the device requires the full schedule on every modify, so the last
+    device-reported copy is used as the base). Novel/protobuf devices only.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    schedule_id:
+      name: Schedule ID
+      description: The schedule's id, as reported by get_schedules.
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+    time:
+      name: Time
+      description: New start time, 24h "HH:MM".
+      required: false
+      selector:
+        time:
+    days:
+      name: Days
+      description: New weekday set; an empty list makes it one-shot.
+      required: false
+      selector:
+        select:
+          multiple: true
+          options: ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+    room_ids:
+      name: Room IDs
+      description: New room list (rooms-type schedules only).
+      required: false
+      selector:
+        object:
+    map_id:
+      name: Map ID
+      description: New map id (rooms-type schedules only).
+      required: false
+      selector:
+        number:
+          min: 1
+          mode: box
+
+delete_schedule:
+  name: Delete schedule
+  description: Delete a schedule by id. Novel/protobuf devices only.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    schedule_id:
+      name: Schedule ID
+      description: The schedule's id, as reported by get_schedules.
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+
+set_schedule_enabled:
+  name: Enable/disable schedule
+  description: Turn a schedule on or off without deleting it. Novel/protobuf devices only.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    schedule_id:
+      name: Schedule ID
+      description: The schedule's id, as reported by get_schedules.
+      required: true
+      selector:
+        number:
+          min: 0
+          mode: box
+    enabled:
+      name: Enabled
+      description: true to enable, false to disable.
+      required: true
+      selector:
+        boolean:
