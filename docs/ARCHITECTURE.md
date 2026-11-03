@@ -16,7 +16,7 @@ HA entity platforms  vacuum · sensor · select · switch · number · button ·
         │  read  coordinator.data  (VacuumState)
         │  write coordinator.async_send_command(...)
         ▼
-EufyCleanCoordinator          one per device; push-driven, not polled
+EufyCleanCoordinator          one per device; push-driven (Tuya cloud devices are polled)
         │  inbound  update_state(state, dps) -> (new_state, changes)
         │  outbound build_command(...)       -> {dps_key: value}
         ▼
@@ -46,9 +46,9 @@ device's **API type**.
 | `legacy` | no protobuf datapoints at all; string/bool/int on low DPS numbers | Tuya Cloud, Tuya LAN, Tuya mobile MQTT | RoboVac 11S/15C/30C, T2266 X8 Pro Hybrid |
 
 The type is stored on the coordinator as `coordinator.api_type` and on
-`VacuumState.api_type`. Anything that is not `scalar` is treated as `novel` by the
-entity capability gate (see *Capability gating* below), because `legacy` devices
-support a strict subset.
+`VacuumState.api_type`. The entity capability gate treats anything that is not
+`scalar` as `novel` (see *Capability gating* below); platforms add or drop the
+legacy-only entities by `coordinator.api_type` themselves.
 
 Model → name and capability metadata live in `const.py:EUFY_CLEAN_DEVICES` and
 `profiles.py`.
@@ -63,8 +63,8 @@ Model → name and capability metadata live in `const.py:EUFY_CLEAN_DEVICES` and
    - builds an `EufyLogin` and calls `init()` — HTTP login, then device discovery;
    - creates one `EufyCleanCoordinator` per discovered vacuum and calls `initialize()`;
    - stores them in `hass.data[DOMAIN][entry.entry_id]`;
-   - serves the frontend card;
    - forwards setup to every platform in `PLATFORMS`.
+   (`async_setup()` registers the frontend card once `frontend` is up.)
 3. **`api/cloud.py:EufyLogin.init()`**
    - `api/http.py` authenticates against the Eufy user API and fetches the device list;
    - retrieves the MQTT credentials (client certificate, private key, endpoint, thing
@@ -195,8 +195,9 @@ Two transport rules matter when touching this path:
 
 - **Map operations (DPS 124) must go over the cloud.** A LAN write is accepted by the
   device and then silently ignored.
-- **The LAN transport is push-only.** There is no state poll, so a write that the device
-  does not announce back looks like it failed until the next reconnect.
+- **The LAN transport is push-only.** There is no periodic state poll; a write that
+  the device does not announce back is caught by one `status()` re-read shortly after
+  the write.
 
 The floor map itself is not on any datapoint — see [`MAP.md`](MAP.md).
 
@@ -207,10 +208,10 @@ The floor map itself is not on any datapoint — see [`MAP.md`](MAP.md).
 ```
 MQTT / LAN / cloud message
     → coordinator: JSON parse, extract the DPS dictionary
-    → api/parser.py:update_state(current_state, dps)
-          api_type == "scalar"  → api/parser_scalar.py
-          api_type == "legacy"  → api/legacy_parser.py
-          otherwise             → the protobuf handlers below
+    → coordinator: api_type == "legacy" → api/legacy_parser.py:update_state_legacy()
+                   otherwise           → api/parser.py:update_state(current_state, dps)
+                         api_type == "scalar" → api/parser_scalar.py
+                         otherwise            → the protobuf handlers below
     → (new_state, changes)
     → coordinator: dock-status debounce, trail bookkeeping, map refresh triggers
     → async_set_updated_data(state) → entities re-render
@@ -241,8 +242,11 @@ Protobuf handler routing inside `api/parser.py`:
 | 2 | fault | `error` |
 | 3 | charging | `docked` |
 | 4 | positioning | `cleaning` |
-| 5 | cleaning (or drying at the dock) | `cleaning` / `docked` |
+| 5 | cleaning (washing/drying at the dock, or a user pause) | `cleaning` / `docked` / `paused` |
+| 6 | remote control | `cleaning` |
+| 8 | cleaning (alternate) | `cleaning` |
 | 7 | go home | `returning` |
+| 15 | paused | `paused` |
 
 `WorkStatus.trigger.source` → `trigger_source`: 1 app, 2 button, 3 schedule, 4 robot,
 5 remote control. When the field is absent, the source is inferred from the mode id
@@ -297,7 +301,7 @@ Control codes are `const.py:EUFY_CLEAN_CONTROL`. Per-room parameter vocabularies
 ```
 VacuumState
 ├── api_type: str                  "novel" | "scalar" | "legacy"
-├── activity: str                  idle | cleaning | docked | returning | error
+├── activity: str                  idle | cleaning | paused | docked | returning | error
 ├── battery_level: int
 ├── fan_speed: str                 Quiet | Standard | Turbo | Max
 ├── error_code: int / error_message: str
@@ -361,7 +365,7 @@ supported_api_types = ("novel",)   # or ("scalar",)
 
 Each platform's `async_setup_entry` passes its candidates through
 `entity.filter_supported_entities()`, so an unsupported entity never reaches the
-registry at all. `entity.py:normalize_api_type()` folds `legacy` and unknown types into
+registry at all. `entity.py:effective_api_type()` folds `legacy` and unknown types into
 `novel`.
 
 ### Platforms
@@ -376,8 +380,8 @@ registry at all. `entity.py:normalize_api_type()` folds `legacy` and unknown typ
 | `button.py` | dock actions (wash, dry, empty dust) and consumable resets |
 | `binary_sensor.py` | charging |
 | `camera.py` | the server-rendered floor-map PNG ([`MAP.md`](MAP.md)) |
-| `time.py` | schedule entries |
-| `update.py` | firmware version reporting |
+| `time.py` | Do Not Disturb and off-peak charging times |
+| `update.py` | firmware version and OTA install (Tuya devices) |
 
 Services are declared in `services.yaml`; user-facing strings in `strings.json` and
 `translations/en.json`.

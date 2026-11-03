@@ -46,12 +46,13 @@ produced it:
 | `origin_x`, `origin_y`, `resolution` | world frame: `cell = (world_cm - origin) / resolution` |
 | `raw_pixels` | occupancy, 2 bits per cell: 0 unknown, 1 wall, 2 floor, 3 cleaned |
 | `room_pixels` | room mask; the low two bits are a sub-type, the rest the room id |
-| `rooms` | `[{id, name}, ...]`, real device room ids |
+| `room_names` | `{id: name}`, real device room ids |
 | `room_polygons` | vector room outlines, legacy only |
 | `room_id_offset` | offset to subtract before a room id leaves the module |
-| `dock`, `robot` | positions in grid cells |
-| `trail`, `trail_types` | the cleaning path and per-point type |
+| `dock_pixel` | dock position in rendered map pixels, legacy only |
 | `virtual_walls`, `forbidden_zones`, `ban_mop_zones` | restricted geometry, world cm |
+
+The robot pose and the trail are coordinator state, passed to the renderer per frame.
 
 Two invariants matter everywhere downstream:
 
@@ -94,7 +95,8 @@ every known alias and the whole path degrades cleanly to "no map" rather than ra
 
 `api/tuya_map.py` decodes it:
 
-- a `0pam` magic and a 24-byte header (dimensions, origin, resolution, map id);
+- a `0pam` magic and a 24-byte header (map id, dimensions, origin, compressed and
+  decompressed lengths);
 - an LZ4-compressed grid of **signed bytes** — `-1` unmapped, `-7` obstacle, `-12` wall,
   and any value `>= 0` a room cell whose id is `cell // 4`;
 - a trailer of tagged sections carrying the room table, virtual walls, forbidden zones
@@ -211,9 +213,11 @@ Per-room settings behave the same way: `customRooms` is replace-all, and one una
 value voids the entire write. Room *renames* are the exception — they address a single
 room.
 
-The `set_nogo_zones` service therefore addresses existing shapes **by index** into the
-current geometry revision, refuses to move and remove the same index in one call, and
-re-reads the geometry before writing so a stale index cannot delete the wrong shape.
+The `set_nogo_zones` command (`vacuum.send_command`) therefore addresses existing
+shapes **by index** into the current geometry revision, refuses to move and remove the
+same index in one call, and refuses the write when the caller's `expect_revision` is no
+longer the current `map_geometry_revision`, so a stale index cannot delete the wrong
+shape.
 
 ---
 
