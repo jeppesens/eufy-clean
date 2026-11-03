@@ -228,7 +228,9 @@ class EufyLogin:
         finally:
             # the login succeeded: keep its tokens even if discovery failed
             self._capture_auth_cache()
-        self._latch_if_rejected_again()
+        if discover:
+            # without a discovery the flags are the login's own probes
+            self._latch_if_rejected_again()
         if self._mqtt_devices_without_credentials():
             # e.g. a user-center outage: the next setups reuse this session
             # instead of logging in again until the hold-off ends
@@ -415,7 +417,7 @@ class EufyLogin:
                         "Not logging in again until the entry is reauthenticated"
                     )
                     self._mqtt_relogin_spent = rejected
-                    changed = True
+                    changed = True  # the latch clears the stored tokens
                     raise self._latch_session_replaced()
                 not_before = self._mqtt_relogin_not_before
                 if not_before is not None and time.monotonic() < not_before:

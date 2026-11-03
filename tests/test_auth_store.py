@@ -969,6 +969,55 @@ async def test_the_kick_out_login_is_judged_by_its_own_discovery(rejected):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rejected", [(401, {}), (200, {"res_code": 26084})], ids=["401", "26084"]
+)
+async def test_a_login_for_mqtt_credentials_alone_latches_nothing(rejected):
+    """Within the window after a kick-out login, a cached session that serves
+    discovery but holds no MQTT credentials logs in without a second discovery.
+    The first config's user info rejects its token, the second succeeds: the
+    discovery already proved the session, so nothing latches."""
+    cache = AuthCache(
+        session={"access_token": "old", "user_id": "uid"},
+        user_info={"user_center_token": "x", "gtoken": "g", "user_center_id": "uc"},
+        mqtt_credentials=None,
+        login_label="v2 (Eufy app)",
+    )
+    cache.replaced_relogin_at = time.time() - 20 * 60
+    websession = MagicMock()
+    login = EufyLogin("u", "p", "udid", websession=websession, auth_cache=cache)
+    login.tuya_login = AsyncMock()
+    login.getCloudDevices = AsyncMock()
+
+    async def get_devices():
+        login.mqtt_devices = [{"deviceId": "d1"}]
+
+    login.getDevices = AsyncMock(side_effect=get_devices)
+    creds = _creds(_self_signed(timedelta(days=30)))
+
+    def post(url, **kwargs):
+        if url == EUFY_API_MQTT_INFO:
+            return _answer(200, {"data": creds})
+        token = "v2tok" if url == EUFY_API_LOGIN_V2 else "v1tok"
+        return _answer(200, {"access_token": token, "user_id": "uid"})
+
+    def get(_url, **kwargs):
+        if kwargs["headers"]["token"] == "v2tok":
+            return _answer(*rejected)
+        return _answer(200, {"user_center_id": "uc", "user_center_token": "t"})
+
+    websession.post.side_effect = post
+    websession.get.side_effect = get
+
+    await login.init()
+
+    assert login.getDevices.await_count == 1
+    assert cache.session_replaced_at is None
+    assert cache.session == {"access_token": "v1tok", "user_id": "uid"}
+    assert cache.mqtt_credentials == creds
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("replaced", [True, False], ids=["26084", "401"])
 async def test_a_rejection_after_the_window_logs_in_again(replaced):
     cache = _usable_cache()
