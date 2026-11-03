@@ -2349,6 +2349,20 @@ async def test_set_room_configs_resends_every_room_that_has_an_override(
     assert [p["roomId"] for p in doc["data"]["property"]] == [0, 1]
 
 
+async def test_set_room_configs_uses_the_map_id_override(mock_hass, mock_login):
+    """The options-flow override applies here as it does to room cleans."""
+    coordinator = _legacy_room_coordinator(
+        mock_hass, mock_login, [{"id": 0, "fan_speed": -1, "water_level": -1, "clean_times": 0}]
+    )
+    coordinator.map_id_overrides = {3: 7}
+
+    assert await coordinator.async_set_room_configs({0: {"fan_speed": "Max"}})
+
+    (payload,), _ = coordinator.async_send_command.call_args
+    doc = json.loads(base64.b64decode(payload["124"]))
+    assert doc["data"]["mapId"] == 7
+
+
 async def test_set_room_configs_applies_optimistically_to_data_rooms(
     mock_hass, mock_login
 ):

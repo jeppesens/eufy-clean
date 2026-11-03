@@ -2284,7 +2284,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         rooms = self.data.rooms
         if not rooms or not targets:
             return False
-        map_id = self.data.map_id or 1
+        map_id = self.resolve_map_id()
 
         room_config: list[dict[str, Any]] = []
         new_rooms: list[dict[str, Any]] = []
