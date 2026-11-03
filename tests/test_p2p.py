@@ -551,14 +551,14 @@ def test_kcp_drops_a_record_that_never_ends(monkeypatch):
     receiver, _ = _conversation(on_message=lambda _m: None)
     with pytest.raises(kcp.KcpError, match="size limit"):
         _deliver(sent[:-1], receiver)
-    assert receiver._fragments == []  # noqa: SLF001
+    assert not receiver._fragments  # noqa: SLF001
 
 
 def test_signaling_buffer_does_not_keep_junk_or_absurd_lengths():
     junk = b"\x01" * 5000
     frames, tail = framing.decode_frames(_KEY, junk)
-    assert frames == [] and len(tail) <= 3
+    assert not frames and len(tail) <= 3
     marker = framing.PREFIX.to_bytes(4, "big")
     bogus = marker + bytes(8) + b"\xff\xff\xff\xf0"  # claims a ~4 GB frame
     frames, tail = framing.decode_frames(_KEY, bogus + junk)
-    assert frames == [] and len(tail) <= 3
+    assert not frames and len(tail) <= 3

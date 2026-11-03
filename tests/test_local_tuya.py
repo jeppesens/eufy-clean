@@ -13,6 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from custom_components.robovac_mqtt.api import local_tuya
 from custom_components.robovac_mqtt.api.local_tuya import (
     LocalTuyaClient,
     LocalTuyaError,
@@ -425,8 +426,6 @@ async def test_cancelled_write_holds_socket_lock_until_executor_finishes(patch_t
 @pytest.mark.asyncio
 async def test_only_the_listen_receive_uses_the_short_socket_timeout(patch_tinytuya, fake_dev):
     """A short timeout elsewhere makes tinytuya reconnect and re-send slow robots' writes."""
-    from custom_components.robovac_mqtt.api import local_tuya
-
     client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
     await client.connect()
     fake_dev.receive.side_effect = lambda: fake_dev.set_socketTimeout.call_args_list[-1].args[0]

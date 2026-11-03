@@ -30,6 +30,7 @@ from custom_components.robovac_mqtt.api.parser import (
     update_state,
 )
 from custom_components.robovac_mqtt.camera import (
+    EufyMapCamera,
     EufyVideoCamera,
     _add_video_camera_when_supported,
 )
@@ -39,11 +40,13 @@ from custom_components.robovac_mqtt.const import (
     WORK_STATE_REMOTE_CTRL,
 )
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.p2p_map import P2PMapFeed
 from custom_components.robovac_mqtt.proto.cloud.common_pb2 import Switch
 from custom_components.robovac_mqtt.utils import decode_varint
 from custom_components.robovac_mqtt.video_stream import (
     FFMPEG_ARGS,
     RobotVideo,
+    VideoDecoderUnavailable,
     retry_delay,
 )
 
@@ -723,8 +726,6 @@ async def test_turning_the_physical_camera_off_blocks_cached_images_and_stops_wa
 
 
 def _real_feed(hass_mock=None):
-    from custom_components.robovac_mqtt.p2p_map import P2PMapFeed
-
     return P2PMapFeed(
         hass_mock or MagicMock(), host="h", local_key="k" * 16, device_id="d",
         rtc_config=AsyncMock(return_value={"device_password": "pw"}),
@@ -790,8 +791,6 @@ async def test_a_run_waits_out_the_shared_deadline_not_a_fixed_backoff(video, co
 @pytest.mark.asyncio
 async def test_without_ffmpeg_nothing_is_reserved_and_the_run_gives_up(video, coordinator):
     """Each attempt that reserved a session and then could not decode would burn a robot slot."""
-    from custom_components.robovac_mqtt.video_stream import VideoDecoderUnavailable
-
     feed = _real_feed()
     feed.get_rtc = AsyncMock()
     feed.acquire_slot = AsyncMock()
@@ -810,8 +809,6 @@ async def test_without_ffmpeg_nothing_is_reserved_and_the_run_gives_up(video, co
 
 @pytest.mark.asyncio
 async def test_a_decoder_that_will_not_start_is_terminal_too(video, coordinator, monkeypatch):
-    from custom_components.robovac_mqtt.video_stream import VideoDecoderUnavailable
-
     feed = _real_feed()
     feed.get_rtc = AsyncMock(return_value={"device_password": "pw", "session": {"sessionId": "s"}})
     coordinator.p2p = feed
@@ -858,8 +855,6 @@ async def test_the_mjpeg_stream_ends_cleanly_when_manual_control_ends(coordinato
 
 def test_changing_camera_attributes_are_not_recorded():
     """Every write of these would otherwise add a state_attributes row to the recorder."""
-    from custom_components.robovac_mqtt.camera import EufyMapCamera
-
     assert "robot" in EufyMapCamera._unrecorded_attributes
     assert "frame_age_seconds" in EufyVideoCamera._unrecorded_attributes
 
@@ -884,7 +879,10 @@ async def test_a_refusal_noted_while_queued_for_the_slot_stops_the_camera_fetchi
 def test_an_endless_fragmentation_unit_is_dropped(monkeypatch):
     monkeypatch.setattr("custom_components.robovac_mqtt.api.p2p.video._MAX_FRAGMENT", 100)
     reader = RtpHevcReader()
-    fu = lambda header: bytes([49 << 1, 1, header])  # noqa: E731 - FU payload header
+
+    def fu(header):  # FU payload header
+        return bytes([49 << 1, 1, header])
+
     packets = [rtp(0, fu(0x80 | 19) + bytes(60))] + [rtp(n, fu(19) + bytes(60)) for n in range(1, 5)]
     assert read_all(reader, b"".join(frame(p) for p in packets)) == []
     assert reader._fragment is None  # noqa: SLF001
