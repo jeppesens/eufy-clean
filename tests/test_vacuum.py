@@ -16,10 +16,13 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.robovac_mqtt.api.legacy_parser import encode_legacy_loops
 from custom_components.robovac_mqtt.api.parser_scalar import encode_scalar_repeat
-from custom_components.robovac_mqtt.const import DOMAIN, EUFY_CLEAN_CLEAN_SPEED
+from custom_components.robovac_mqtt.const import (
+    DOMAIN,
+    EUFY_CLEAN_CLEAN_SPEED,
+    MIN_CLEAN_TIMES,
+)
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
-from custom_components.robovac_mqtt.utils import MIN_CLEAN_TIMES
 from custom_components.robovac_mqtt.vacuum import RoboVacMQTTEntity, async_setup_entry
 
 _VACUUM = "custom_components.robovac_mqtt.vacuum"
@@ -630,7 +633,7 @@ async def _service_schemas(hass) -> dict[str, vol.Schema]:
     ("service", "base"),
     [("set_room_config", {"room": "Kitchen"}), ("set_schedule", {"time": "08:00"})],
 )
-async def test_clean_times_services_validate_the_utils_range(hass, service, base):
+async def test_clean_times_services_validate_the_const_range(hass, service, base):
     """The pass-count range follows MIN/MAX_CLEAN_TIMES, not a copy of it."""
     with patch(f"{_VACUUM}.MAX_CLEAN_TIMES", 5):
         schema = (await _service_schemas(hass))[service]

@@ -356,7 +356,7 @@ def encode_legacy_loops(days: list[str] | str | None) -> str:
 
 
 def _parse_legacy_timer(timer: dict[str, Any]) -> dict[str, Any]:
-    """Turn one Tuya timer object into a read-only schedule entry."""
+    """Turn one Tuya timer object into a schedule entry."""
     entry: dict[str, Any] = {
         "id": timer.get("timerId"),
         "enabled": timer.get("status") == 1,

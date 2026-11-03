@@ -41,11 +41,12 @@ from .const import (
     EUFY_CLEAN_WATER_LEVELS,
     LEGACY_ROOM_FAN_LEVELS,
     LEGACY_ROOM_WATER_LEVELS,
+    MAX_CLEAN_TIMES,
+    MIN_CLEAN_TIMES,
     SCALAR_SUCTION_LEVELS,
 )
 from .coordinator import EufyCleanCoordinator
 from .select import _format_option_label
-from .utils import MAX_CLEAN_TIMES, MIN_CLEAN_TIMES
 
 if TYPE_CHECKING:
     from homeassistant.components.vacuum import Segment

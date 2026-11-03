@@ -6,7 +6,12 @@ from typing import Any, TypeVar
 
 from google.protobuf.message import Message
 
-from .const import WEEKDAY_ABBREVIATIONS, WEEKDAY_NAMES
+from .const import (
+    MAX_CLEAN_TIMES,
+    MIN_CLEAN_TIMES,
+    WEEKDAY_ABBREVIATIONS,
+    WEEKDAY_NAMES,
+)
 
 # Source: https://github.com/CodeFoodPixels/robovac/issues/68#issuecomment-2119573501  # noqa: E501
 
@@ -177,11 +182,6 @@ def lz4_block_decompress(data: bytes, uncompressed_size: int) -> bytes:
             output += (period * (match_len // offset + 1))[:match_len]
     # A sequence can overshoot the declared size; the declared size wins.
     return bytes(output[:uncompressed_size])
-
-
-# Passes per room/zone the app offers; the services validate the same range.
-MIN_CLEAN_TIMES = 1
-MAX_CLEAN_TIMES = 3
 
 
 def clamp_clean_times(value: Any) -> int:

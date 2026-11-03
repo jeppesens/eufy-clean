@@ -267,9 +267,12 @@ class EUFY_CLEAN_CONTROL(int, Enum):
     START_MAPPING_THEN_CLEAN = 25
 
 
+# Passes per room or zone the app offers; the services validate this range.
+MIN_CLEAN_TIMES = 1
+MAX_CLEAN_TIMES = 3
 # Whole-house passes (AutoClean.clean_times) for START_AUTO_CLEAN. The Eufy app
 # offers x1 and x2; start_auto clamps clean_times to this range.
-AUTO_CLEAN_TIMES_MIN = 1
+AUTO_CLEAN_TIMES_MIN = MIN_CLEAN_TIMES
 AUTO_CLEAN_TIMES_MAX = 2
 
 
@@ -753,7 +756,8 @@ LEGACY_ROOM_WATER_LEVELS = ("Low", "Mid", "High")
 LEGACY_ROOM_DEFAULT_FAN = LEGACY_ROOM_FAN_LEVELS[1]
 LEGACY_ROOM_DEFAULT_WATER = LEGACY_ROOM_WATER_LEVELS[1]
 # Schedule (timer) DPS 124 documents, as the eufy app writes them: suction by
-# its 0-4 index, water by the per-room level (key) in the timer's own spelling.
+# name (Quiet..Boost_IQ), water by the per-room level (key) in the timer's own
+# spelling.
 LEGACY_SCHEDULE_FAN_LEVELS = tuple(s.value for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 LEGACY_SCHEDULE_WATER_MODES = {
     **dict(zip(LEGACY_ROOM_WATER_LEVELS, ("Low", "medium", "High"))),
