@@ -1072,7 +1072,7 @@ def current_room_coordinator():
 @pytest.mark.parametrize("pixel,expected", [
     ((0, 0), (7, "Bathroom")), ((3, 0), (8, "Hallway")),
     ((0, 2), (9, "Living Room")), ((3, 2), (9, "Living Room")),
-    (None, (0, None)), ((-1, 0), (0, None)), ((4, 0), (0, None)),
+    (None, None), ((-1, 0), None), ((4, 0), None),
 ])
 def test_physical_room(current_room_coordinator, pixel, expected):
     coordinator = current_room_coordinator
@@ -1087,9 +1087,9 @@ def test_missing_map_or_mask(current_room_coordinator):
     coordinator = current_room_coordinator
     coordinator._robot_pixel = (0, 0)
     coordinator._map_data.room_pixels = None
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() is None
     coordinator._map_data = None
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() is None
 
 
 @pytest.mark.parametrize("width,height", [(0, 3), (4, 0), (-1, 3)])
@@ -1098,7 +1098,7 @@ def test_invalid_dimensions(current_room_coordinator, width, height):
     coordinator._robot_pixel = (0, 0)
     coordinator._map_data.width = width
     coordinator._map_data.height = height
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() is None
 
 
 def test_only_room_changes_signal(current_room_coordinator):
@@ -1122,6 +1122,33 @@ def test_only_room_changes_signal(current_room_coordinator):
         coordinator._update_current_room()
         assert send.call_count == 4
         coordinator.async_update_listeners.assert_not_called()
+
+
+def _room_zero_coordinator(room_names):
+    """A legacy map (rooms numbered from 0) with the robot in room 0."""
+    coord = EufyCleanCoordinator(
+        MagicMock(), MagicMock(),
+        {"deviceId": "test", "deviceName": "Vacuum cleaner", "deviceModel": "T2266"},
+    )
+    coord._map_data = MapData(
+        raw_pixels=b"", width=2, height=1, resolution=1,
+        room_pixels=bytes(stored << 2 for stored in [1, 2]),
+        room_outline_width=2, room_outline_height=1,
+        room_names=room_names, room_id_offset=1,
+    )
+    coord._robot_pixel = (0, 0)
+    return coord
+
+
+def test_legacy_room_zero_is_a_room():
+    coordinator = _room_zero_coordinator({0: "Hallway"})
+    assert coordinator.current_room() == (0, "Hallway")
+
+
+def test_legacy_room_zero_takes_its_name_from_the_room_list():
+    coordinator = _room_zero_coordinator({})
+    coordinator.data.rooms = [{"id": 0, "name": "Hallway"}]
+    assert coordinator.current_room() == (0, "Hallway")
 
 
 def test_current_room_name_fallback(current_room_coordinator):

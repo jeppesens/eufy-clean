@@ -480,7 +480,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         # async_load_storage runs AFTER the first DPS parse.
         self._storage_loaded = False
         self._robot_pixel: tuple[float, float] | None = None
-        self._current_room: tuple[int, str | None] = (0, None)
+        self._current_room: tuple[int, str | None] | None = None
         self._robot_trail: list[tuple[float, float]] = []
         # Per trail entry: 0 = cleaning, 1 = transit (0x67 only).
         self._robot_trail_types: list[int] = []
@@ -3086,21 +3086,25 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return None, None
         return rid, md.room_names.get(rid)
 
-    def current_room(self) -> tuple[int, str | None]:
-        """Resolve the physical room from the live map pose, not DPS coordinates."""
+    def current_room(self) -> tuple[int, str | None] | None:
+        """The (room id, name) under the live map pose, or None outside any room.
+
+        Resolved from the map, not DPS coordinates. Legacy robots number rooms
+        from 0, so 0 is a room.
+        """
         md = self._map_data
         if md is None or self._robot_pixel is None or md.width <= 0 or md.height <= 0:
-            return 0, None
+            return None
         px, py = self._robot_pixel
         if not (0 <= px < md.width and 0 <= py < md.height):
-            return 0, None
+            return None
         # cell centre, so the floor in room_id_at_normalized lands on this cell
         nx = (int(px) + 0.5) / md.width
         ny = 1.0 - (int(py) + 0.5) / md.height
         room_id, room_name = self.room_id_at_normalized(nx, ny)
         if room_id is None:
-            return 0, None
-        if room_id and not room_name:
+            return None
+        if not room_name:
             room_name = next(
                 (room.get("name") for room in self.data.rooms if room.get("id") == room_id),
                 None,
