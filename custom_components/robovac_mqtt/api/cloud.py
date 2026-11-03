@@ -97,8 +97,9 @@ class EufyLogin:
         self._tuya_login_lock = asyncio.Lock()
         # One MQTT-credential login for all coordinators that find none.
         self._check_login_lock = asyncio.Lock()
-        # MQTT credentials whose rejection gets no further login: a replacement
-        # the broker has not accepted yet, or ones the account login refused.
+        # MQTT credentials whose rejection gets no further login: ones a login
+        # produced that the broker has not accepted yet, or ones the account
+        # login refused.
         self._mqtt_relogin_spent: dict[str, Any] | None = None
         # time.monotonic() before which no replacement login is sent
         self._mqtt_relogin_not_before: float | None = None
@@ -273,6 +274,7 @@ class EufyLogin:
             raise EufyLoginError("Login failed")
 
         self.mqtt_credentials = eufyLogin["mqtt"]
+        self._mqtt_relogin_spent = self.mqtt_credentials
         _LOGGER.debug("HTTP login successful, MQTT credentials obtained")
 
         session = eufyLogin.get("session", {})
@@ -304,8 +306,8 @@ class EufyLogin:
 
         The rejected credentials leave the auth cache, so the next setup logs in
         instead of reusing them. No login runs during the login hold-off, nor
-        for credentials a replacement already produced or the login refused,
-        nor within the retry delay of a failed replacement login or the
+        for credentials a login produced or refused (that starts the hold-off,
+        which outlives a restart), nor within the retry delay of a failed replacement login or the
         minimum interval after a successful one.
         ``save`` persists the cache after a change. Returns True when the caller
         should reconnect with ``mqtt_credentials``. Raises EufyLoginError when
@@ -322,7 +324,10 @@ class EufyLogin:
                 changed = True
             try:
                 if rejected is self._mqtt_relogin_spent:
-                    _LOGGER.debug("Replacement MQTT credentials rejected too; no login")
+                    _LOGGER.debug("MQTT credentials from a login rejected; no login")
+                    if self._login_hold_off_left() is None:
+                        self._hold_off_logins(None)
+                        changed = True
                     return False
                 if self._login_hold_off_left() is not None:
                     return False
@@ -348,7 +353,6 @@ class EufyLogin:
                 if not self.mqtt_credentials:
                     self._hold_off_logins(None)
                     return False
-                self._mqtt_relogin_spent = self.mqtt_credentials
                 self._mqtt_relogin_not_before = (
                     time.monotonic() + _MQTT_RELOGIN_MIN_INTERVAL
                 )

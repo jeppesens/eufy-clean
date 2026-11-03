@@ -817,10 +817,11 @@ def _account_login(credentials):
     )
     issued = iter(range(1, 100))
 
-    async def _login(_config):
-        login.mqtt_credentials = {**credentials, "certificate_pem": f"new{next(issued)}"}
+    async def _http_login():
+        return {"mqtt": {**credentials, "certificate_pem": f"new{next(issued)}"}}
 
-    login.login = AsyncMock(side_effect=_login)
+    login.eufyApi.login = AsyncMock(side_effect=_http_login)
+    login.login = AsyncMock(wraps=login.login)
     return login
 
 

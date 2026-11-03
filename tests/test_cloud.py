@@ -579,6 +579,39 @@ async def test_a_failed_replacement_login_keeps_the_rejected_cert_out(error):
 
 
 @pytest.mark.asyncio
+async def test_credentials_a_login_just_produced_get_no_replacement_login():
+    """The broker rejects what a login handed out seconds ago: another login
+    would not help, so logins are held off instead."""
+    login, _rejected, save = _login_with_rejected_credentials()
+    await login.login({"mqtt": True})
+    fresh = login.mqtt_credentials
+
+    assert await login.replace_rejected_mqtt_credentials(fresh, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.auth_cache.login_hold_off_left() is not None
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_replacement_holds_off_logins_after_a_restart_too():
+    """The hold-off is persisted and renewed while the rejections go on, so
+    setups after a restart do not log in each time."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+    assert login.auth_cache.login_hold_off_left() is not None
+    login.auth_cache.login_hold_until = 0.0
+    save.reset_mock()
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    assert login.auth_cache.login_hold_off_left() is not None
+    save.assert_awaited_once()
+    login.eufyApi.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_rejections_soon_after_a_failed_replacement_login_send_no_login():
     """Eufy unreachable: the coordinators that ask next get no login of their own."""
     login, rejected, save = _login_with_rejected_credentials()
