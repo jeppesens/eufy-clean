@@ -635,6 +635,35 @@ async def test_a_rejected_replacement_holds_off_logins_after_a_restart_too():
     login.eufyApi.login.assert_awaited_once()
 
 
+async def _hold_off_after_a_rejected_login(login, save) -> float:
+    """Log in once the hold-off is over; the broker rejects what it produced.
+    Returns the hold-off that starts."""
+    login.auth_cache.login_hold_until = None
+    await login.login({"mqtt": True})
+    assert await login.replace_rejected_mqtt_credentials(
+        login.mqtt_credentials, save
+    ) is False
+    return login.auth_cache.login_hold_off_left()
+
+
+@pytest.mark.asyncio
+async def test_consecutive_rejected_logins_hold_off_logins_longer_up_to_an_hour():
+    """15, 30, then 60 min after each login whose credentials the broker
+    turns away; the count outlives a restart and ends with an accept."""
+    login, _rejected, save = _login_with_rejected_credentials()
+    holds = [await _hold_off_after_a_rejected_login(login, save) for _ in range(4)]
+
+    assert [round(h / 60) for h in holds] == [15, 30, 60, 60]
+    stored = AuthCache.from_dict(json.loads(json.dumps(login.auth_cache.to_dict())))
+    login.auth_cache = stored
+    # counted only while the hold-off still grows
+    assert stored.rejected_logins == 2
+    assert round(await _hold_off_after_a_rejected_login(login, save) / 60) == 60
+
+    assert login.mqtt_credentials_accepted({"certificate_pem": "other"}) is True
+    assert round(await _hold_off_after_a_rejected_login(login, save) / 60) == 15
+
+
 @pytest.mark.asyncio
 async def test_rejections_soon_after_a_failed_replacement_login_send_no_login():
     """Eufy unreachable: the coordinators that ask next get no login of their own."""

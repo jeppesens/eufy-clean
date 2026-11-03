@@ -135,6 +135,9 @@ class AuthCache:
     mqtt_credentials_unaccepted: bool = False
     # POSIX time before which no Eufy login is sent; outlives clear_tokens()
     login_hold_until: float | None = None
+    # logins in a row whose MQTT credentials the broker rejected (sets the
+    # length of the hold-off that follows); 0 once it accepts credentials
+    rejected_logins: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> AuthCache:
@@ -162,6 +165,9 @@ class AuthCache:
         cache.user_info = trim_user_info(cache.user_info)
         if isinstance(data.get("mqtt_credentials_unaccepted"), bool):
             cache.mqtt_credentials_unaccepted = data["mqtt_credentials_unaccepted"]
+        rejected_logins = data.get("rejected_logins")
+        if isinstance(rejected_logins, int) and not isinstance(rejected_logins, bool):
+            cache.rejected_logins = rejected_logins
         for name in ("session_expires_at", "login_hold_until"):
             value = data.get(name)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
