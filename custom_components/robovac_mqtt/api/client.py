@@ -100,9 +100,6 @@ class EufyCleanClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected_event = asyncio.Event()
         self._connection_listener: ConnectionListener | None = None
-        # Last CONNACK rejected the identity; reported with the disconnect
-        # that follows it.
-        self._auth_rejected = False
 
     def set_connection_listener(self, callback: ConnectionListener | None) -> None:
         """Call ``callback(connected, auth_failed)`` on the event loop on every
@@ -245,11 +242,11 @@ class EufyCleanClient:
         properties: Any = None,
     ) -> None:
         if reason_code.is_failure:
-            self._auth_rejected = str(reason_code) in _AUTH_REJECTED_REASONS
             _LOGGER.error("MQTT broker refused the connection: %s", reason_code)
-            self._notify_connection(False, self._auth_rejected)
+            self._notify_connection(
+                False, str(reason_code) in _AUTH_REJECTED_REASONS
+            )
             return
-        self._auth_rejected = False
         _LOGGER.info("Connected to MQTT Broker!")
         self._notify_connection(True, False)
         if self.device_id:
@@ -272,7 +269,8 @@ class EufyCleanClient:
             _LOGGER.warning("Disconnected from MQTT broker unexpectedly: %s", reason_code)
         else:
             _LOGGER.debug("Disconnected from MQTT broker (clean)")
-        self._notify_connection(False, self._auth_rejected)
+        # paho also reports a refused CONNACK here; on_connect counted it
+        self._notify_connection(False, False)
 
     def _on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages."""

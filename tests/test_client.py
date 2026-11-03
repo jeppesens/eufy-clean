@@ -229,8 +229,8 @@ def test_connection_listener_reports_connect_and_disconnect():
 
 @pytest.mark.parametrize("reason", ["Not authorized", "Bad user name or password"])
 def test_connection_listener_flags_auth_rejection(reason):
-    """A CONNACK that rejects the identity reports auth_failed=True, also on
-    the disconnect that follows it."""
+    """A CONNACK that rejects the identity reports auth_failed=True once; the
+    disconnect paho reports after it does not count it again."""
     client = _make_client()
     mock_loop = MagicMock()
     client._loop = mock_loop
@@ -242,7 +242,7 @@ def test_connection_listener_flags_auth_rejection(reason):
         MagicMock(), None, MagicMock(), _disconnect("Unspecified error"), None
     )
 
-    assert _listener_calls(mock_loop, listener) == [(False, True), (False, True)]
+    assert _listener_calls(mock_loop, listener) == [(False, True), (False, False)]
 
 
 def test_connection_listener_other_refusal_is_not_auth():

@@ -14,6 +14,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.reasoncodes import ReasonCode
 
 from custom_components.robovac_mqtt.api.cloud import EufyLogin, EufyLoginError
 from custom_components.robovac_mqtt.api.legacy_parser import parse_legacy_schedules
@@ -782,6 +784,28 @@ def test_repeated_auth_refusals_warn_once(login, caplog):
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     login.checkLogin.assert_not_called()
+
+
+async def test_refused_connects_count_once_each(hass, login):
+    """paho reports a refused CONNACK to on_connect, then to on_disconnect:
+    the third refused attempt, not the second, asks for new credentials."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=False)
+    paho = MagicMock()
+    coordinator = _coordinator(hass, login)
+    with patch(
+        "custom_components.robovac_mqtt.api.client.get_blocking_mqtt_client",
+        return_value=paho,
+    ), patch(f"{_MOD}.async_call_later", return_value=MagicMock()):
+        client = await coordinator._async_connect_mqtt(login.mqtt_credentials)
+        refused = ReasonCode(PacketTypes.CONNACK, "Not authorized")
+        dropped = ReasonCode(PacketTypes.DISCONNECT, "Unspecified error")
+        for attempt in range(1, _AUTH_FAILURE_WARN_AFTER + 1):
+            assert login.replace_rejected_mqtt_credentials.await_count == 0, attempt
+            client._on_connect(paho, None, MagicMock(), refused, None)
+            client._on_disconnect(paho, None, MagicMock(), dropped, None)
+            await _settle()
+
+    login.replace_rejected_mqtt_credentials.assert_awaited_once()
 
 
 def _account_login(credentials):

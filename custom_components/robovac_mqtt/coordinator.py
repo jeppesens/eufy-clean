@@ -177,8 +177,9 @@ _MAP_STATE_SAVE_DELAY = 30.0
 _BIZ_INLINE_HEX_MAX = 200
 # The transport must stay down this long before entities go unavailable.
 _CONNECTION_LOSS_GRACE = 60.0
-# Broker auth refusals in a row before one warning is logged; each multiple
-# of it asks EufyLogin for replacement credentials.
+# Connection attempts in a row on which the broker rejected the client
+# identity before one warning is logged; each multiple of it asks EufyLogin
+# for replacement credentials.
 _AUTH_FAILURE_WARN_AFTER = 3
 
 
@@ -2764,8 +2765,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             self._auth_failures += 1
             if self._auth_failures == _AUTH_FAILURE_WARN_AFTER:
                 _LOGGER.warning(
-                    "%s: the MQTT broker rejected the client credentials %d times"
-                    " in a row",
+                    "%s: the MQTT broker rejected the client credentials on %d"
+                    " connection attempts in a row",
                     self.device_name, self._auth_failures,
                 )
             if (
