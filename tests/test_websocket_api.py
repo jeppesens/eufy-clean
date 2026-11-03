@@ -14,11 +14,11 @@ Two things here are load-bearing beyond "the command answers":
 
 from __future__ import annotations
 
-import inspect
+import asyncio
 import time
 from dataclasses import replace
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components import websocket_api
@@ -26,9 +26,8 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import entity_registry as er
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.robovac_mqtt import coordinator as coord_mod
 from custom_components.robovac_mqtt.api.map_stream import MapData
-from custom_components.robovac_mqtt.const import DOMAIN
+from custom_components.robovac_mqtt.const import CONF_TRAIL_COLOR, DOMAIN
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.websocket_api import (
@@ -49,8 +48,7 @@ from custom_components.robovac_mqtt.websocket_api import (
 # ws_map_geometry is registered through @websocket_api.async_response, which
 # hands the real coroutine to hass.async_create_background_task and returns None.
 # There is no hass here to run it, so the tests drive the coroutine itself; the
-# registration test above still checks the decorated function is what is
-# registered.
+# registration tests below check the decorated function is what is registered.
 _ws_map_geometry = ws_map_geometry.__wrapped__
 
 
@@ -203,6 +201,10 @@ async def test_geometry_returns_payload(mock_hass, mock_login):
     coordinator._dock_pixel = (1, 1)
     coordinator._robot_pixel = (2, 2)
     coordinator._robot_trail = [(1, 1), (2, 1), (2, 2)]
+    coordinator._robot_trail_types = [1, 0, 1]
+    mock_hass.config_entries.async_get_entry.return_value = MagicMock(
+        options={CONF_TRAIL_COLOR: [10, 20, 30]}
+    )
     _register(mock_hass, coordinator)
 
     connection = FakeConnection()
@@ -220,6 +222,8 @@ async def test_geometry_returns_payload(mock_hass, mock_login):
     assert payload["dock"] == [1, 1]
     assert payload["robot"] == [2, 2]
     assert payload["trail"] == [[1, 1], [2, 1], [2, 2]]
+    assert payload["trail_types"] == [1, 0, 1]
+    assert payload["trail_color"] == [10, 20, 30]
     # trail_seq is the length of the trail shipped in the snapshot, so the next
     # event's "from" lines up with what the client just installed.
     assert payload["trail_seq"] == 3
@@ -317,6 +321,74 @@ async def test_geometry_snapshot_and_next_from_are_contiguous(mock_hass, mock_lo
     coordinator._notify_map_trail()
     trail_events = [e for e in connection.events if e["t"] == "trail"]
     assert trail_events[-1]["from"] == payload["trail_seq"]
+
+
+async def test_fractional_cells_match_between_events_and_snapshot(
+    mock_hass, mock_login
+):
+    """Legacy cells are fractional: events and snapshot ship the same 2 dp value.
+
+    The client draws at ``p + 0.5`` either way, so a snapshot that truncated what
+    the events sent would shift the dot and the trail on every re-fetch.
+    """
+    coordinator = _make_coordinator(mock_hass, mock_login)
+    coordinator._map_data = _make_map(width=40, height=40)
+    _register(mock_hass, coordinator)
+    connection = FakeConnection()
+    ws_map_subscribe(mock_hass, connection, {"id": 1, "device_id": "dev1"})
+
+    coordinator._robot_pixel = (25.678, 18.7)
+    coordinator._dock_pixel = (20.256, 20.0)
+    coordinator._last_map_event = 0.0
+    coordinator._notify_map_pose()
+    coordinator._robot_trail.append((25.678, 18.7))
+    coordinator._last_map_event = 0.0
+    coordinator._notify_map_trail()
+    coordinator._robot_trail[:] = [(26.7, 17.704)]
+    coordinator._last_map_event = 0.0
+    coordinator._notify_map_trail_reset()
+
+    pose, append, reset = connection.events
+    assert pose == {"t": "pose", "robot": [25.68, 18.7], "dock": [20.26, 20.0]}
+    assert append["p"] == [[25.68, 18.7]]
+    assert reset["p"] == [[26.7, 17.7]]
+
+    geo = FakeConnection()
+    await _ws_map_geometry(mock_hass, geo, {"id": 2, "device_id": "dev1"})
+    _id, payload = _only(geo.results)
+    assert payload["robot"] == pose["robot"]
+    assert payload["dock"] == pose["dock"]
+    assert payload["trail"] == reset["p"]
+
+
+async def test_concurrent_snapshots_at_one_revision_share_one_build(
+    mock_hass, mock_login
+):
+    """Every subscriber re-fetches on the same geometry event; one build serves all."""
+    coordinator = _make_coordinator(mock_hass, mock_login)
+    coordinator._map_data = _make_map()
+    coordinator.map_geometry_revision = 1
+    _register(mock_hass, coordinator)
+    builds = 0
+
+    async def _executor(func, *args, **kwargs):
+        nonlocal builds
+        builds += 1
+        await asyncio.sleep(0)  # an executor hop yields to the other requests
+        return func(*args, **kwargs)
+
+    mock_hass.async_add_executor_job = _executor
+    connections = [FakeConnection() for _ in range(4)]
+    await asyncio.gather(
+        *(
+            _ws_map_geometry(mock_hass, conn, {"id": i, "device_id": "dev1"})
+            for i, conn in enumerate(connections)
+        )
+    )
+
+    assert builds == 1
+    payloads = [_only(conn.results)[1] for conn in connections]
+    assert all(p["revision"] == 1 and p["occupancy"] for p in payloads)
 
 
 # ---------------------------------------------------------------------------
@@ -744,17 +816,31 @@ class TestCallSitesFireNotifiers:
         assert coordinator._robot_trail
         spies["_notify_map_trail"].assert_called_once()
 
-    @staticmethod
-    def test_legacy_map_fetch_dock_notifies(mock_hass, mock_login):
-        """The Tuya map blob's dock cell becomes the dock marker."""
-        source = inspect.getsource(
-            coord_mod.EufyCleanCoordinator._async_install_legacy_map
+    async def test_legacy_map_fetch_dock_notifies(self, mock_hass, mock_login):
+        """The Tuya map blob's dock cell becomes the dock marker.
+
+        The LIVE 0x75 dock then goes back on top of the blob's stale copy, or the
+        pose transform (which reads the dock) reverts with it.
+        """
+        coordinator = _make_coordinator(mock_hass, mock_login)
+        coordinator.api_type = "legacy"
+        blob = MapData(raw_pixels=b"", width=40, height=40, dock_pixel=(20, 20))
+        tuya_map = MagicMock()
+        tuya_map.as_entity_rooms.return_value = coordinator.data.rooms
+        coordinator._map_storage = MagicMock()
+        coordinator._map_storage.async_fetch_map = AsyncMock(return_value=tuya_map)
+        mock_hass.async_add_executor_job = AsyncMock(return_value=blob)
+        coordinator._rerender_map = MagicMock()
+        spies = self._spy(coordinator)
+        dock_seen: list[Any] = []
+        coordinator._apply_legacy_dock_pose = MagicMock(
+            side_effect=lambda: dock_seen.append(coordinator._dock_pixel)
         )
-        assert "self._dock_pixel = map_data.dock_pixel" in source
-        assert "self._notify_map_pose()" in source
-        # ...and the LIVE 0x75 dock goes back on top of the blob's stale copy,
-        # or the pose transform (which reads dock_pixel) reverts with it.
-        assert "self._apply_legacy_dock_pose()" in source
+
+        assert await coordinator._async_install_legacy_map(None) is True
+
+        spies["_notify_map_pose"].assert_called_once()
+        assert dock_seen == [(20, 20)]
 
     def test_new_session_clear_notifies_reset(self, mock_hass, mock_login):
         """A new cleaning session clears the trail -> reset + pose."""
@@ -957,20 +1043,6 @@ class TestAddressing:
 
 class TestPreviousTrail:
     """A finished run is retained rather than dropped when the next clean starts."""
-
-    @staticmethod
-    async def test_new_session_moves_the_trail_to_previous(mock_hass, mock_login):
-        coordinator = _make_coordinator(mock_hass, mock_login)
-        coordinator._robot_trail = [(1, 1), (2, 2), (3, 3)]
-        coordinator._dock_pixel = (0, 0)
-
-        # what _track_activity_change does at a session boundary
-        if len(coordinator._robot_trail) > 1:
-            coordinator._previous_trail = list(coordinator._robot_trail)
-        coordinator._robot_trail.clear()
-
-        assert coordinator._previous_trail == [(1, 1), (2, 2), (3, 3)]
-        assert coordinator._robot_trail == []
 
     @staticmethod
     async def test_geometry_snapshot_carries_the_previous_run(

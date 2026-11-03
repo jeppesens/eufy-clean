@@ -20,8 +20,8 @@ from .coordinator import EufyCleanCoordinator
 
 DATA_WS_REGISTERED = "websocket_api_registered"
 
-# "device exists but has no decoded map yet" — distinct from ERR_NOT_FOUND so a
-# client that asked too early knows to retry after the next "geometry" event
+# "device exists but has no decoded map" (yet; never on a scalar device) — distinct
+# from ERR_NOT_FOUND so the client retries after the next "geometry" event
 ERR_NO_MAP = "no_map"
 
 
@@ -138,14 +138,6 @@ async def ws_map_geometry(
     """
     coordinator = _resolve(hass, connection, msg)
     if coordinator is None:
-        return
-
-    if coordinator._map_data is None:  # noqa: SLF001
-        connection.send_error(
-            msg["id"],
-            ERR_NO_MAP,
-            f"No map decoded yet for {coordinator.device_name}",
-        )
         return
 
     static = await coordinator.async_map_static_geometry()

@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiohttp
@@ -22,6 +24,12 @@ __all__ = [
 ]
 
 _LOGGER = logging.getLogger(__name__)
+
+# Seconds without a replacement MQTT login after one failed (Eufy unreachable).
+_MQTT_RELOGIN_RETRY_DELAY = 5 * 60.0
+# Seconds between successful replacement MQTT logins: a broker that accepts a
+# certificate and rejects it again soon after gets no login per cycle.
+_MQTT_RELOGIN_MIN_INTERVAL = 3600.0
 
 # Failures of one region probe that must not stop the next region.
 _TUYA_PROBE_ERRORS = (
@@ -89,6 +97,12 @@ class EufyLogin:
         self._tuya_login_lock = asyncio.Lock()
         # One MQTT-credential login for all coordinators that find none.
         self._check_login_lock = asyncio.Lock()
+        # MQTT credentials whose rejection gets no further login: ones a login
+        # produced that the broker has not accepted yet, or ones the account
+        # login refused.
+        self._mqtt_relogin_spent: dict[str, Any] | None = None
+        # time.monotonic() before which no replacement login is sent
+        self._mqtt_relogin_not_before: float | None = None
         # Persisted handshake reused across restarts; None disables caching.
         self.auth_cache = auth_cache
         if auth_cache is not None:
@@ -96,6 +110,8 @@ class EufyLogin:
                 auth_cache.session, auth_cache.user_info, auth_cache.login_label
             )
             self.mqtt_credentials = auth_cache.mqtt_credentials
+            if auth_cache.mqtt_credentials_unaccepted and self.mqtt_credentials:
+                self._mqtt_relogin_spent = self.mqtt_credentials
             if auth_cache.session:
                 self._eufy_user_id = auth_cache.session.get("user_id")
 
@@ -109,6 +125,7 @@ class EufyLogin:
         starts the login hold-off and raises EufyLoginRateLimitedError.
         """
         cached = self.auth_cache is not None and self.auth_cache.can_skip_login
+        discover = True
         if cached:
             _LOGGER.debug("EufyLogin.init() starting: reusing cached credentials")
             await self._discover()
@@ -116,7 +133,7 @@ class EufyLogin:
             if proved and not self._mqtt_devices_without_credentials():
                 self._capture_auth_cache()
                 return
-            if proved and self._login_hold_off_left() is not None:
+            if proved and self.login_hold_off_left() is not None:
                 _LOGGER.debug(
                     "Cached session has no MQTT credentials; no login until the "
                     "login hold-off ends"
@@ -133,22 +150,25 @@ class EufyLogin:
                     "cached session"
                 )
             if proved:
+                # the session just served discovery; only the login is missing
                 _LOGGER.info(
                     "Cached Eufy session has no MQTT credentials for %d MQTT "
                     "device(s); logging in again",
                     len(self.mqtt_devices),
                 )
+                discover = False
             else:
                 _LOGGER.info(
                     "Cached Eufy credentials were rejected or found nothing; "
                     "re-authenticating"
                 )
-            self._reset_after_stale_cache()
+                self._reset_after_stale_cache()
 
-        _LOGGER.debug("EufyLogin.init() starting: HTTP login + device discovery")
+        _LOGGER.debug("EufyLogin.init() starting: HTTP login")
         await self.login({"mqtt": True})
         try:
-            await self._discover()
+            if discover:
+                await self._discover()
         finally:
             # the login succeeded: keep its tokens even if discovery failed
             self._capture_auth_cache()
@@ -161,7 +181,7 @@ class EufyLogin:
         """MQTT robots found, but the session holds no MQTT credentials for them."""
         return bool(self.mqtt_devices) and not self.mqtt_credentials
 
-    def _login_hold_off_left(self) -> float | None:
+    def login_hold_off_left(self) -> float | None:
         if self.auth_cache is None:
             return None
         return self.auth_cache.login_hold_off_left()
@@ -231,6 +251,10 @@ class EufyLogin:
             cache.session_expires_at = expiry
         cache.user_info = trim_user_info(self.eufyApi.user_info)
         cache.mqtt_credentials = self.mqtt_credentials
+        cache.mqtt_credentials_unaccepted = (
+            self.mqtt_credentials is not None
+            and self.mqtt_credentials is self._mqtt_relogin_spent
+        )
         # The fallback-session path never sets a label; writing None would
         # erase a previously good memo.
         if self.eufyApi.login_label:
@@ -245,7 +269,7 @@ class EufyLogin:
         if not config["mqtt"]:
             raise EufyLoginError("MQTT login is required")
 
-        if (left := self._login_hold_off_left()) is not None:
+        if (left := self.login_hold_off_left()) is not None:
             raise EufyLoginRateLimitedError(
                 f"Eufy logins on hold for another {left:.0f} s",
                 retry_after=left,
@@ -260,6 +284,7 @@ class EufyLogin:
             raise EufyLoginError("Login failed")
 
         self.mqtt_credentials = eufyLogin["mqtt"]
+        self._mqtt_relogin_spent = self.mqtt_credentials
         _LOGGER.debug("HTTP login successful, MQTT credentials obtained")
 
         session = eufyLogin.get("session", {})
@@ -281,6 +306,87 @@ class EufyLogin:
                 return
             await self.login({"mqtt": True})
             self._capture_auth_cache()
+
+    async def replace_rejected_mqtt_credentials(
+        self,
+        rejected: dict[str, Any],
+        save: Callable[[], Awaitable[None]],
+    ) -> bool:
+        """Replace MQTT credentials the broker rejects, with one login for all callers.
+
+        The rejected credentials leave the auth cache, so the next setup logs in
+        instead of reusing them. No login runs during the login hold-off, nor
+        for credentials a login produced (until the broker accepts them; the
+        auth cache keeps that mark across a restart) or refused: their
+        rejection starts the hold-off, which outlives a restart. Nor within the
+        retry delay of a failed replacement login or the minimum interval after
+        a successful one.
+        ``save`` persists the cache after a change. Returns True when the caller
+        should reconnect with ``mqtt_credentials``. Raises EufyLoginError when
+        the account login is refused.
+        """
+        async with self._check_login_lock:
+            current = self.mqtt_credentials
+            if current and current is not rejected:
+                return True
+            changed = False
+            cache = self.auth_cache
+            if cache is not None and cache.mqtt_credentials is not None:
+                cache.mqtt_credentials = None
+                changed = True
+            try:
+                if rejected is self._mqtt_relogin_spent:
+                    _LOGGER.debug("MQTT credentials from a login rejected; no login")
+                    if self.login_hold_off_left() is None:
+                        self._hold_off_logins(None)
+                        changed = True
+                    return False
+                if self.login_hold_off_left() is not None:
+                    return False
+                not_before = self._mqtt_relogin_not_before
+                if not_before is not None and time.monotonic() < not_before:
+                    _LOGGER.debug("Replacement MQTT login held back; no login")
+                    return False
+                changed = True
+                try:
+                    await self.login({"mqtt": True})
+                except EufyLoginError:
+                    self._mqtt_relogin_spent = rejected
+                    raise
+                except (
+                    EufyLoginTransientError, aiohttp.ClientError, TimeoutError
+                ) as err:
+                    _LOGGER.warning("Could not fetch new MQTT credentials: %s", err)
+                    self._mqtt_relogin_not_before = (
+                        time.monotonic() + _MQTT_RELOGIN_RETRY_DELAY
+                    )
+                    return False
+                self._capture_auth_cache()
+                if not self.mqtt_credentials:
+                    self._hold_off_logins(None)
+                    return False
+                self._mqtt_relogin_not_before = (
+                    time.monotonic() + _MQTT_RELOGIN_MIN_INTERVAL
+                )
+                _LOGGER.info("Fetched new MQTT credentials after a broker rejection")
+                return True
+            finally:
+                if changed:
+                    await save()
+
+    def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> bool:
+        """The broker accepted ``credentials``: a later rejection may log in again.
+
+        Returns True when the auth cache changed and should be saved.
+        """
+        if credentials is None or credentials is not self._mqtt_relogin_spent:
+            return False
+        self._mqtt_relogin_spent = None
+        cache = self.auth_cache
+        if cache is None or not cache.mqtt_credentials_unaccepted:
+            return False
+        cache.mqtt_credentials_unaccepted = False
+        return True
 
     async def tuya_login(self) -> None:
         """Log in to the Tuya cloud with the Eufy user_id, probing EU then US."""
@@ -634,6 +740,17 @@ class EufyLogin:
         tuya_device: dict | None = None,
     ):
         device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
+        # MQTT topics use the model resolved below ("Subscribing to ..." logs
+        # it); log the raw codes so a collapsed variant (e.g. a suffixed
+        # product code) is visible (#107).
+        _LOGGER.debug(
+            "Device %s: raw model codes: V2 product_code=%r, V2 device_model=%r, "
+            "AIOT device_model=%r",
+            deviceId,
+            ((device or {}).get("product") or {}).get("product_code"),
+            (device or {}).get("device_model"),
+            (aiot_device or {}).get("device_model"),
+        )
 
         if device:
             raw_code = (

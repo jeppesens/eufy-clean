@@ -190,10 +190,15 @@ def _map_scalar_task_status(code: int) -> str:
     }.get(code, "Standby")
 
 
-def _parse_scalar_schedules(value: Any) -> list[dict[str, Any]]:
-    """Decode DPS 151 schedule JSON into read-only entries."""
+def scalar_schedule_raw_entries(value: Any) -> list[dict[str, Any]]:
+    """The raw entries of a DPS 151 value (JSON string or dict)."""
     data = value if isinstance(value, dict) else json.loads(value)
-    return [scalar_raw_to_schedule_entry(e) for e in data.get("l", [])]
+    return list(data.get("l", []))
+
+
+def _parse_scalar_schedules(value: Any) -> list[dict[str, Any]]:
+    """Decode DPS 151 schedule JSON into schedule entries."""
+    return [scalar_raw_to_schedule_entry(e) for e in scalar_schedule_raw_entries(value)]
 
 
 def scalar_raw_to_schedule_entry(raw: dict[str, Any]) -> dict[str, Any]:
@@ -224,13 +229,18 @@ def scalar_raw_to_schedule_entry(raw: dict[str, Any]) -> dict[str, Any]:
 def encode_scalar_repeat(days: list[str] | str | None) -> str:
     """Encode day names into a DPS 151 repeat string (1=Mon..7=Sun).
 
-    A string of digits 1-7 passes through sorted; anything else goes through
-    ``parse_weekdays`` (ValueError on an unknown word).
+    A string of distinct digits 1-7, alone or as the only list item, passes
+    through sorted; anything else goes through ``parse_weekdays`` (ValueError on
+    an unknown word, so a 0/1 day mask such as "1111111" is refused).
     """
-    if isinstance(days, str) and days.strip().isdigit() and set(days.strip()) <= set(
-        _SCALAR_SCHEDULE_DAYS
+    mask = days[0] if isinstance(days, list) and len(days) == 1 else days
+    digits = mask.strip() if isinstance(mask, str) else ""
+    if (
+        digits.isdigit()
+        and set(digits) <= set(_SCALAR_SCHEDULE_DAYS)
+        and len(set(digits)) == len(digits)
     ):
-        return "".join(sorted(set(days.strip())))
+        return "".join(sorted(digits))
     return "".join(str(i + 1) for i in sorted(parse_weekdays(days)))
 
 
@@ -255,17 +265,33 @@ def scalar_pattern_to_int(pattern: str | int | None) -> int | None:
     return _SCALAR_PATTERN_BY_NAME.get(str(pattern or "").strip().lower())
 
 
+def _scalar_level(value: Any, known: int | None, default: int) -> int:
+    """A DPS 151 ``s``/``f`` number: the known one, an unnamed int as is, else default."""
+    if known is not None:
+        return known
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return default
+
+
 def schedule_entry_to_scalar_raw(entry: dict[str, Any]) -> dict[str, Any]:
-    """Convert parsed schedule entry dict back into raw scalar DPS 151 dict."""
-    s_int = scalar_suction_to_int(entry.get("suction"))
-    f_int = scalar_pattern_to_int(entry.get("pattern"))
+    """Convert parsed schedule entry dict back into raw scalar DPS 151 dict.
+
+    Raises ValueError on a day the entry cannot be encoded with.
+    """
+    suction = entry.get("suction")
+    pattern = entry.get("pattern")
     return {
         "id": entry.get("id"),
         "e": bool(entry.get("enabled", True)),
         "t": str(entry.get("time", "")).replace(":", ""),
         "r": encode_scalar_repeat(entry.get("days", "")),
-        "s": _SCALAR_DEFAULT_SUCTION if s_int is None else s_int,
-        "f": _SCALAR_DEFAULT_PATTERN if f_int is None else f_int,
+        "s": _scalar_level(
+            suction, scalar_suction_to_int(suction), _SCALAR_DEFAULT_SUCTION
+        ),
+        "f": _scalar_level(
+            pattern, scalar_pattern_to_int(pattern), _SCALAR_DEFAULT_PATTERN
+        ),
     }
 
 

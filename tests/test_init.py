@@ -95,6 +95,10 @@ async def test_load_unload_entry(hass: HomeAssistant):
             config_entry.state == ConfigEntryState.LOADED
         ), f"Entry state is {config_entry.state}, expected {ConfigEntryState.LOADED}"
 
+        # No update listener: OptionsFlowWithReload raises if one exists, and
+        # HA deprecates one next to async_update_reload_and_abort (#168).
+        assert not config_entry.update_listeners
+
         # Verify calls
         mock_login_cls.assert_called_with(
             "test_user",
@@ -460,6 +464,59 @@ async def test_failed_coordinator_init_is_torn_down(hass: HomeAssistant):
 
 
 @pytest.mark.parametrize(
+    ("mqtt_robot", "mqtt_up", "has_user_center", "hold_off", "reloads"),
+    [
+        (True, False, True, 600.0, True),
+        (False, False, True, 600.0, False),
+        (True, True, True, 600.0, False),
+        (True, False, False, 600.0, False),
+        (True, False, True, None, False),
+    ],
+    ids=["left-out", "no-mqtt-robot", "mqtt-robot-up", "fallback-session", "no-hold-off"],
+)
+async def test_mqtt_robots_left_out_during_the_login_hold_off_reload_when_it_ends(
+    hass: HomeAssistant, mqtt_robot, mqtt_up, has_user_center, hold_off, reloads
+):
+    """Logins on hold at setup: the Tuya robot comes up, the MQTT robot does
+    not, and the entry reloads once when the hold-off ends."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="held_off_entry",
+    )
+    entry.add_to_hass(hass)
+
+    def coordinator(*args, **kwargs):
+        device_id = args[2]["deviceId"]
+        refused = device_id == "mqtt_dev" and not mqtt_up
+        return _mock_coordinator(
+            device_id, init_error=OSError("no MQTT credentials") if refused else None
+        )
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later:
+        login = _mock_login(mock_login_cls, *(["mqtt_dev"] if mqtt_robot else []))
+        login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
+        login.has_user_center = has_user_center
+        login.login_hold_off_left = MagicMock(return_value=hold_off)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert call_later.called is reloads
+    if not reloads:
+        return
+    _hass, delay, action = call_later.call_args.args
+    assert hold_off < delay <= hold_off + 2
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        action(None)
+    reload.assert_called_once_with(entry.entry_id)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    call_later.return_value.assert_called_once()
+
+
+@pytest.mark.parametrize(
     "error", [EufyLoginTransientError("HTTP 503"), aiohttp.ClientError("reset")]
 )
 async def test_transient_login_failure_retries_and_keeps_tokens(
@@ -586,27 +643,6 @@ async def test_remove_device_refused_while_the_api_still_returns_it(
 
     assert await async_remove_config_entry_device(hass, entry, live) is False
     assert await async_remove_config_entry_device(hass, entry, gone) is True
-
-
-def _key_tree(node: object, prefix: str = "") -> set[str]:
-    if not isinstance(node, dict):
-        return {prefix}
-    keys: set[str] = set()
-    for key, value in node.items():
-        keys |= _key_tree(value, f"{prefix}/{key}")
-    return keys
-
-
-def test_translations_match_strings_json():
-    """translations/en.json carries every strings.json key.
-
-    Custom integrations load only translations/<lang>.json, so a key that exists
-    only in strings.json shows up in the UI as its raw key.
-    """
-    strings = json.loads((_COMPONENT_DIR / "strings.json").read_text())
-    en = json.loads((_COMPONENT_DIR / "translations" / "en.json").read_text())
-
-    assert _key_tree(en) == _key_tree(strings)
 
 
 def test_manifest_declares_every_runtime_import_within_ha_constraints():

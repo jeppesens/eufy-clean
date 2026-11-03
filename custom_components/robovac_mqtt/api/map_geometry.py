@@ -33,9 +33,17 @@ def _point_list(points: Iterable[Sequence[float]]) -> list[list[int]]:
     return [[int(p[0]), int(p[1])] for p in points]
 
 
+def wire_cell(point: Sequence[float]) -> list[float]:
+    """One source-grid cell for the wire: 2 dp of sub-cell precision (0.5 mm).
+
+    Legacy cells are fractional; whole cells stay ints.
+    """
+    return [round(point[0], 2), round(point[1], 2)]
+
+
 def _point_list_f(points: Iterable[Sequence[float]]) -> list[list[float]]:
-    """Like :func:`_point_list` but keeps sub-cell precision (2 dp = 0.5 mm)."""
-    return [[round(float(p[0]), 2), round(float(p[1]), 2)] for p in points]
+    """Like :func:`_point_list` but keeps sub-cell precision (see :func:`wire_cell`)."""
+    return [wire_cell(p) for p in points]
 
 
 # Mask byte -> its sub-type moved to occupancy bits 2-3.
@@ -131,12 +139,12 @@ def build_map_static(map_data: MapData, *, revision: int) -> dict:
 
 def build_map_dynamic(
     *,
-    dock: tuple[int, int] | None = None,
-    robot: tuple[int, int] | None = None,
-    trail: list[tuple[int, int]] | None = None,
+    dock: Sequence[float] | None = None,
+    robot: Sequence[float] | None = None,
+    trail: Sequence[Sequence[float]] | None = None,
     trail_seq: int = 0,
     trail_types: list[int] | None = None,
-    prev_trail: list[tuple[int, int]] | None = None,
+    prev_trail: Sequence[Sequence[float]] | None = None,
     trail_color: tuple[int, int, int] | list[int] | None = None,
 ) -> dict:
     """Build the live half: pose, trail and the trail's presentation.
@@ -146,9 +154,9 @@ def build_map_dynamic(
     ``trail_seq`` cannot then be stale.
     """
     return {
-        "dock": None if dock is None else [int(dock[0]), int(dock[1])],
-        "robot": None if robot is None else [int(robot[0]), int(robot[1])],
-        "trail": _point_list(trail or []),
+        "dock": None if dock is None else wire_cell(dock),
+        "robot": None if robot is None else wire_cell(robot),
+        "trail": _point_list_f(trail or []),
         # One type per trail point, same order and length as "trail": 0 = cleaning,
         # 1 = transit. Only the legacy 0x67 channel reports it; others send 0.
         "trail_types": [int(t) for t in (trail_types or [])],
@@ -156,7 +164,7 @@ def build_map_dynamic(
         # Trail colour, for a client that draws the map without a camera entity.
         "trail_color": None if trail_color is None else [int(c) for c in trail_color],
         # Previous completed run, drawn dimmed. Snapshot-only: no event carries it.
-        "prev_trail": [[int(x), int(y)] for x, y in (prev_trail or [])],
+        "prev_trail": _point_list_f(prev_trail or []),
     }
 
 
@@ -164,12 +172,12 @@ def build_map_geometry(
     map_data: MapData,
     *,
     revision: int,
-    dock: tuple[int, int] | None = None,
-    robot: tuple[int, int] | None = None,
-    trail: list[tuple[int, int]] | None = None,
+    dock: Sequence[float] | None = None,
+    robot: Sequence[float] | None = None,
+    trail: Sequence[Sequence[float]] | None = None,
     trail_seq: int = 0,
     trail_types: list[int] | None = None,
-    prev_trail: list[tuple[int, int]] | None = None,
+    prev_trail: Sequence[Sequence[float]] | None = None,
     trail_color: tuple[int, int, int] | list[int] | None = None,
 ) -> dict:
     """Build both halves — the whole ``robovac_mqtt/map/geometry`` payload.

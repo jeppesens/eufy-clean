@@ -41,11 +41,12 @@ from .const import (
     EUFY_CLEAN_WATER_LEVELS,
     LEGACY_ROOM_FAN_LEVELS,
     LEGACY_ROOM_WATER_LEVELS,
+    MAX_CLEAN_TIMES,
+    MIN_CLEAN_TIMES,
     SCALAR_SUCTION_LEVELS,
 )
 from .coordinator import EufyCleanCoordinator
 from .select import _format_option_label
-from .utils import MAX_CLEAN_TIMES, MIN_CLEAN_TIMES
 
 if TYPE_CHECKING:
     from homeassistant.components.vacuum import Segment
@@ -224,11 +225,11 @@ async def async_setup_entry(
             # No defaults: a field left out keeps the edited schedule's value.
             vol.Optional("time"): cv.string,
             vol.Optional("schedule_id"): vol.Any(cv.positive_int, cv.string),
-            vol.Optional("days"): vol.Any(cv.ensure_list, cv.string),
+            vol.Optional("days"): cv.ensure_list,
             vol.Optional("enabled"): cv.boolean,
             vol.Optional("suction"): cv.string,
             vol.Optional("wash"): cv.string,
-            vol.Optional("rooms"): vol.Any(cv.ensure_list, cv.string),
+            vol.Optional("rooms"): cv.ensure_list,
             vol.Optional("clean_times"): clean_times,
             vol.Optional("mode"): cv.string,
         },

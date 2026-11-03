@@ -24,6 +24,10 @@ not flip the payload, and it must not flip pose or trail separately from the gri
 
 World centimetres convert as `cell = (world - origin) / resolution`.
 
+`dock`, `robot`, `trail` and `prev_trail` cells may be fractional: legacy devices place
+them to two decimals, the same value in the snapshot and in events; whole cells are sent
+as integers. Draw a point at `p + 0.5` either way and do not round it.
+
 ---
 
 ## Two revisions, deliberately separate
@@ -57,10 +61,13 @@ Two rules follow from that, and both are load-bearing:
 def build_map_static(map_data: MapData, *, revision: int) -> dict: ...
 def build_map_dynamic(
     *,
-    dock: tuple[int, int] | None = None,
-    robot: tuple[int, int] | None = None,
-    trail: list[tuple[int, int]] | None = None,
+    dock: Sequence[float] | None = None,
+    robot: Sequence[float] | None = None,
+    trail: Sequence[Sequence[float]] | None = None,
     trail_seq: int = 0,
+    trail_types: list[int] | None = None,
+    prev_trail: Sequence[Sequence[float]] | None = None,
+    trail_color: tuple[int, int, int] | list[int] | None = None,
 ) -> dict: ...
 def build_map_geometry(map_data: MapData, *, revision: int, **live) -> dict: ...
 ```
@@ -70,8 +77,8 @@ These are pure and synchronous with no Home Assistant imports — but
 Python (occupancy expansion plus room-mask re-registration), on the order of 50 ms for a
 400x400 grid, which at one request per client is a visible stall.
 `EufyCleanCoordinator.async_map_static_geometry()` runs it in an executor and caches the
-result per `map_geometry_revision`, so every later client at the same revision costs
-nothing.
+result per `map_geometry_revision`: concurrent requests at one revision wait for the
+same build, and every later client at that revision costs nothing.
 
 `build_map_dynamic` is a handful of small lists and is meant to be taken **on the loop,
 last** — after the executor hop and after `flush_map_events()`. That ordering is what
@@ -101,10 +108,16 @@ received.
   "dock":  [col,row] | null,
   "robot": [col,row] | null,
   "trail": [[col,row], ...],
+  "trail_types": [0, 1, ...], // one per trail point: 0 cleaning, 1 transit (v2)
   "trail_seq": 949,
+  "prev_trail": [[col,row], ...], // the last finished run (v2); see below
   "trail_color": [246,245,244] | null  // the configured trail colour (v3)
 }
 ```
+
+Errors: `invalid_format` when neither address is given, `not_found` when no loaded
+device matches (or its entry is unloading), and `no_map` when the device has no decoded
+map: not yet, or never on a scalar device, which has no map.
 
 ### `room_polygons`
 
@@ -158,6 +171,15 @@ because a cell owns the half-open span of its own width. The card does this in `
 and `cellFromEvent`; `MapData.room_id_at_normalized` must match it exactly, or a tap near
 a room boundary highlights one room and cleans another.
 
+### `trail_types` and `prev_trail`
+
+`trail_types` has the length and order of `trail`: 0 = cleaning, 1 = transit. Only the
+legacy 0x67 channel reports a type; every other point is 0.
+
+`prev_trail` is the last finished run, for a client to draw dimmed. It is snapshot-only
+(no event carries it) and empty whenever there is a live trail or the robot is cleaning,
+returning or paused.
+
 ### `trail_color`
 
 The same option the camera publishes as an attribute. It rides this payload as well
@@ -194,10 +216,12 @@ sitting on the PNG fallback forever with nothing logged.
 ```jsonc
 {"t": "geometry", "revision": 43}                      // re-fetch geometry
 {"t": "pose",  "robot": [col,row], "dock": [col,row]}  // dock only when it changes
-{"t": "trail", "from": 1372, "p": [[col,row], ...]}    // append-only
-{"t": "trail", "from": 0, "reset": true, "p": [...]}   // session reset or re-projection
+{"t": "trail", "from": 1372, "p": [[col,row], ...], "types": [0, ...]}  // append-only
+{"t": "trail", "from": 0, "reset": true, "p": [...], "types": [...]}     // session reset or re-projection
 {"t": "gone"}                                          // terminal: subscription ended
 ```
+
+`types` is `trail_types` for the points in `p`, same length and order.
 
 `from` is the trail length *before* these points. A client whose local length differs
 from `from` has missed events and must re-request the geometry.
@@ -229,6 +253,8 @@ until the entry is set up again.
 - Treat `not_found` and `unknown_command` from either command as retryable with the same
   backoff, on the first subscribe as on a resubscribe: they mean the entry is reloading or
   the integration is not loaded yet, not a reason to fall back to the PNG.
+- Treat `no_map` from the geometry command as "no decoded map yet": keep the subscription
+  and fetch the geometry again on the next `geometry` event.
 - Hit-test rooms client-side: sample `rooms_grid`, subtract 1, send the **id**.
 - Zone rectangles keep the existing contract: send **normalized** coordinates via
   `vacuum.send_command` and let the server convert. Do not reimplement

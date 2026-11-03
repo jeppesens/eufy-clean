@@ -1,7 +1,9 @@
 """Unit tests for the cloud login module."""
 
 import asyncio
+import json
 import logging
+import time
 import unittest.mock
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -13,6 +15,7 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufyLogin,
     EufyLoginError,
     EufyLoginRateLimitedError,
+    EufyLoginTransientError,
 )
 from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
 from custom_components.robovac_mqtt.auth_store import (
@@ -195,8 +198,11 @@ def test_find_model_aiot_fallback_invalid_without_model():
     assert result["invalid"] is True
 
 
-def test_find_model_v2_takes_precedence_over_aiot():
-    """When V2 has the device, its richer metadata wins over the AIOT fallback."""
+def test_find_model_v2_takes_precedence_over_aiot(caplog):
+    """When V2 has the device, its richer metadata wins over the AIOT fallback.
+
+    The raw model codes are debug-logged, so a collapsed variant shows (#107).
+    """
     login = _make_login(
         eufy_api_devices=[
             {
@@ -213,11 +219,16 @@ def test_find_model_v2_takes_precedence_over_aiot():
         "device_model": "T2081",
         "device_name": "From AIOT",
     }
-    result = login.findModel("DEV005", aiot_device=aiot_device)
+    with caplog.at_level(logging.DEBUG):
+        result = login.findModel("DEV005", aiot_device=aiot_device)
 
     assert result["deviceModel"] == "T2261"
     assert result["deviceName"] == "From V2"
     assert result["deviceModelName"] == "X8 Pro"
+    assert (
+        "Device DEV005: raw model codes: V2 product_code='T2261xx', "
+        "V2 device_model='T2261', AIOT device_model='T2081'"
+    ) in caplog.text
 
 
 def test_find_model_six_char_product_code():
@@ -502,6 +513,217 @@ async def test_a_rate_limited_login_starts_the_hold_off(retry_after, expected):
         await login.login({"mqtt": True})
 
     assert expected - 10 < login.auth_cache.login_hold_off_left() <= expected
+
+
+# ── Rejected MQTT credentials ───────────────────────────────────────
+
+
+def _login_with_rejected_credentials():
+    """An EufyLogin whose cached MQTT credentials the broker rejects."""
+    rejected = {"certificate_pem": "old"}
+    login = _make_login(mqtt_credentials=rejected)
+    login.eufyApi.session = None
+    login.eufyApi.user_info = None
+    login.eufyApi.login_label = None
+    login.auth_cache = AuthCache(mqtt_credentials=rejected)
+    login.eufyApi.login = AsyncMock(
+        return_value={"mqtt": {"certificate_pem": "new"}}
+    )
+    return login, rejected, AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_rejected_credentials_are_replaced_by_one_login():
+    """The rejected cert leaves the cache, a login fetches new ones, both persist."""
+    login, rejected, save = _login_with_rejected_credentials()
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.mqtt_credentials == {"certificate_pem": "new"}
+    assert login.auth_cache.mqtt_credentials == {"certificate_pem": "new"}
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rejected_credentials_during_the_hold_off_send_no_login():
+    """The hold-off holds; the rejected cert still leaves the persisted cache."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.auth_cache.hold_off_logins(300)
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_not_awaited()
+    assert login.auth_cache.mqtt_credentials is None
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rejected_credentials_after_a_refused_login_send_no_second_login():
+    """A refused account login raises once; the same rejection never retries it."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(return_value={})
+
+    with pytest.raises(EufyLoginError):
+        await login.replace_rejected_mqtt_credentials(rejected, save)
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [EufyLoginTransientError("HTTP 503"), aiohttp.ClientError("reset"), TimeoutError()],
+)
+async def test_a_failed_replacement_login_keeps_the_rejected_cert_out(error):
+    """An outage during the login: no replacement, the drop is still persisted."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(side_effect=error)
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    assert login.auth_cache.mqtt_credentials is None
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_credentials_a_login_just_produced_get_no_replacement_login():
+    """The broker rejects what a login handed out seconds ago: another login
+    would not help, so logins are held off instead."""
+    login, _rejected, save = _login_with_rejected_credentials()
+    await login.login({"mqtt": True})
+    fresh = login.mqtt_credentials
+
+    assert await login.replace_rejected_mqtt_credentials(fresh, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.auth_cache.login_hold_off_left() is not None
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_replacement_holds_off_logins_after_a_restart_too():
+    """The hold-off is persisted and renewed once it lapsed while the rejections
+    go on, so setups after a restart do not log in each time."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+    assert login.auth_cache.login_hold_off_left() is not None
+    running = login.auth_cache.login_hold_until = time.time() + 60
+    save.reset_mock()
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    assert login.auth_cache.login_hold_until == running
+    save.assert_not_awaited()
+    login.auth_cache.login_hold_until = 0.0
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    assert login.auth_cache.login_hold_off_left() is not None
+    save.assert_awaited_once()
+    login.eufyApi.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rejections_soon_after_a_failed_replacement_login_send_no_login():
+    """Eufy unreachable: the coordinators that ask next get no login of their own."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(side_effect=EufyLoginTransientError("HTTP 503"))
+
+    for _ in range(3):
+        assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_failed_replacement_persists_its_result():
+    """The cache is already dropped; the later successful login is still saved."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(
+        side_effect=[
+            EufyLoginTransientError("HTTP 503"),
+            {"mqtt": {"certificate_pem": "new"}},
+        ]
+    )
+    with patch.object(cloud_mod, "_MQTT_RELOGIN_RETRY_DELAY", 0.0):
+        await login.replace_rejected_mqtt_credentials(rejected, save)
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+
+    assert save.await_count == 2
+    assert login.auth_cache.mqtt_credentials == {"certificate_pem": "new"}
+
+
+@pytest.mark.asyncio
+async def test_a_broker_that_rejects_again_soon_after_accepting_gets_no_second_login():
+    """Accept, drop, reject, repeat: one replacement login per interval, and the
+    rejected cert still leaves the cache."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.auth_cache.mqtt_credentials is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("accepted", "logins"), [(False, 0), (True, 1)])
+async def test_a_reload_keeps_the_bound_on_credentials_from_a_login(accepted, logins):
+    """Credentials a login produced that the broker never accepted get no
+    replacement login from the reloaded entry either; accepted ones do."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    if accepted:
+        assert login.mqtt_credentials_accepted(login.mqtt_credentials) is True
+    stored = AuthCache.from_dict(json.loads(json.dumps(login.auth_cache.to_dict())))
+    with patch(
+        "custom_components.robovac_mqtt.api.cloud.EufyHTTPClient", autospec=True
+    ):
+        reloaded = EufyLogin("u", "p", "open-udid", auth_cache=stored)
+    reloaded.eufyApi = MagicMock(session=None, user_info=None, login_label=None)
+    reloaded.eufyApi.login = AsyncMock(return_value={"mqtt": {"certificate_pem": "3"}})
+
+    replaced = await reloaded.replace_rejected_mqtt_credentials(
+        reloaded.mqtt_credentials, save
+    )
+
+    assert replaced is accepted
+    assert reloaded.eufyApi.login.await_count == logins
+    assert (stored.login_hold_off_left() is None) is accepted
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_replacement_allows_the_next_one_after_the_interval():
+    """A rotation after the interval is replaced again."""
+    login, rejected, save = _login_with_rejected_credentials()
+    with patch.object(cloud_mod, "_MQTT_RELOGIN_MIN_INTERVAL", 0.0):
+        assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is True
+
+    assert login.eufyApi.login.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_login_without_mqtt_credentials_holds_off_logins():
+    """A login that yields no MQTT credentials must not repeat at every rejection."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(return_value={"mqtt": None})
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.auth_cache.login_hold_off_left() is not None
 
 
 # ── Cloud device discovery ──────────────────────────────────────────

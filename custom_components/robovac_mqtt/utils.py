@@ -6,7 +6,12 @@ from typing import Any, TypeVar
 
 from google.protobuf.message import Message
 
-from .const import WEEKDAY_ABBREVIATIONS
+from .const import (
+    MAX_CLEAN_TIMES,
+    MIN_CLEAN_TIMES,
+    WEEKDAY_ABBREVIATIONS,
+    WEEKDAY_NAMES,
+)
 
 # Source: https://github.com/CodeFoodPixels/robovac/issues/68#issuecomment-2119573501  # noqa: E501
 
@@ -179,11 +184,6 @@ def lz4_block_decompress(data: bytes, uncompressed_size: int) -> bytes:
     return bytes(output[:uncompressed_size])
 
 
-# Passes per room/zone the app offers; the services validate the same range.
-MIN_CLEAN_TIMES = 1
-MAX_CLEAN_TIMES = 3
-
-
 def clamp_clean_times(value: Any) -> int:
     """Coerce ``value`` to a pass count in ``MIN_CLEAN_TIMES..MAX_CLEAN_TIMES``.
 
@@ -203,7 +203,11 @@ _WEEKDAY_GROUPS: dict[str, frozenset[int]] = {
     **dict.fromkeys(("weekdays", "weekday"), frozenset(range(5))),
     **dict.fromkeys(("weekends", "weekend"), frozenset((5, 6))),
 }
-_WEEKDAY_PREFIXES = {day.lower(): i for i, day in enumerate(WEEKDAY_ABBREVIATIONS)}
+_WEEKDAY_WORDS = {
+    day.lower(): i
+    for days in (WEEKDAY_ABBREVIATIONS, WEEKDAY_NAMES)
+    for i, day in enumerate(days)
+}
 
 
 def parse_weekdays(days: list[str] | str | None) -> frozenset[int]:
@@ -211,25 +215,25 @@ def parse_weekdays(days: list[str] | str | None) -> frozenset[int]:
 
     Takes a string or list of day names in any case (an abbreviation, or the
     full English name: "Mon", "thursday") separated by commas, ``|`` or spaces,
-    or a group ("Every day", "daily", "Weekdays", "Weekends", "Once"). Empty
-    input is no day. Raises ValueError on any other word.
+    and groups ("Every day", "daily", "Weekdays", "Weekends", "Once") between
+    commas or ``|``. Empty input is no day. Raises ValueError on any other word.
     """
     items = [days] if isinstance(days, str) else list(days or [])
     selected: set[int] = set()
     for item in items:
-        text = str(item).strip().lower()
-        if text in _WEEKDAY_GROUPS:
-            selected |= _WEEKDAY_GROUPS[text]
-            continue
-        for word in filter(None, re.split(r"[,|\s]+", text)):
-            if word in _WEEKDAY_GROUPS:
-                selected |= _WEEKDAY_GROUPS[word]
-            elif word[:3] in _WEEKDAY_PREFIXES and (
-                len(word) == 3 or word.endswith("day")
-            ):
-                selected.add(_WEEKDAY_PREFIXES[word[:3]])
-            else:
-                raise ValueError(f"unknown day {word!r} in {days!r}")
+        for part in re.split(r"[,|]", str(item).lower()):
+            words = part.split()
+            group = " ".join(words)
+            if group in _WEEKDAY_GROUPS:
+                selected |= _WEEKDAY_GROUPS[group]
+                continue
+            for word in words:
+                if word in _WEEKDAY_GROUPS:
+                    selected |= _WEEKDAY_GROUPS[word]
+                elif word in _WEEKDAY_WORDS:
+                    selected.add(_WEEKDAY_WORDS[word])
+                else:
+                    raise ValueError(f"unknown day {word!r} in {days!r}")
     return frozenset(selected)
 
 

@@ -318,6 +318,23 @@ def test_absent_pose_and_trail_are_null_and_empty():
     assert result["trail_seq"] == 0
 
 
+def test_live_cells_keep_two_decimals_and_whole_cells_stay_ints():
+    """Legacy cells are fractional; novel ones are whole and stay ints on the wire."""
+    result = build_map_geometry(
+        _make_map(),
+        revision=1,
+        dock=(20.256, 20.0),
+        robot=(25.678, 18.7),
+        trail=[(25.678, 18.7), (3, 4)],
+        prev_trail=[(1.234, 2)],
+    )
+
+    assert result["dock"] == [20.26, 20.0]
+    assert result["robot"] == [25.68, 18.7]
+    assert json.dumps(result["trail"]) == "[[25.68, 18.7], [3, 4]]"
+    assert json.dumps(result["prev_trail"]) == "[[1.23, 2]]"
+
+
 def test_zero_resolution_falls_back_to_five():
     map_data = _make_map()
     map_data.resolution = 0

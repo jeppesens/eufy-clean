@@ -21,8 +21,8 @@ _EntityT = TypeVar("_EntityT", bound=Entity)
 def effective_api_type(api_type: str) -> str:
     """Map a cloud-reported api type onto the two supported DPS protocols.
 
-    Anything not scalar (novel, legacy, unknown) is treated as novel, mirroring
-    api/parser.update_state dispatch.
+    Anything not scalar (novel, legacy, unknown) is treated as novel; legacy-only
+    entities are added by each platform from ``coordinator.api_type``.
     """
     return API_TYPE_SCALAR if api_type == API_TYPE_SCALAR else API_TYPE_NOVEL
 

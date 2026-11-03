@@ -378,6 +378,7 @@ def test_a_spec_with_a_new_legacy_key_is_parsed(monkeypatch):
         (["Weekdays"], "0111110"),
         ("Every day", "1111111"),
         ("0010010", "0010010"),
+        (["0010010"], "0010010"),
         (None, "0000000"),
     ],
 )

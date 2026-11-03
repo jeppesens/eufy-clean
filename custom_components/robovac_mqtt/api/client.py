@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import ssl
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -15,12 +17,37 @@ from paho.mqtt import client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 from paho.mqtt.reasoncodes import ReasonCode
 
+from ..const import MQTT_SUBACK_FAILURE
+
 _LOGGER = logging.getLogger(__name__)
 
 # CONNACK reasons that reject the client identity: retrying cannot help.
 _AUTH_REJECTED_REASONS = frozenset({"Bad user name or password", "Not authorized"})
 
+# TLS alerts (OpenSSL reason names) by which the broker rejects the client
+# certificate: the same verdict as a refused CONNACK. Any other TLS or socket
+# error says nothing about the certificate and is not counted.
+_CERT_REJECTED_ALERTS = frozenset({
+    "SSLV3_ALERT_BAD_CERTIFICATE",
+    "SSLV3_ALERT_CERTIFICATE_REVOKED",
+    "SSLV3_ALERT_CERTIFICATE_EXPIRED",
+    "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
+    "TLSV1_ALERT_UNKNOWN_CA",
+    "TLSV13_ALERT_CERTIFICATE_REQUIRED",
+})
+
+# The reason in str(ssl.SSLError), e.g. "[SSL: SSLV3_ALERT_BAD_CERTIFICATE] ...".
+_SSL_REASON = re.compile(r"\[SSL: (\w+)\]")
+
 ConnectionListener = Callable[[bool, bool], None]
+
+
+def is_certificate_rejection(err: BaseException | None) -> bool:
+    """Is ``err`` a TLS alert by which the broker rejects the client certificate?"""
+    return (
+        isinstance(err, ssl.SSLError)
+        and getattr(err, "reason", None) in _CERT_REJECTED_ALERTS
+    )
 
 
 def _build_tls_context(certificate_pem: str, private_key: str) -> ssl.SSLContext:
@@ -95,14 +122,15 @@ class EufyCleanClient:
 
         self._mqtt_client: mqtt.Client | None = None
         self._client_id: str | None = None
+        self._pending_subscriptions: dict[int, str] = {}  # SUBSCRIBE mid -> topic
         self._on_message_callback: Callable[[bytes], None] | None = None
         self._on_biz_message_callback: Callable[[bytes], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected_event = asyncio.Event()
         self._connection_listener: ConnectionListener | None = None
-        # Last CONNACK rejected the identity; reported with the disconnect
-        # that follows it.
-        self._auth_rejected = False
+        # A failed read carried a certificate alert; reported with the
+        # disconnect that follows it.
+        self._cert_rejected = False
 
     def set_connection_listener(self, callback: ConnectionListener | None) -> None:
         """Call ``callback(connected, auth_failed)`` on the event loop on every
@@ -212,8 +240,11 @@ class EufyCleanClient:
             ),
         )
         mqtt_client.on_connect = self._on_connect
+        mqtt_client.on_subscribe = self._on_subscribe
         mqtt_client.on_message = self._on_message
         mqtt_client.on_disconnect = self._on_disconnect
+        mqtt_client.on_connect_fail = self._on_connect_fail
+        mqtt_client.on_log = self._on_log
 
         _LOGGER.debug("Connecting to MQTT broker at %s...", self.endpoint)
         try:
@@ -245,20 +276,51 @@ class EufyCleanClient:
         properties: Any = None,
     ) -> None:
         if reason_code.is_failure:
-            self._auth_rejected = str(reason_code) in _AUTH_REJECTED_REASONS
             _LOGGER.error("MQTT broker refused the connection: %s", reason_code)
-            self._notify_connection(False, self._auth_rejected)
+            self._notify_connection(
+                False, str(reason_code) in _AUTH_REJECTED_REASONS
+            )
             return
-        self._auth_rejected = False
         _LOGGER.info("Connected to MQTT Broker!")
         self._notify_connection(True, False)
         if self.device_id:
-            cmd_topic = f"cmd/eufy_home/{self.device_model}/{self.device_id}/res"
-            _LOGGER.debug("Subscribing to %s", cmd_topic)
-            client.subscribe(cmd_topic)
-            biz_topic = f"biz/eufy_home/{self.device_model}/{self.device_id}/res"
-            _LOGGER.debug("Subscribing to %s", biz_topic)
-            client.subscribe(biz_topic)
+            # A SUBSCRIBE left unanswered by an earlier connection never
+            # gets its SUBACK, so start each connection with an empty map.
+            self._pending_subscriptions.clear()
+            for topic in (
+                f"cmd/eufy_home/{self.device_model}/{self.device_id}/res",
+                f"biz/eufy_home/{self.device_model}/{self.device_id}/res",
+            ):
+                _LOGGER.debug("Subscribing to %s", topic)
+                _, mid = client.subscribe(topic)
+                self._pending_subscriptions[mid] = topic
+
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        mid: int,
+        reason_codes: list[ReasonCode],
+        properties: Any = None,
+    ) -> None:
+        """Log the broker's SUBACK answer to a subscription made in _on_connect.
+
+        A refused subscription is otherwise silent: the connection stays up,
+        but nothing the robot publishes arrives.
+        """
+        topic = self._pending_subscriptions.pop(mid, "an unknown topic")
+        for reason_code in reason_codes:
+            if reason_code.value >= MQTT_SUBACK_FAILURE:
+                _LOGGER.warning(
+                    "MQTT broker refused the subscription to %s (SUBACK %s); the "
+                    "robot's updates on this topic will not reach Home Assistant",
+                    topic,
+                    reason_code.value,
+                )
+            else:
+                _LOGGER.debug(
+                    "Subscribed to %s (granted QoS %s)", topic, reason_code.value
+                )
 
     def _on_disconnect(
         self,
@@ -272,7 +334,32 @@ class EufyCleanClient:
             _LOGGER.warning("Disconnected from MQTT broker unexpectedly: %s", reason_code)
         else:
             _LOGGER.debug("Disconnected from MQTT broker (clean)")
-        self._notify_connection(False, self._auth_rejected)
+        # paho also reports a refused CONNACK here; on_connect counted it
+        cert_rejected, self._cert_rejected = self._cert_rejected, False
+        self._notify_connection(False, cert_rejected)
+
+    def _on_connect_fail(self, client: mqtt.Client, userdata: Any) -> None:
+        """A reconnect raised; paho calls this inside its ``except OSError``."""
+        err = sys.exception()
+        if is_certificate_rejection(err):
+            _LOGGER.error("MQTT broker rejected the client certificate: %s", err)
+            self._notify_connection(False, True)
+
+    def _on_log(
+        self, client: mqtt.Client, userdata: Any, level: int, buf: str
+    ) -> None:
+        """Spot a certificate alert in a failed read.
+
+        With TLS 1.3 the broker's alert arrives after the handshake, on the
+        first read; paho reports that read error only to its log, then
+        disconnects.
+        """
+        if level != mqtt.MQTT_LOG_ERR:
+            return
+        match = _SSL_REASON.search(buf)
+        if match and match.group(1) in _CERT_REJECTED_ALERTS:
+            _LOGGER.error("MQTT broker rejected the client certificate: %s", buf)
+            self._cert_rejected = True
 
     def _on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages."""

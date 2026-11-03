@@ -232,7 +232,8 @@ def update_state(
     changes["raw_dps"] = new_raw_dps
 
     # api_type comes from EufyLogin.checkApiType: scalar = plain Tuya-style DPS,
-    # novel = Anker length-prefixed protobuf ("legacy"/"unknown" land here too)
+    # novel = Anker length-prefixed protobuf ("unknown" lands here too; the
+    # coordinator sends "legacy" to legacy_parser.update_state_legacy instead)
     if state.api_type == "scalar":
         process_scalar_dps(state, dps, changes)
     else:

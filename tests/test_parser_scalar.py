@@ -49,6 +49,7 @@ def test_unknown_pattern_has_no_number(value):
         (["Weekends"], "67"),
         ("Every day", "1234567"),
         ("531", "135"),
+        (["531"], "135"),
         (None, ""),
     ],
 )
@@ -56,14 +57,23 @@ def test_repeat_string_is_monday_first_digits(days, expected):
     assert encode_scalar_repeat(days) == expected
 
 
-def test_repeat_string_rejects_an_unknown_day():
+@pytest.mark.parametrize("days", ["Mon, Mondy", "1111111", ["1111111"], "113"])
+def test_repeat_string_rejects_an_unknown_day(days):
+    """A repeated digit is a 0/1 day mask, not a list of day numbers."""
     with pytest.raises(ValueError):
-        encode_scalar_repeat("Mon, Mondy")
+        encode_scalar_repeat(days)
 
 
-def test_schedule_entry_round_trips_through_the_raw_form():
-    """Re-encoding a parsed DPS 151 entry gives back the entry the robot sent."""
-    raw = {"id": 4, "e": False, "t": "0930", "r": "246", "s": 3, "f": 2}
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"id": 4, "e": False, "t": "0930", "r": "246", "s": 3, "f": 2},
+        {"id": 5, "e": True, "t": "0700", "r": "1", "s": 4, "f": 3},
+    ],
+)
+def test_schedule_entry_round_trips_through_the_raw_form(raw):
+    """Re-encoding a parsed DPS 151 entry gives back the entry the robot sent,
+    including a suction or pattern number the parser has no name for."""
     assert schedule_entry_to_scalar_raw(scalar_raw_to_schedule_entry(raw)) == raw
 
 

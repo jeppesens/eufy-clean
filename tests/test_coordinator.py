@@ -1072,7 +1072,7 @@ def current_room_coordinator():
 @pytest.mark.parametrize("pixel,expected", [
     ((0, 0), (7, "Bathroom")), ((3, 0), (8, "Hallway")),
     ((0, 2), (9, "Living Room")), ((3, 2), (9, "Living Room")),
-    (None, (0, None)), ((-1, 0), (0, None)), ((4, 0), (0, None)),
+    (None, None), ((-1, 0), None), ((4, 0), None),
 ])
 def test_physical_room(current_room_coordinator, pixel, expected):
     coordinator = current_room_coordinator
@@ -1087,9 +1087,9 @@ def test_missing_map_or_mask(current_room_coordinator):
     coordinator = current_room_coordinator
     coordinator._robot_pixel = (0, 0)
     coordinator._map_data.room_pixels = None
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() is None
     coordinator._map_data = None
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() is None
 
 
 @pytest.mark.parametrize("width,height", [(0, 3), (4, 0), (-1, 3)])
@@ -1098,7 +1098,7 @@ def test_invalid_dimensions(current_room_coordinator, width, height):
     coordinator._robot_pixel = (0, 0)
     coordinator._map_data.width = width
     coordinator._map_data.height = height
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() is None
 
 
 def test_only_room_changes_signal(current_room_coordinator):
@@ -1122,6 +1122,33 @@ def test_only_room_changes_signal(current_room_coordinator):
         coordinator._update_current_room()
         assert send.call_count == 4
         coordinator.async_update_listeners.assert_not_called()
+
+
+def _room_zero_coordinator(room_names):
+    """A legacy map (rooms numbered from 0) with the robot in room 0."""
+    coord = EufyCleanCoordinator(
+        MagicMock(), MagicMock(),
+        {"deviceId": "test", "deviceName": "Vacuum cleaner", "deviceModel": "T2266"},
+    )
+    coord._map_data = MapData(
+        raw_pixels=b"", width=2, height=1, resolution=1,
+        room_pixels=bytes(stored << 2 for stored in [1, 2]),
+        room_outline_width=2, room_outline_height=1,
+        room_names=room_names, room_id_offset=1,
+    )
+    coord._robot_pixel = (0, 0)
+    return coord
+
+
+def test_legacy_room_zero_is_a_room():
+    coordinator = _room_zero_coordinator({0: "Hallway"})
+    assert coordinator.current_room() == (0, "Hallway")
+
+
+def test_legacy_room_zero_takes_its_name_from_the_room_list():
+    coordinator = _room_zero_coordinator({})
+    coordinator.data.rooms = [{"id": 0, "name": "Hallway"}]
+    assert coordinator.current_room() == (0, "Hallway")
 
 
 def test_current_room_name_fallback(current_room_coordinator):
@@ -2115,6 +2142,64 @@ def test_a_grown_map_re_places_the_trail_rather_than_shifting_it(
     assert coordinator._robot_trail_types == [1, 0]
 
 
+def test_a_live_dock_after_trail_points_re_places_the_trail(mock_hass, mock_login):
+    """The trail hangs off the dock: the first 0x75 moves both."""
+    md = _blob_map_data()
+    md.dock_pixel = (10, 10)  # the blob's stale copy
+    coordinator = _cleaning_coordinator(md)
+    coordinator._on_legacy_trail(1, [(0, 0, 1), (50, 50, 0)])
+    coordinator._legacy_dock_pose = {"x": 472, "y": 1358, "theta": 0, "type": 1}
+    coordinator._notify_map_trail_reset = MagicMock()
+
+    assert coordinator._apply_legacy_dock_pose() is True
+
+    assert coordinator._robot_trail == [
+        coordinator._legacy_pose_to_pixel(0, 0),
+        coordinator._legacy_pose_to_pixel(50, 50),
+    ]
+    assert coordinator._robot_trail_types == [1, 0]
+    # subscribers hold the old placement
+    coordinator._notify_map_trail_reset.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_refetch_after_growth_places_the_trail_against_the_live_dock(
+    mock_hass, mock_login
+):
+    """The grown blob's dock copy is as stale as the first one; the trail follows
+    the live dock, not the blob's."""
+    md = _blob_map_data()
+    coordinator = _legacy_map_coordinator(mock_hass, mock_login, md)
+    coordinator._legacy_map_param = {
+        "width": 150, "height": 215, "origin_x": 520, "origin_y": 1350,
+    }
+    coordinator._legacy_dock_pose = {"x": 472, "y": 1358, "theta": 0, "type": 1}
+    coordinator._apply_legacy_dock_pose()
+    coordinator.data = replace(coordinator.data, activity="cleaning")
+    coordinator._on_legacy_trail(1, [(0, 0, 0), (10, 0, 0)])
+    # The device's map grew 57 columns to the left; 0x64/0x75 quote the new frame.
+    coordinator._legacy_map_param = {
+        "width": 207, "height": 215, "origin_x": 1090, "origin_y": 1350,
+    }
+    coordinator._legacy_dock_pose = {"x": 1042, "y": 1358, "theta": 0, "type": 1}
+    grown = MapData(
+        raw_pixels=b"", width=207, height=215, origin_x=1090, origin_y=1350,
+        resolution=5, dock_pixel=(60, 60),  # stale
+    )
+    tuya_map = MagicMock()
+    tuya_map.as_entity_rooms.return_value = []
+    coordinator._map_storage.async_fetch_map.return_value = tuya_map
+    mock_hass.async_add_executor_job = AsyncMock(return_value=grown)
+
+    assert await coordinator.async_refresh_legacy_map() is True
+
+    assert grown.dock_pixel == (104, 78)
+    assert coordinator._robot_trail == [
+        coordinator._legacy_pose_to_pixel(0, 0),
+        coordinator._legacy_pose_to_pixel(10, 0),
+    ]
+
+
 def test_a_new_session_drops_the_raw_points_too(mock_hass, mock_login):
     """Otherwise the next clean re-places the previous one's whole path."""
     md = _blob_map_data()
@@ -2266,6 +2351,20 @@ async def test_set_room_configs_resends_every_room_that_has_an_override(
     doc = json.loads(base64.b64decode(payload["124"]))
     assert doc["method"] == "customRooms"
     assert [p["roomId"] for p in doc["data"]["property"]] == [0, 1]
+
+
+async def test_set_room_configs_uses_the_map_id_override(mock_hass, mock_login):
+    """The options-flow override applies here as it does to room cleans."""
+    coordinator = _legacy_room_coordinator(
+        mock_hass, mock_login, [{"id": 0, "fan_speed": -1, "water_level": -1, "clean_times": 0}]
+    )
+    coordinator.map_id_overrides = {3: 7}
+
+    assert await coordinator.async_set_room_configs({0: {"fan_speed": "Max"}})
+
+    (payload,), _ = coordinator.async_send_command.call_args
+    doc = json.loads(base64.b64decode(payload["124"]))
+    assert doc["data"]["mapId"] == 7
 
 
 async def test_set_room_configs_applies_optimistically_to_data_rooms(
@@ -2583,3 +2682,17 @@ def test_trail_types_are_padded_when_the_lists_desync(mock_hass, mock_login):
     coordinator._robot_trail = [(1, 1), (2, 2), (3, 3)]
     coordinator._robot_trail_types = [1]
     assert coordinator._trail_types_for(0, 3) == [1, 0, 0]
+
+
+def test_a_new_session_keeps_the_finished_run_as_previous(mock_hass, mock_login):
+    """Starting a clean moves the last run to ``_previous_trail`` before clearing it."""
+    coordinator = _coordinator_with_map(mock_hass, mock_login, _square_map())
+    coordinator._robot_trail = [(1, 1), (2, 2), (3, 3)]
+    coordinator._dock_arrival_time = None
+
+    coordinator._track_activity_change(
+        "docked", VacuumState(activity="cleaning"), {"activity": "cleaning"}
+    )
+
+    assert coordinator._previous_trail == [(1, 1), (2, 2), (3, 3)]
+    assert coordinator._robot_trail == []

@@ -100,7 +100,7 @@ class VacuumState:
     )
     auto_return: bool = False  # DPS 135
     activity_log_upload: bool = False  # DPS 142
-    # Read-only: scalar DPS 151, legacy from the et=3 Tuya cloud timer list.
+    # Scalar from DPS 151, legacy from the et=3 Tuya cloud timer list.
     schedules: list[dict[str, Any]] = field(default_factory=list)
 
     # Device settings, DPS 176 UnisettingResponse
