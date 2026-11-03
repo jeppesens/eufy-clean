@@ -246,6 +246,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
                 cache.openudid,
                 websession=session,
                 auth_cache=cache if auth_cache is not None else None,
+                user_started=True,
             )
             await eufy_login.init()
             devices = eufy_login.mqtt_devices + eufy_login.cloud_devices

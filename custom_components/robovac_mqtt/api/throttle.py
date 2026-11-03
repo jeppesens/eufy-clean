@@ -24,6 +24,9 @@ LOCKOUT_HOLD_OFF: Final = 24 * 3600.0
 
 KIND_REQUESTS: Final = "requests"
 KIND_LOGIN: Final = "login"
+# Set by the integration itself (MQTT credentials missing or rejected): holds
+# the logins it starts on its own, not one the user starts in a config flow.
+KIND_AUTO_LOGIN: Final = "auto_login"
 
 # Body codes that throttle or lock: (what is held off, for how long).
 THROTTLE_CODES: Final[dict[int, tuple[str, float]]] = {
@@ -50,8 +53,8 @@ SESSION_REPLACED_CODE: Final = 26084
 # 30-day lifetime.
 SESSION_REPLACED_WINDOW: Final = 3600.0
 
-# Login hold-off after a login that brought no MQTT credentials (e.g. a
-# user-center outage) or ones the broker rejected: later setups reuse the
+# KIND_AUTO_LOGIN hold-off after a login that brought no MQTT credentials (e.g.
+# a user-center outage) or ones the broker rejected: later setups reuse the
 # session instead of logging in again this soon.
 MQTT_CREDENTIALS_HOLD_OFF: Final = 15 * 60.0
 
@@ -78,17 +81,23 @@ class CloudThrottle:
     """Login budget and hold-offs over a JSON-serialisable ``state`` dict.
 
     ``state`` is the caller's persisted dict, updated in place:
-    ``{"logins": [epoch, ...], "hold_off": {"login"|"requests": until_epoch}}``.
+    ``{"logins": [epoch, ...], "hold_off": {kind: until_epoch}}``.
     Its times are bounded by the clock on load and on every use (see
     ``_clamp_to_clock``), so a clock that was far ahead cannot strand them.
+    ``user_started``: logins the user starts, which skip KIND_AUTO_LOGIN.
     """
 
     def __init__(
         self,
         state: dict[str, Any] | None = None,
         clock: Callable[[], float] = time.time,
+        *,
+        user_started: bool = False,
     ) -> None:
         self._clock = clock
+        self._login_kinds: tuple[str, ...] = (KIND_REQUESTS, KIND_LOGIN)
+        if not user_started:
+            self._login_kinds += (KIND_AUTO_LOGIN,)
         self.state: dict[str, Any] = state if isinstance(state, dict) else {}
         logins = self.state.get("logins")
         self.state["logins"] = [
@@ -100,7 +109,7 @@ class CloudThrottle:
         self.state["hold_off"] = {
             k: float(v)
             for k, v in (hold.items() if isinstance(hold, dict) else [])
-            if k in (KIND_LOGIN, KIND_REQUESTS)
+            if k in (KIND_LOGIN, KIND_REQUESTS, KIND_AUTO_LOGIN)
             and isinstance(v, (int, float))
             and not isinstance(v, bool)
         }
@@ -122,9 +131,10 @@ class CloudThrottle:
         return now
 
     def held_off(self, kind: str) -> float | None:
-        """Seconds left on ``kind``'s hold-off; a login also waits for requests."""
+        """Seconds left on ``kind``'s hold-off; a login also waits for requests
+        and, unless user-started, for KIND_AUTO_LOGIN."""
         now = self._clamp_to_clock()
-        kinds = (KIND_REQUESTS, KIND_LOGIN) if kind == KIND_LOGIN else (KIND_REQUESTS,)
+        kinds = self._login_kinds if kind == KIND_LOGIN else (kind,)
         left = [
             until - now
             for k in kinds
@@ -149,7 +159,7 @@ class CloudThrottle:
         """Refuse locally during a hold-off or once the login budget is spent."""
         if (left := self.held_off(KIND_LOGIN)) is not None:
             raise EufyLoginRateLimitedError(
-                f"holding off Eufy logins after the cloud refused one ({left:.0f}s left)",
+                f"holding off Eufy logins ({left:.0f}s left)",
                 retry_after=left,
             )
         recent = self.recent_logins()

@@ -19,6 +19,7 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufySessionReplacedError,
 )
 from custom_components.robovac_mqtt.api.throttle import (
+    KIND_AUTO_LOGIN,
     KIND_LOGIN,
     KIND_REQUESTS,
     LOGIN_BUDGET,
@@ -624,7 +625,7 @@ async def test_credentials_from_a_login_rejected_before_an_accept_hold_off_login
     save.reset_mock()
 
     assert await login.replace_rejected_mqtt_credentials(fresh, save) is False
-    assert login.throttle.held_off(KIND_LOGIN) == pytest.approx(
+    assert login.throttle.held_off(KIND_AUTO_LOGIN) == pytest.approx(
         MQTT_CREDENTIALS_HOLD_OFF, abs=10
     )
     hold_off = login.auth_cache.throttle["hold_off"]
@@ -637,7 +638,8 @@ async def test_credentials_from_a_login_rejected_before_an_accept_hold_off_login
 
     assert await login.replace_rejected_mqtt_credentials(fresh, save) is False
 
-    assert KIND_LOGIN in hold_off
+    # the integration's own hold-off, which a user-started login skips
+    assert set(hold_off) == {KIND_AUTO_LOGIN}
     assert len(login.auth_cache.throttle["logins"]) == 1
     assert login.auth_cache.session_replaced_at is None
     assert save.await_count == 2
@@ -701,10 +703,10 @@ async def test_a_replacement_login_without_mqtt_credentials_holds_off_logins():
     assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
 
     assert len(login.auth_cache.throttle["logins"]) == 1
+    assert set(login.auth_cache.throttle["hold_off"]) == {KIND_AUTO_LOGIN}
     assert login.throttle.held_off(KIND_LOGIN) == pytest.approx(
         MQTT_CREDENTIALS_HOLD_OFF, abs=10
     )
-    assert login.throttle.held_off(KIND_REQUESTS) is None
 
 
 @pytest.mark.asyncio

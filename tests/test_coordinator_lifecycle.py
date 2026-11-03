@@ -29,7 +29,7 @@ from custom_components.robovac_mqtt.api.legacy_parser import parse_legacy_schedu
 from custom_components.robovac_mqtt.api.map_stream import MapData
 from custom_components.robovac_mqtt.api.parser import update_state
 from custom_components.robovac_mqtt.api.throttle import (
-    KIND_LOGIN,
+    KIND_AUTO_LOGIN,
     SESSION_REPLACED_WINDOW,
 )
 from custom_components.robovac_mqtt.api.tuya_thing import TuyaThingClient
@@ -1424,7 +1424,7 @@ async def test_a_replacement_rejected_at_setup_too_fails_and_holds_off_logins(
 
     account.login.assert_awaited_once()
     assert account.auth_cache.mqtt_credentials is None
-    assert account.throttle.held_off(KIND_LOGIN) is not None
+    assert account.throttle.held_off(KIND_AUTO_LOGIN) is not None
     assert coordinator.client is None
 
 

@@ -20,6 +20,8 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufyLoginRateLimitedError,
     EufyLoginTransientError,
 )
+from custom_components.robovac_mqtt.api.http import EufyHTTPClient
+from custom_components.robovac_mqtt.api.throttle import KIND_AUTO_LOGIN
 from custom_components.robovac_mqtt.auth_store import (
     AuthCache,
     AuthStore,
@@ -755,6 +757,43 @@ async def test_a_stored_login_hold_off_refuses_the_flow_login(hass: HomeAssistan
     assert result2["errors"]["base"] == "rate_limited"
     assert result2["description_placeholders"]["minutes"] == "60"
     websession.post.assert_not_called()
+
+
+@pytest.mark.parametrize("step", ["reauth", "reconfigure"])
+async def test_the_integrations_own_hold_off_does_not_refuse_the_flow_login(
+    hass: HomeAssistant, step
+):
+    """A hold-off set after MQTT credentials were rejected or missing holds
+    only automatic logins: the user's login is sent and counted."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef",
+            throttle={"hold_off": {KIND_AUTO_LOGIN: time.time() + 900}},
+        )
+    )
+    if step == "reauth":
+        result = await entry.start_reauth_flow(hass)
+        user_input = {CONF_PASSWORD: "new_pass"}
+    else:
+        result = await entry.start_reconfigure_flow(hass)
+        user_input = {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "new_pass"}
+
+    with patch(
+        "custom_components.robovac_mqtt.config_flow.async_get_clientsession",
+        return_value=MagicMock(),
+    ), patch.object(
+        EufyHTTPClient, "_attempt_login", AsyncMock(return_value=None)
+    ) as attempt:
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input
+        )
+
+    assert result2["errors"]["base"] == "invalid_auth"
+    attempt.assert_awaited()
+    saved = await store.async_load()
+    assert len(saved.throttle["logins"]) == 1
 
 
 async def test_a_successful_reauth_keeps_the_stored_logins(

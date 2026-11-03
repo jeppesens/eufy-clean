@@ -18,7 +18,7 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufySessionReplacedError,
 )
 from custom_components.robovac_mqtt.api.throttle import (
-    KIND_LOGIN,
+    KIND_AUTO_LOGIN,
     LOGIN_BUDGET,
     SESSION_REPLACED_WINDOW,
 )
@@ -396,7 +396,8 @@ async def test_a_fallback_session_with_mqtt_robots_logs_in_once():
     login.login.side_effect = still_fallback
     await login.init()
     login.login.assert_awaited_once()
-    assert login.throttle.held_off("login") is not None
+    assert login.throttle.held_off(KIND_AUTO_LOGIN) is not None
+    assert set(cache.throttle["hold_off"]) == {KIND_AUTO_LOGIN}
 
     # the next setup reuses the session instead of logging in again
     again = _login_with_cache(cache)
@@ -1084,7 +1085,7 @@ async def test_a_restart_during_the_hold_off_after_a_dropped_certificate_serves_
     cache = _usable_cache()
     rejected = cache.mqtt_credentials
     login = _login_with_cache(cache)
-    login.throttle.hold_off(KIND_LOGIN, 3600)
+    login.throttle.hold_off(KIND_AUTO_LOGIN, 3600)
     assert not await login.replace_rejected_mqtt_credentials(rejected, AsyncMock())
 
     restarted = _login_with_cache(cache)

@@ -27,7 +27,7 @@ from .errors import (
 )
 from .http import EufyHTTPClient
 from .throttle import (
-    KIND_LOGIN,
+    KIND_AUTO_LOGIN,
     MQTT_CREDENTIALS_HOLD_OFF,
     SESSION_REPLACED_WINDOW,
     CloudThrottle,
@@ -89,10 +89,13 @@ class EufyLogin:
         openudid: str,
         websession: Any | None = None,
         auth_cache: Any | None = None,
+        user_started: bool = False,
     ):
         # The cache's dict is shared, so the budget and hold-offs persist with it.
+        # A user-started login (config flow) skips the integration's own hold-off.
         self.throttle = CloudThrottle(
-            auth_cache.throttle if auth_cache is not None else None
+            auth_cache.throttle if auth_cache is not None else None,
+            user_started=user_started,
         )
         if auth_cache is not None:
             auth_cache.throttle = self.throttle.state
@@ -229,7 +232,7 @@ class EufyLogin:
         if self._mqtt_devices_without_credentials():
             # e.g. a user-center outage: the next setups reuse this session
             # instead of logging in again until the hold-off ends
-            self.throttle.hold_off(KIND_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
+            self.throttle.hold_off(KIND_AUTO_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
 
     def _mqtt_devices_without_credentials(self) -> bool:
         """MQTT robots found, but the session holds no MQTT credentials for them."""
@@ -395,8 +398,8 @@ class EufyLogin:
             try:
                 if rejected is self._mqtt_relogin_spent:
                     _LOGGER.debug("MQTT credentials from a login rejected; no login")
-                    if self.throttle.held_off(KIND_LOGIN) is None:
-                        self.throttle.hold_off(KIND_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
+                    if self.throttle.held_off(KIND_AUTO_LOGIN) is None:
+                        self.throttle.hold_off(KIND_AUTO_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
                         changed = True
                     return False
                 if not self.throttle.login_allowed():
@@ -434,7 +437,7 @@ class EufyLogin:
                     return False
                 self._capture_auth_cache()
                 if not self.mqtt_credentials:
-                    self.throttle.hold_off(KIND_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
+                    self.throttle.hold_off(KIND_AUTO_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
                     return False
                 self._replacement_login_at = time.monotonic()
                 _LOGGER.info("Fetched new MQTT credentials after a broker rejection")

@@ -6,7 +6,9 @@ import pytest
 
 from custom_components.robovac_mqtt.api.errors import EufyLoginRateLimitedError
 from custom_components.robovac_mqtt.api.throttle import (
+    KIND_AUTO_LOGIN,
     KIND_LOGIN,
+    KIND_REQUESTS,
     LOCKOUT_HOLD_OFF,
     LOGIN_BUDGET,
     LOGIN_BUDGET_WINDOW,
@@ -55,11 +57,13 @@ def test_state_round_trips_through_the_persisted_dict():
     first = CloudThrottle(clock=clock)
     first.note_login()
     first.hold_off("requests", 120)
+    first.hold_off(KIND_AUTO_LOGIN, 900)
 
     second = CloudThrottle(dict(first.state), clock=clock)
     assert len(second.recent_logins()) == 1
     with pytest.raises(EufyLoginRateLimitedError):
         second.check_request()
+    assert second.held_off(KIND_AUTO_LOGIN) == pytest.approx(900)
 
 
 def test_malformed_state_is_dropped_not_raised():
@@ -160,6 +164,35 @@ def test_a_login_hold_off_leaves_requests_alone():
     throttle.check_request()
     with pytest.raises(EufyLoginRateLimitedError):
         throttle.check_login()
+
+
+def _spend_budget(throttle: CloudThrottle) -> None:
+    for _ in range(LOGIN_BUDGET):
+        throttle.note_login()
+
+
+@pytest.mark.parametrize(
+    ("refuse", "user_refused"),
+    [
+        (lambda t: t.hold_off(KIND_AUTO_LOGIN, 900), False),
+        (lambda t: t.hold_off(KIND_LOGIN, 900), True),
+        (lambda t: t.hold_off(KIND_REQUESTS, 900), True),
+        (_spend_budget, True),
+    ],
+    ids=["auto-login-hold-off", "login-hold-off", "request-hold-off", "budget-spent"],
+)
+def test_a_user_started_login_skips_only_the_integrations_own_hold_off(
+    refuse, user_refused
+):
+    """Both share one persisted state; the user's login waits for the cloud's
+    hold-offs and the budget, an automatic login for all of them."""
+    clock = Clock()
+    automatic = CloudThrottle(clock=clock)
+    user = CloudThrottle(automatic.state, clock=clock, user_started=True)
+    refuse(automatic)
+
+    assert not automatic.login_allowed()
+    assert user.login_allowed() is not user_refused
 
 
 def test_a_shorter_hold_off_never_shortens_a_running_one():
