@@ -2572,3 +2572,17 @@ def test_trail_types_are_padded_when_the_lists_desync(mock_hass, mock_login):
     coordinator._robot_trail = [(1, 1), (2, 2), (3, 3)]
     coordinator._robot_trail_types = [1]
     assert coordinator._trail_types_for(0, 3) == [1, 0, 0]
+
+
+def test_a_new_session_keeps_the_finished_run_as_previous(mock_hass, mock_login):
+    """Starting a clean moves the last run to ``_previous_trail`` before clearing it."""
+    coordinator = _coordinator_with_map(mock_hass, mock_login, _square_map())
+    coordinator._robot_trail = [(1, 1), (2, 2), (3, 3)]
+    coordinator._dock_arrival_time = None
+
+    coordinator._track_activity_change(
+        "docked", VacuumState(activity="cleaning"), {"activity": "cleaning"}
+    )
+
+    assert coordinator._previous_trail == [(1, 1), (2, 2), (3, 3)]
+    assert coordinator._robot_trail == []

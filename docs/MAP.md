@@ -33,8 +33,8 @@ and [`MAP_WS_CONTRACT.md`](MAP_WS_CONTRACT.md) for the websocket wire format.
          while cleaning                             pose and trail events
 ```
 
-Scalar devices report no map at all; the camera entity and the map websocket are gated
-off for them.
+Scalar devices report no map at all; the camera entity is gated off for them, and the
+map websocket's geometry command answers them `no_map`.
 
 ---
 

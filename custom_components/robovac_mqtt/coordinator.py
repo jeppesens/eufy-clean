@@ -48,7 +48,7 @@ from .api.legacy_parser import (
     update_state_legacy,
 )
 from .api.local_tuya import LocalTuyaClient, LocalTuyaError
-from .api.map_geometry import build_map_static
+from .api.map_geometry import build_map_static, wire_cell
 from .api.map_stream import (
     _TUYA_UNITS_PER_CELL,
     MapData,
@@ -529,6 +529,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         # GEOMETRY only; clients key their static layer on it.
         self.map_geometry_revision: int = 0
         self._map_static_geometry: tuple[int, dict[str, Any]] | None = None
+        # One build at a time: concurrent requests at one revision share it.
+        self._map_static_lock = asyncio.Lock()
         self._tuya_mqtt: TuyaMobileMQTT | None = None
         self._tuya_mqtt_device_id44: str = random_device_id44()
         self._tuya_mqtt_refresh_cancel: CALLBACK_TYPE | None = None
@@ -3104,27 +3106,29 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         """The revision-stable half of the map geometry payload, off the loop.
 
         ``build_map_static`` walks every cell twice, so it runs in an executor and
-        its result is cached per revision. Returns ``(revision, payload)`` rather
+        its result is cached per revision; concurrent callers wait for one build
+        rather than each running their own. Returns ``(revision, payload)`` rather
         than reading the revision back afterwards: the two must describe the same
         map, or a client caches a grid under a revision it does not belong to. A
         map that changed mid-build is retried, and the last attempt is returned.
         """
         built: tuple[int, dict[str, Any]] | None = None
-        for _ in range(3):
-            md = self._map_data
-            if md is None:
-                return None
-            revision = self.map_geometry_revision
-            cached = self._map_static_geometry
-            if cached is not None and cached[0] == revision:
-                return cached
-            payload = await self.hass.async_add_executor_job(
-                partial(build_map_static, md, revision=revision)
-            )
-            built = (revision, payload)
-            if self.map_geometry_revision == revision:
-                self._map_static_geometry = built
-                return built
+        async with self._map_static_lock:
+            for _ in range(3):
+                md = self._map_data
+                if md is None:
+                    return None
+                revision = self.map_geometry_revision
+                cached = self._map_static_geometry
+                if cached is not None and cached[0] == revision:
+                    return cached
+                payload = await self.hass.async_add_executor_job(
+                    partial(build_map_static, md, revision=revision)
+                )
+                built = (revision, payload)
+                if self.map_geometry_revision == revision:
+                    self._map_static_geometry = built
+                    return built
         return built
 
     @callback
@@ -3251,12 +3255,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             self._map_pose_dirty = False
             event: dict[str, Any] = {
                 "t": "pose",
-                "robot": list(self._robot_pixel) if self._robot_pixel else None,
+                "robot": wire_cell(self._robot_pixel) if self._robot_pixel else None,
             }
             # Dock only when it changes; it is static most of a session.
             if self._dock_pixel != self._map_sent_dock:
                 self._map_sent_dock = self._dock_pixel
-                event["dock"] = list(self._dock_pixel) if self._dock_pixel else None
+                event["dock"] = wire_cell(self._dock_pixel) if self._dock_pixel else None
             self._send_map_event(event)
 
         if reset:
@@ -3267,7 +3271,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     "t": "trail",
                     "from": 0,
                     "reset": True,
-                    "p": [list(pt) for pt in self._robot_trail],
+                    "p": [wire_cell(pt) for pt in self._robot_trail],
                     # One per point, same order as "p" (0 clean, 1 transit).
                     "types": self._trail_types_for(0, len(self._robot_trail)),
                 }
@@ -3279,7 +3283,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 {
                     "t": "trail",
                     "from": start,
-                    "p": [list(pt) for pt in self._robot_trail[start:]],
+                    "p": [wire_cell(pt) for pt in self._robot_trail[start:]],
                     "types": self._trail_types_for(start, trail_len),
                 }
             )
