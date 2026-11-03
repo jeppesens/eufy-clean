@@ -256,7 +256,7 @@ async def test_login_falls_back_when_no_user_center_anywhere():
         _login_response(200, "tok_v1"),
     )
     client = _make_client(websession=mock_session)
-    client.get_user_info = AsyncMock(return_value=None)  # 401 -> no user_center
+    client.get_user_info = AsyncMock(return_value=None)  # no user_center_id
     client.get_mqtt_credentials = AsyncMock(return_value={"endpoint": "mqtt"})
 
     result = await client.login()
@@ -265,6 +265,30 @@ async def test_login_falls_back_when_no_user_center_anywhere():
     assert result["user"] is None
     assert result["mqtt"] is None
     client.get_mqtt_credentials.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "body"),
+    [(401, None), (200, {"res_code": 26084}), (200, {"code": -401})],
+    ids=["http-401", "26084", "body-401"],
+)
+async def test_login_rejected_user_info_is_not_a_fallback_session(status, body):
+    """A token the user info call rejects is no fallback session; a later
+    config's token without a user_center still is."""
+    mock_session = _mock_websession_sequence(
+        _login_response(200, "tok_v2"), _login_response(200, "tok_v1")
+    )
+    mock_session.get.side_effect = [
+        _mock_websession(_body_response(status, body)).get.return_value,
+        _mock_websession(_body_response(200, {"email": "e"})).get.return_value,
+    ]
+    client = _make_client(websession=mock_session)
+
+    result = await client.login()
+
+    assert result["session"]["access_token"] == "tok_v1"
+    assert result["user"] is None
 
 
 @pytest.mark.asyncio

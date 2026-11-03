@@ -31,6 +31,7 @@ from custom_components.robovac_mqtt.auth_store import (
     trim_session,
     trim_user_info,
 )
+from custom_components.robovac_mqtt.const import EUFY_API_LOGIN_V2, EUFY_API_MQTT_INFO
 
 # ---------------------------------------------------------------------------
 # Certificate expiry
@@ -846,6 +847,52 @@ async def test_a_rejection_of_the_fresh_session_right_after_the_kick_out_login_l
     login.login.assert_awaited_once()
     assert cache.session_replaced_at is not None
     assert cache.session is None
+
+
+def _answer(status: int, body: object) -> MagicMock:
+    """A websession request context answering ``status`` with JSON ``body``."""
+    response = MagicMock(status=status, headers={})
+    response.json = AsyncMock(return_value=body)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "rejected", [(401, {}), (200, {"res_code": 26084})], ids=["401", "26084"]
+)
+async def test_the_kick_out_login_is_judged_by_its_own_discovery(rejected):
+    """The login after a 26084 tries both configs; the first one's user info
+    rejects its token, the second succeeds. Only the discovery with the fresh
+    session decides on the latch: it is clean, so nothing latches."""
+    cache = _usable_cache()
+    login = _kicked_out_login(cache)
+    del login.login  # the real login, through EufyHTTPClient
+    creds = _creds(_self_signed(timedelta(days=30)))
+
+    def post(url, **kwargs):
+        if url == EUFY_API_MQTT_INFO:
+            return _answer(200, {"data": creds})
+        token = "v2tok" if url == EUFY_API_LOGIN_V2 else "v1tok"
+        return _answer(200, {"access_token": token, "user_id": "uid"})
+
+    def get(_url, **kwargs):
+        if kwargs["headers"]["token"] == "v2tok":
+            return _answer(*rejected)
+        return _answer(200, {"user_center_id": "uc", "user_center_token": "t"})
+
+    websession = login._websession
+    assert websession is not None
+    websession.post.side_effect = post
+    websession.get.side_effect = get
+
+    await login.init()
+
+    assert cache.session_replaced_at is None
+    assert cache.session == {"access_token": "v1tok", "user_id": "uid"}
+    assert cache.mqtt_credentials == creds
 
 
 @pytest.mark.asyncio

@@ -231,6 +231,9 @@ class EufyLogin:
 
     async def _discover(self) -> None:
         """Device discovery: the part that is identical cached or not."""
+        # The session is judged by this discovery, not by the login's probes.
+        api = self.eufyApi
+        api.auth_error = api.transient_error = api.session_replaced = False
         await self.getDevices()
 
         self._tuya_failed = False

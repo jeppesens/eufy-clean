@@ -91,6 +91,10 @@ _LOGIN_CONFIGS: list[dict[str, str]] = [
 ]
 
 
+class _TokenRejectedError(Exception):
+    """The cloud rejected the session's token on an authenticated call."""
+
+
 class EufyHTTPClient:
     """HTTP Client for Eufy Authentication and Device Discovery."""
 
@@ -168,6 +172,10 @@ class EufyHTTPClient:
                 _LOGGER.debug("User info via %s undecided: %s", config["label"], err)
                 transient = err
                 continue
+            except _TokenRejectedError as err:
+                # a rejected token is no fallback session either
+                _LOGGER.debug("User info via %s: %s", config["label"], err)
+                continue
             if user and user.get("user_center_id"):
                 _LOGGER.info(
                     "Login successful via %s (user_center available)",
@@ -218,8 +226,8 @@ class EufyHTTPClient:
             _LOGGER.warning("%s", err)
             raise err
 
-    def _note_auth_status(self, response: Any, where: str, body: Any) -> None:
-        """Classify an authenticated call's answer.
+    def _note_auth_status(self, response: Any, where: str, body: Any) -> bool:
+        """Classify an authenticated call's answer; True when the token was rejected.
 
         Raises EufyLoginRateLimitedError for a throttle. Records a rejected
         token (``auth_error``), a session ended by another login
@@ -233,14 +241,17 @@ class EufyHTTPClient:
             self.session_replaced = True
             self.auth_error = True
             _LOGGER.debug("Eufy ended the session on %s (code %s)", where, code)
-        elif status in (401, 403) or code in TOKEN_INVALID_CODES:
+            return True
+        if status in (401, 403) or code in TOKEN_INVALID_CODES:
             self.auth_error = True
             _LOGGER.debug(
                 "Eufy rejected the session on %s (HTTP %s, code %s)", where, status, code
             )
-        elif _is_transient_status(status):
+            return True
+        if _is_transient_status(status):
             self.transient_error = True
             _LOGGER.debug("Eufy %s failed on the server side (HTTP %s)", where, status)
+        return False
 
     def _ordered_login_configs(self) -> list[dict[str, str]]:
         """``_LOGIN_CONFIGS`` with a previously successful entry moved to front.
@@ -363,7 +374,7 @@ class EufyHTTPClient:
 
         Raises EufyLoginTransientError on a transient HTTP status or a 200
         whose body is not a JSON object (EufyLoginRateLimitedError for a
-        throttle).
+        throttle), and _TokenRejectedError when the token is rejected.
         """
         if not self.session:
             return None
@@ -383,7 +394,11 @@ class EufyHTTPClient:
             },
         ) as response:
             user_info = await _read_json(response)
-            self._note_auth_status(response, "get_user_info", user_info)
+            if self._note_auth_status(response, "get_user_info", user_info):
+                self.user_info = None
+                raise _TokenRejectedError(
+                    f"token rejected (HTTP {response.status}, code {body_code(user_info)})"
+                )
             if _is_transient_status(response.status):
                 raise EufyLoginTransientError(f"user info: HTTP {response.status}")
             if response.status == 200:
