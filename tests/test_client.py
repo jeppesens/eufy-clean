@@ -3,6 +3,7 @@
 import asyncio
 import datetime
 import logging
+import socket
 import ssl
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -20,6 +21,7 @@ from paho.mqtt.reasoncodes import ReasonCode
 from custom_components.robovac_mqtt.api import client as client_mod
 from custom_components.robovac_mqtt.api.client import (
     EufyCleanClient,
+    Rejection,
     get_blocking_mqtt_client,
 )
 
@@ -238,7 +240,7 @@ def _listener_calls(mock_loop: MagicMock, listener) -> list[tuple]:
 
 
 def test_connection_listener_reports_connect_and_disconnect():
-    """The listener gets (connected, auth_failed) on the loop for both edges."""
+    """The listener gets (connected, rejection) on the loop for both edges."""
     client = _make_client()
     mock_loop = MagicMock()
     client._loop = mock_loop
@@ -252,26 +254,29 @@ def test_connection_listener_reports_connect_and_disconnect():
         MagicMock(), None, MagicMock(), _disconnect("Unspecified error"), None
     )
 
-    assert _listener_calls(mock_loop, listener) == [(True, False), (False, False)]
+    assert _listener_calls(mock_loop, listener) == [(True, None), (False, None)]
     listener.assert_not_called()  # only ever via the loop
 
 
 @pytest.mark.parametrize("reason", ["Not authorized", "Bad user name or password"])
 def test_connection_listener_flags_auth_rejection(reason):
-    """A CONNACK that rejects the identity reports auth_failed=True once; the
-    disconnect paho reports after it does not count it again."""
+    """A CONNACK that rejects the identity reports an explicit rejection once;
+    the disconnect paho reports after it does not count it again."""
     client = _make_client()
     mock_loop = MagicMock()
     client._loop = mock_loop
     listener = MagicMock()
     client.set_connection_listener(listener)
 
+    client._on_socket_open(MagicMock(), None, MagicMock())
     client._on_connect(MagicMock(), None, MagicMock(), _connack(reason), None)
     client._on_disconnect(
         MagicMock(), None, MagicMock(), _disconnect("Unspecified error"), None
     )
 
-    assert _listener_calls(mock_loop, listener) == [(False, True), (False, False)]
+    assert _listener_calls(mock_loop, listener) == [
+        (False, Rejection.EXPLICIT), (False, None)
+    ]
 
 
 def test_connection_listener_other_refusal_is_not_auth():
@@ -284,7 +289,7 @@ def test_connection_listener_other_refusal_is_not_auth():
 
     client._on_connect(MagicMock(), None, MagicMock(), _connack("Server unavailable"), None)
 
-    assert _listener_calls(mock_loop, listener) == [(False, False)]
+    assert _listener_calls(mock_loop, listener) == [(False, None)]
 
 
 def _ssl_error(reason: str, cls: type[ssl.SSLError] = ssl.SSLError) -> ssl.SSLError:
@@ -304,25 +309,39 @@ _CERT_ALERTS = [
     "TLSV13_ALERT_CERTIFICATE_REQUIRED",
 ]
 
-_NOT_CERT_REJECTIONS = [
+# How a broker closes the connection inside the handshake without an alert.
+_SILENT_HANDSHAKE_ERRORS = [
+    _ssl_error("UNEXPECTED_EOF_WHILE_READING", ssl.SSLEOFError),
+    ConnectionResetError(104, "Connection reset by peer"),
+]
+
+_NOT_REJECTIONS = [
     _ssl_error("SSLV3_ALERT_HANDSHAKE_FAILURE"),
     _ssl_error("WRONG_VERSION_NUMBER"),
     # the client refusing the broker's certificate is not a verdict on ours
     _ssl_error("CERTIFICATE_VERIFY_FAILED", ssl.SSLCertVerificationError),
     ssl.SSLError(1, "no reason"),
-    ConnectionResetError(104, "Connection reset by peer"),
+    # plain TCP connect failures
+    ConnectionRefusedError(111, "Connection refused"),
+    TimeoutError("timed out"),
+    socket.gaierror(-2, "Name or service not known"),
     OSError("no route"),
 ]
 
 
 @pytest.mark.parametrize("reason", _CERT_ALERTS)
-def test_a_certificate_alert_classifies_as_a_rejection(reason):
-    assert client_mod.is_certificate_rejection(_ssl_error(reason)) is True
+def test_a_certificate_alert_classifies_as_an_explicit_rejection(reason):
+    assert client_mod.handshake_rejection(_ssl_error(reason)) is Rejection.EXPLICIT
 
 
-@pytest.mark.parametrize("err", _NOT_CERT_REJECTIONS)
+@pytest.mark.parametrize("err", _SILENT_HANDSHAKE_ERRORS)
+def test_a_handshake_the_broker_cut_off_classifies_as_a_silent_rejection(err):
+    assert client_mod.handshake_rejection(err) is Rejection.SILENT
+
+
+@pytest.mark.parametrize("err", _NOT_REJECTIONS)
 def test_network_and_other_tls_errors_are_not_rejections(err):
-    assert client_mod.is_certificate_rejection(err) is False
+    assert client_mod.handshake_rejection(err) is None
 
 
 def _failed_reconnect(client: EufyCleanClient, err: BaseException) -> None:
@@ -333,19 +352,26 @@ def _failed_reconnect(client: EufyCleanClient, err: BaseException) -> None:
         client._on_connect_fail(MagicMock(), None)
 
 
-def test_a_reconnect_refused_with_a_certificate_alert_is_an_auth_failure():
+@pytest.mark.parametrize(
+    ("err", "rejection"),
+    [
+        (_ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"), Rejection.EXPLICIT),
+        *((err, Rejection.SILENT) for err in _SILENT_HANDSHAKE_ERRORS),
+    ],
+)
+def test_a_reconnect_the_broker_turned_away_is_reported(err, rejection):
     client = _make_client()
     mock_loop = MagicMock()
     client._loop = mock_loop
     listener = MagicMock()
     client.set_connection_listener(listener)
 
-    _failed_reconnect(client, _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"))
+    _failed_reconnect(client, err)
 
-    assert _listener_calls(mock_loop, listener) == [(False, True)]
+    assert _listener_calls(mock_loop, listener) == [(False, rejection)]
 
 
-@pytest.mark.parametrize("err", _NOT_CERT_REJECTIONS)
+@pytest.mark.parametrize("err", _NOT_REJECTIONS)
 def test_a_reconnect_failing_otherwise_is_not_counted(err):
     client = _make_client()
     mock_loop = MagicMock()
@@ -358,6 +384,53 @@ def test_a_reconnect_failing_otherwise_is_not_counted(err):
     assert _listener_calls(mock_loop, listener) == []
 
 
+def test_a_connection_closed_before_the_connack_is_a_silent_rejection():
+    """TLS and CONNECT went through, then the broker closed without answering;
+    a later disconnect without a new attempt is not counted again."""
+    client = _make_client()
+    mock_loop = MagicMock()
+    client._loop = mock_loop
+    listener = MagicMock()
+    client.set_connection_listener(listener)
+    dropped = _disconnect("Unspecified error")
+
+    client._on_socket_open(MagicMock(), None, MagicMock())
+    client._on_disconnect(MagicMock(), None, MagicMock(), dropped, None)
+    client._on_disconnect(MagicMock(), None, MagicMock(), dropped, None)
+
+    assert _listener_calls(mock_loop, listener) == [
+        (False, Rejection.SILENT), (False, None)
+    ]
+
+
+@pytest.mark.parametrize(
+    ("connack", "disconnect", "calls"),
+    [
+        ("Success", "Unspecified error", [(True, None), (False, None)]),
+        (None, "Keep alive timeout", [(False, None)]),
+        (None, "Success", [(False, None)]),
+    ],
+    ids=["answered", "keepalive-timeout", "client-disconnect"],
+)
+def test_an_attempt_answered_timed_out_or_ended_by_the_client_is_not_a_rejection(
+    connack, disconnect, calls
+):
+    client = _make_client()
+    mock_loop = MagicMock()
+    client._loop = mock_loop
+    listener = MagicMock()
+    client.set_connection_listener(listener)
+    paho = MagicMock()
+    paho.subscribe.return_value = (mqtt.MQTT_ERR_SUCCESS, 1)
+
+    client._on_socket_open(paho, None, MagicMock())
+    if connack:
+        client._on_connect(paho, None, MagicMock(), _connack(connack), None)
+    client._on_disconnect(paho, None, MagicMock(), _disconnect(disconnect), None)
+
+    assert _listener_calls(mock_loop, listener) == calls
+
+
 # paho's log line for a read that failed on a TLS 1.3 alert from the broker
 _TLS13_READ_ALERT = (
     "failed to receive on socket: [SSL: TLSV13_ALERT_CERTIFICATE_REQUIRED] "
@@ -366,7 +439,8 @@ _TLS13_READ_ALERT = (
 
 
 def test_a_certificate_alert_on_a_read_counts_with_its_disconnect_once():
-    """TLS 1.3: the alert reaches only paho's log, then the disconnect."""
+    """TLS 1.3: the alert reaches only paho's log, then the disconnect; it is
+    an explicit rejection, not a connection closed without an answer."""
     client = _make_client()
     mock_loop = MagicMock()
     client._loop = mock_loop
@@ -374,11 +448,14 @@ def test_a_certificate_alert_on_a_read_counts_with_its_disconnect_once():
     client.set_connection_listener(listener)
     dropped = _disconnect("Unspecified error")
 
+    client._on_socket_open(MagicMock(), None, MagicMock())
     client._on_log(MagicMock(), None, mqtt.MQTT_LOG_ERR, _TLS13_READ_ALERT)
     client._on_disconnect(MagicMock(), None, MagicMock(), dropped, None)
     client._on_disconnect(MagicMock(), None, MagicMock(), dropped, None)
 
-    assert _listener_calls(mock_loop, listener) == [(False, True), (False, False)]
+    assert _listener_calls(mock_loop, listener) == [
+        (False, Rejection.EXPLICIT), (False, None)
+    ]
 
 
 @pytest.mark.parametrize(
@@ -389,7 +466,7 @@ def test_a_certificate_alert_on_a_read_counts_with_its_disconnect_once():
         (mqtt.MQTT_LOG_DEBUG, _TLS13_READ_ALERT),
     ],
 )
-def test_other_read_failures_are_not_counted(level, line):
+def test_other_read_failures_are_no_certificate_alert(level, line):
     client = _make_client()
     mock_loop = MagicMock()
     client._loop = mock_loop
@@ -401,19 +478,24 @@ def test_other_read_failures_are_not_counted(level, line):
         MagicMock(), None, MagicMock(), _disconnect("Unspecified error"), None
     )
 
-    assert _listener_calls(mock_loop, listener) == [(False, False)]
+    assert _listener_calls(mock_loop, listener) == [(False, None)]
 
 
 @pytest.mark.asyncio
-async def test_connect_hooks_the_failed_reconnect_the_log_and_the_suback():
+async def test_connect_hooks_the_attempt_the_failed_reconnect_the_log_and_the_suback():
     client = _make_client()
     fake = MagicMock()
 
     with patch.object(client_mod, "get_blocking_mqtt_client", return_value=fake):
         await client.connect()
 
-    hooks = (fake.on_connect_fail, fake.on_log, fake.on_subscribe)
-    assert hooks == (client._on_connect_fail, client._on_log, client._on_subscribe)
+    hooks = (fake.on_socket_open, fake.on_connect_fail, fake.on_log, fake.on_subscribe)
+    assert hooks == (
+        client._on_socket_open,
+        client._on_connect_fail,
+        client._on_log,
+        client._on_subscribe,
+    )
 
 
 # --- sending ---

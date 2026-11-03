@@ -6,7 +6,6 @@ import json
 import logging
 import math
 import re
-import ssl
 import time
 import zlib
 from collections.abc import Callable, Sequence
@@ -35,7 +34,7 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api.client import EufyCleanClient, is_certificate_rejection
+from .api.client import EufyCleanClient, Rejection, handshake_rejection
 from .api.cloud import EufyLogin, EufyLoginError
 from .api.commands import build_command
 from .api.legacy_commands import (
@@ -181,10 +180,13 @@ _MAP_STATE_SAVE_DELAY = 30.0
 _BIZ_INLINE_HEX_MAX = 200
 # The transport must stay down this long before entities go unavailable.
 _CONNECTION_LOSS_GRACE = 60.0
-# Connection attempts in a row on which the broker rejected the client
-# identity before one warning is logged; each multiple of it asks EufyLogin
-# for replacement credentials.
+# Connection attempts in a row the broker turned away (Rejection) before one
+# warning is logged; each multiple of it asks EufyLogin for replacement
+# credentials.
 _AUTH_FAILURE_WARN_AFTER = 3
+# Seconds before setup tries the same MQTT credentials once more after the
+# broker closed the TLS handshake (one close may be the network).
+_SETUP_HANDSHAKE_RETRY_DELAY = 2.0
 
 
 # Days of a schedule created without any.
@@ -400,8 +402,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         eufy_login: EufyLogin,
         device_info: dict[str, Any],
         config_entry: ConfigEntry | None = None,
+        reload_when_logins_resume: Callable[[float], bool] | None = None,
     ) -> None:
-        """Initialize coordinator."""
+        """Initialize coordinator.
+
+        ``reload_when_logins_resume(wait)`` arms the entry's one reload for
+        when the login hold-off ends, in ``wait`` s; False if one is armed.
+        """
         self.entry_id = config_entry.entry_id if config_entry else ""
         self.device_id = device_info["deviceId"]
         self.device_model = device_info["deviceModel"]
@@ -572,6 +579,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._connection_loss_cancel: CALLBACK_TYPE | None = None
         self._transport_available: bool = True
         self._auth_failures: int = 0
+        # How the current streak's attempts were turned away: EXPLICIT only
+        # while every one of them was.
+        self._streak_rejection: Rejection | None = None
+        self._reload_when_logins_resume = reload_when_logins_resume
         # The MQTT credentials the current client uses.
         self._mqtt_credentials: dict[str, Any] | None = None
         self._mqtt_credentials_replacing: bool = False
@@ -835,6 +846,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             entry, options={**entry.options, CONF_LOCAL_DEVICES: devices}
         )
 
+    @property
+    def mqtt_session_down(self) -> bool:
+        """An MQTT robot whose broker session is not up."""
+        if self.connection_type != "mqtt":
+            return False
+        return not getattr(self.client, "is_connected", False)
+
     async def _async_drop_client(self) -> None:
         """Disconnect and forget the transport client; never raises."""
         client, self.client = self.client, None
@@ -892,29 +910,40 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         return client
 
     async def _async_connect_mqtt_at_setup(self, creds: dict[str, Any]) -> None:
-        """Connect; a certificate the broker rejects in the TLS handshake is
-        replaced once (EufyLogin bounds the logins) and the connect retried.
+        """Connect; a certificate the broker rejects in the TLS handshake, by
+        an alert or by closing it twice in a row, is replaced once (EufyLogin
+        bounds the logins) and the connect retried.
 
-        With TLS 1.3 the alert comes after connect() and is counted like a
+        With TLS 1.3 the verdict comes after connect() and is counted like a
         refused CONNACK instead.
         """
-        for attempt in range(2):
+        replaced = closed_once = False
+        while True:
             try:
                 await self._async_connect_mqtt(creds)
                 return
-            except ssl.SSLError as err:
-                if not is_certificate_rejection(err):
+            except OSError as err:
+                rejection = handshake_rejection(err)
+                if rejection is None:
                     raise
                 _LOGGER.warning(
-                    "%s: the MQTT broker rejected the client certificate (%s)",
-                    self.device_name, err,
+                    "%s: the MQTT broker %s (%r)",
+                    self.device_name,
+                    "rejected the client certificate"
+                    if rejection is Rejection.EXPLICIT
+                    else "closed the connection in the TLS handshake",
+                    err,
                 )
                 await self._async_drop_client()
+                if rejection is Rejection.SILENT and not closed_once:
+                    closed_once = True
+                    await asyncio.sleep(_SETUP_HANDSHAKE_RETRY_DELAY)
+                    continue
                 # also drops the rejected ones from the cache
                 fresh = await self._async_new_mqtt_credentials(creds)
-                if fresh is None or attempt:
+                if fresh is None or replaced:
                     raise
-                creds = fresh
+                creds, replaced, closed_once = fresh, True, False
 
     async def _async_save_auth_cache(self) -> None:
         """Persist the account's auth cache (no-op without a config entry)."""
@@ -950,7 +979,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             if rejected is None:
                 return
             creds = await self._async_new_mqtt_credentials(rejected)
-            if not creds or self._is_closing():
+            if self._is_closing():
+                return
+            if not creds:
+                self._reload_after_the_login_hold_off(rejected)
                 return
             old = self.client
             if old is not None and hasattr(old, "set_connection_listener"):
@@ -958,6 +990,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 old.set_connection_listener(None)
             await self._async_drop_client()
             self._auth_failures = 0
+            self._streak_rejection = None
             try:
                 client = await self._async_connect_mqtt(creds)
             except Exception as err:  # noqa: BLE001 - setup retries the transport
@@ -983,6 +1016,20 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     _LOGGER.debug("Error disconnecting %s: %s", self.device_name, err)
         finally:
             self._mqtt_credentials_replacing = False
+
+    def _reload_after_the_login_hold_off(self, rejected: dict[str, Any]) -> None:
+        """No login in this run replaces ``rejected``: reload the entry when
+        the login hold-off ends, so its setup logs in once more."""
+        wait = self.eufy_login.mqtt_reload_wait(rejected)
+        if wait is None or self._reload_when_logins_resume is None:
+            return
+        if self._reload_when_logins_resume(wait):
+            _LOGGER.warning(
+                "%s: the MQTT broker turns away the credentials of the last "
+                "login; reloading the entry when the login hold-off ends, in "
+                "%.0f min",
+                self.device_name, wait / 60,
+            )
 
     async def _initialize_cloud(self) -> None:
         """Initialize cloud polling connection."""
@@ -2819,12 +2866,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._rerender_map()
 
     @callback
-    def _on_connection_change(self, connected: bool, auth_failed: bool) -> None:
+    def _on_connection_change(
+        self, connected: bool, rejection: Rejection | None
+    ) -> None:
         """Track the push transport; entities go unavailable after a sustained loss."""
         if self._is_closing():
             return
         if connected:
             self._auth_failures = 0
+            self._streak_rejection = None
             if self.eufy_login.mqtt_credentials_accepted(self._mqtt_credentials):
                 self._spawn(self._async_save_auth_cache(), "auth_cache_save")
             if self._connection_loss_cancel is not None:
@@ -2836,13 +2886,18 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 self.last_update_success = True
                 self.async_update_listeners()
             return
-        if auth_failed:
+        if rejection is not None:
             self._auth_failures += 1
+            if self._streak_rejection is not Rejection.SILENT:
+                self._streak_rejection = rejection
             if self._auth_failures == _AUTH_FAILURE_WARN_AFTER:
                 _LOGGER.warning(
-                    "%s: the MQTT broker rejected the client credentials on %d"
-                    " connection attempts in a row",
-                    self.device_name, self._auth_failures,
+                    "%s: the MQTT broker %s on %d connection attempts in a row",
+                    self.device_name,
+                    "rejected the client credentials"
+                    if self._streak_rejection is Rejection.EXPLICIT
+                    else "closed the connection before answering",
+                    self._auth_failures,
                 )
             if (
                 self._auth_failures % _AUTH_FAILURE_WARN_AFTER == 0

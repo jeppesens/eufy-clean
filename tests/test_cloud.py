@@ -557,6 +557,8 @@ async def test_rejected_credentials_during_the_hold_off_send_no_login():
     login.eufyApi.login.assert_not_awaited()
     assert login.auth_cache.mqtt_credentials is None
     save.assert_awaited_once()
+    # a rejection after the hold-off logs in by itself: no reload needed
+    assert login.mqtt_reload_wait(rejected) is None
 
 
 @pytest.mark.asyncio
@@ -570,6 +572,9 @@ async def test_rejected_credentials_after_a_refused_login_send_no_second_login()
     assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
 
     login.eufyApi.login.assert_awaited_once()
+    # re-authentication follows, not a reload that would log in again
+    assert login.auth_cache.login_hold_off_left() is not None
+    assert login.mqtt_reload_wait(rejected) is None
 
 
 @pytest.mark.asyncio
@@ -599,7 +604,10 @@ async def test_credentials_a_login_just_produced_get_no_replacement_login():
     assert await login.replace_rejected_mqtt_credentials(fresh, save) is False
 
     login.eufyApi.login.assert_awaited_once()
-    assert login.auth_cache.login_hold_off_left() is not None
+    left = login.auth_cache.login_hold_off_left()
+    assert left is not None
+    # nothing in this run logs in for them: a reload when the hold-off ends
+    assert left - 5 <= login.mqtt_reload_wait(fresh) <= left
 
 
 @pytest.mark.asyncio
@@ -625,6 +633,35 @@ async def test_a_rejected_replacement_holds_off_logins_after_a_restart_too():
     assert login.auth_cache.login_hold_off_left() is not None
     save.assert_awaited_once()
     login.eufyApi.login.assert_awaited_once()
+
+
+async def _hold_off_after_a_rejected_login(login, save) -> float:
+    """Log in once the hold-off is over; the broker rejects what it produced.
+    Returns the hold-off that starts."""
+    login.auth_cache.login_hold_until = None
+    await login.login({"mqtt": True})
+    assert await login.replace_rejected_mqtt_credentials(
+        login.mqtt_credentials, save
+    ) is False
+    return login.auth_cache.login_hold_off_left()
+
+
+@pytest.mark.asyncio
+async def test_consecutive_rejected_logins_hold_off_logins_longer_up_to_an_hour():
+    """15, 30, then 60 min after each login whose credentials the broker
+    turns away; the count outlives a restart and ends with an accept."""
+    login, _rejected, save = _login_with_rejected_credentials()
+    holds = [await _hold_off_after_a_rejected_login(login, save) for _ in range(4)]
+
+    assert [round(h / 60) for h in holds] == [15, 30, 60, 60]
+    stored = AuthCache.from_dict(json.loads(json.dumps(login.auth_cache.to_dict())))
+    login.auth_cache = stored
+    # counted only while the hold-off still grows
+    assert stored.rejected_logins == 2
+    assert round(await _hold_off_after_a_rejected_login(login, save) / 60) == 60
+
+    assert login.mqtt_credentials_accepted({"certificate_pem": "other"}) is True
+    assert round(await _hold_off_after_a_rejected_login(login, save) / 60) == 15
 
 
 @pytest.mark.asyncio
@@ -711,6 +748,53 @@ async def test_an_accepted_replacement_allows_the_next_one_after_the_interval():
     assert await login.replace_rejected_mqtt_credentials(replacement, save) is True
 
     assert login.eufyApi.login.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("login_result", "hold_off", "expected"),
+    [
+        (None, None, None),
+        (None, 600.0, 600.0),
+        (EufyLoginTransientError("HTTP 503"), None, 300.0),
+        (EufyLoginTransientError("HTTP 503"), 600.0, 600.0),
+        ({"mqtt": {"certificate_pem": "new"}}, None, 3600.0),
+        ({"mqtt": {"certificate_pem": "new"}}, 7200.0, 7200.0),
+    ],
+    ids=[
+        "free", "hold-off", "retry-delay", "hold-off-past-retry-delay",
+        "min-interval", "hold-off-past-min-interval",
+    ],
+)
+async def test_the_wait_for_a_replacement_login_is_the_longest_bound(
+    login_result, hold_off, expected
+):
+    """The hold-off, the retry delay after a failed replacement login and
+    the interval after a successful one: a replacement login waits for all;
+    the rejections in between send none."""
+    login, rejected, save = _login_with_rejected_credentials()
+    if login_result is not None:
+        login.eufyApi.login = AsyncMock(
+            side_effect=login_result
+            if isinstance(login_result, Exception)
+            else [login_result]
+        )
+        await login.replace_rejected_mqtt_credentials(rejected, save)
+    if hold_off is not None:
+        login.auth_cache.hold_off_logins(hold_off)
+
+    wait = login.replacement_login_wait()
+
+    if expected is None:
+        assert wait is None
+        return
+    assert expected - 5 < wait <= expected
+    if isinstance(login_result, dict):
+        rejected = login.mqtt_credentials
+        login.mqtt_credentials_accepted(rejected)
+    calls = login.eufyApi.login.await_count
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert login.eufyApi.login.await_count == calls
 
 
 @pytest.mark.asyncio
