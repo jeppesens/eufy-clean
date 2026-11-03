@@ -54,8 +54,8 @@ SESSION_REPLACED_WINDOW: Final = 3600.0
 # later setups reuse its session instead of logging in again this soon.
 MISSING_CREDENTIALS_HOLD_OFF: Final = 15 * 60.0
 
-# Body code of an expired or unknown token.
-TOKEN_INVALID_CODE: Final = 401
+# Body codes of an expired or unknown token.
+TOKEN_INVALID_CODES: Final = frozenset({401, -401})
 
 
 def body_code(body: Any) -> int | None:

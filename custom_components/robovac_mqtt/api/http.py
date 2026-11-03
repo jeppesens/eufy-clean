@@ -28,7 +28,7 @@ from .throttle import (
     CHALLENGE_CODES,
     CREDENTIAL_CODES,
     SESSION_REPLACED_CODE,
-    TOKEN_INVALID_CODE,
+    TOKEN_INVALID_CODES,
     CloudThrottle,
     body_code,
 )
@@ -233,7 +233,7 @@ class EufyHTTPClient:
             self.session_replaced = True
             self.auth_error = True
             _LOGGER.debug("Eufy ended the session on %s (code %s)", where, code)
-        elif status in (401, 403) or code == TOKEN_INVALID_CODE:
+        elif status in (401, 403) or code in TOKEN_INVALID_CODES:
             self.auth_error = True
             _LOGGER.debug(
                 "Eufy rejected the session on %s (HTTP %s, code %s)", where, status, code

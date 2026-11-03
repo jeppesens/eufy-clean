@@ -582,6 +582,20 @@ async def test_device_list_failures_are_classified(status, auth_error, transient
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("code", [401, -401, "-401"], ids=["401", "-401", "-401-text"])
+async def test_a_token_invalid_body_code_is_a_rejected_token(code):
+    """Body code 401 or -401 on an HTTP 200 answer rejects the token like HTTP 401."""
+    client = _make_client(
+        websession=_mock_websession(_body_response(200, {"code": code}))
+    )
+    client.session = {"access_token": "tok"}
+
+    await client.get_cloud_device_list()
+
+    assert (client.auth_error, client.transient_error) == (True, False)
+
+
+@pytest.mark.asyncio
 async def test_device_list_429_raises_a_rate_limit():
     mock_session = _mock_websession(_rate_limited("60"))
     client = _make_client(websession=mock_session)
