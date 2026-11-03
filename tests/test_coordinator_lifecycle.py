@@ -22,7 +22,7 @@ from paho.mqtt.reasoncodes import ReasonCode
 
 from custom_components.robovac_mqtt.api import cloud as cloud_mod
 from custom_components.robovac_mqtt.api.client import Rejection
-from custom_components.robovac_mqtt.api.cloud import EufyLogin, EufyLoginError
+from custom_components.robovac_mqtt.api.cloud import EufyLogin
 from custom_components.robovac_mqtt.api.legacy_parser import parse_legacy_schedules
 from custom_components.robovac_mqtt.api.map_stream import MapData
 from custom_components.robovac_mqtt.api.parser import update_state
@@ -1258,6 +1258,42 @@ async def test_a_rejected_replacement_does_not_loop(hass, login):
     assert account.auth_cache.mqtt_credentials is None
 
 
+async def test_a_rejected_replacement_reloads_the_entry_when_the_hold_off_ends(
+    hass, login, caplog
+):
+    """Nothing in this run logs in for credentials a login produced: every
+    robot of the account asks for the one reload at the end of the login
+    hold-off, and the warning is logged once, when the reload is armed."""
+    account = _account_login(login.mqtt_credentials)
+    reload = MagicMock(side_effect=[True, False, False, False])
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        first, second = await _connected_coordinators(hass, account, 2, client_cls)
+        for coordinator in (first, second):
+            coordinator._reload_when_logins_resume = reload
+        _refuse(first, _AUTH_FAILURE_WARN_AFTER)
+        _refuse(second, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+        assert second._mqtt_credentials is first._mqtt_credentials
+        reload.assert_not_called()
+        for coordinator in (first, second, first):
+            _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+            await _settle()
+
+    hold_off = account.auth_cache.login_hold_off_left()
+    assert hold_off is not None
+    assert reload.call_count == 3
+    for call in reload.call_args_list:
+        assert hold_off <= call.args[0] <= hold_off + 5
+    warnings = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING and "reloading the entry" in r.getMessage()
+    ]
+    assert len(warnings) == 1
+    account.login.assert_awaited_once()
+
+
 async def test_an_accepted_replacement_rearms_the_next_one(hass, login):
     """A connect on the new cert ends the streak; a later rotation is replaced."""
     account = _account_login(login.mqtt_credentials)
@@ -1291,38 +1327,51 @@ async def test_refusals_during_a_replacement_start_no_second_one(hass, login):
 
 
 async def test_a_refused_replacement_login_starts_reauth(hass, login):
-    """The account login itself is refused (password changed): ask the user."""
-    login.replace_rejected_mqtt_credentials = AsyncMock(
-        side_effect=EufyLoginError("Login failed")
-    )
+    """The account login itself is refused (password changed): ask the user,
+    and arm no reload, which would only log in again."""
+    account = _account_login(login.mqtt_credentials)
+    account.eufyApi.login = AsyncMock(return_value=None)
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
         f"{_MOD}.async_call_later", return_value=MagicMock()
-    ):
-        (coordinator,) = await _connected_coordinators(hass, login, 1, client_cls)
+    ), patch(f"{_MOD}.AuthStore") as store_cls:
+        store_cls.return_value.async_save = AsyncMock()
+        (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
         coordinator.config_entry = _entry()
-        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
-        await _settle()
+        coordinator._reload_when_logins_resume = reload = MagicMock(return_value=True)
+        for _ in range(2):
+            _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+            await _settle()
 
     coordinator.config_entry.async_start_reauth.assert_called_once_with(hass)
+    account.login.assert_awaited_once()
+    assert account.auth_cache.login_hold_off_left() is not None
     assert client_cls.call_count == 1
+    reload.assert_not_called()
 
 
-async def test_a_teardown_during_the_replacement_login_connects_nothing(hass, login):
-    """Unload while the replacement login runs: no new client is created."""
+@pytest.mark.parametrize("replaced", [True, False])
+async def test_a_teardown_during_the_replacement_login_connects_nothing(
+    hass, login, replaced
+):
+    """Unload while the replacement login runs: no new client is created and
+    no reload is armed past the unload."""
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
         f"{_MOD}.async_call_later", return_value=MagicMock()
     ):
         (coordinator,) = await _connected_coordinators(hass, login, 1, client_cls)
+        coordinator._reload_when_logins_resume = reload = MagicMock(return_value=True)
+        login.mqtt_reload_wait = MagicMock(return_value=600.0)
 
         async def _close(*_args):
             coordinator._closing = True
-            return True
+            return replaced
 
         login.replace_rejected_mqtt_credentials = AsyncMock(side_effect=_close)
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()
 
     assert client_cls.call_count == 1
+    reload.assert_not_called()
 
 
 async def _teardown_during_the_replacement_connect(hass, login, connect_error=None):

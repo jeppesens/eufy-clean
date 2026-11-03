@@ -557,6 +557,8 @@ async def test_rejected_credentials_during_the_hold_off_send_no_login():
     login.eufyApi.login.assert_not_awaited()
     assert login.auth_cache.mqtt_credentials is None
     save.assert_awaited_once()
+    # a rejection after the hold-off logs in by itself: no reload needed
+    assert login.mqtt_reload_wait(rejected) is None
 
 
 @pytest.mark.asyncio
@@ -570,6 +572,9 @@ async def test_rejected_credentials_after_a_refused_login_send_no_second_login()
     assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
 
     login.eufyApi.login.assert_awaited_once()
+    # re-authentication follows, not a reload that would log in again
+    assert login.auth_cache.login_hold_off_left() is not None
+    assert login.mqtt_reload_wait(rejected) is None
 
 
 @pytest.mark.asyncio
@@ -599,7 +604,10 @@ async def test_credentials_a_login_just_produced_get_no_replacement_login():
     assert await login.replace_rejected_mqtt_credentials(fresh, save) is False
 
     login.eufyApi.login.assert_awaited_once()
-    assert login.auth_cache.login_hold_off_left() is not None
+    left = login.auth_cache.login_hold_off_left()
+    assert left is not None
+    # nothing in this run logs in for them: a reload when the hold-off ends
+    assert left - 5 <= login.mqtt_reload_wait(fresh) <= left
 
 
 @pytest.mark.asyncio

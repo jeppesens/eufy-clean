@@ -101,6 +101,9 @@ class EufyLogin:
         # produced that the broker has not accepted yet, or ones the account
         # login refused.
         self._mqtt_relogin_spent: dict[str, Any] | None = None
+        # MQTT credentials whose replacement login was refused:
+        # re-authentication, not a reload, brings new ones.
+        self._mqtt_relogin_refused: dict[str, Any] | None = None
         # time.monotonic() before which no replacement login is sent
         self._mqtt_relogin_not_before: float | None = None
         # Persisted handshake reused across restarts; None disables caching.
@@ -352,6 +355,7 @@ class EufyLogin:
                     await self.login({"mqtt": True})
                 except EufyLoginError:
                     self._mqtt_relogin_spent = rejected
+                    self._mqtt_relogin_refused = rejected
                     raise
                 except (
                     EufyLoginTransientError, aiohttp.ClientError, TimeoutError
@@ -373,6 +377,19 @@ class EufyLogin:
             finally:
                 if changed:
                     await save()
+
+    def mqtt_reload_wait(self, rejected: dict[str, Any]) -> float | None:
+        """Seconds until an entry reload may log in to replace ``rejected``,
+        when no login in this run will: they came from a login (the hold-off
+        stands in for the replacement). None otherwise, also after a refused
+        account login, where re-authentication brings new credentials.
+        """
+        if (
+            rejected is not self._mqtt_relogin_spent
+            or rejected is self._mqtt_relogin_refused
+        ):
+            return None
+        return self.login_hold_off_left()
 
     def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> bool:
         """The broker accepted ``credentials``: a later rejection may log in again.

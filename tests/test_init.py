@@ -454,7 +454,7 @@ async def test_failed_coordinator_init_is_torn_down(hass: HomeAssistant):
     ids=["left-out", "no-mqtt-robot", "mqtt-robot-up", "fallback-session", "no-hold-off"],
 )
 async def test_mqtt_robots_left_out_during_the_login_hold_off_reload_when_it_ends(
-    hass: HomeAssistant, mqtt_robot, mqtt_up, has_user_center, hold_off, reloads
+    hass: HomeAssistant, caplog, mqtt_robot, mqtt_up, has_user_center, hold_off, reloads
 ):
     """Logins on hold at setup: the Tuya robot comes up, the MQTT robot does
     not, and the entry reloads once when the hold-off ends."""
@@ -484,6 +484,7 @@ async def test_mqtt_robots_left_out_during_the_login_hold_off_reload_when_it_end
 
     assert entry.state is ConfigEntryState.LOADED
     assert call_later.called is reloads
+    assert ("left out while Eufy logins are on hold" in caplog.text) is reloads
     if not reloads:
         return
     _hass, delay, action = call_later.call_args.args
@@ -491,7 +492,85 @@ async def test_mqtt_robots_left_out_during_the_login_hold_off_reload_when_it_end
     with patch.object(hass.config_entries, "async_schedule_reload") as reload:
         action(None)
     reload.assert_called_once_with(entry.entry_id)
-    assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_a_reload_armed_while_setup_runs_is_not_armed_twice(
+    hass: HomeAssistant, caplog
+):
+    """A robot armed the reload during setup; setup leaves it as it is."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="armed_in_setup_entry",
+    )
+    entry.add_to_hass(hass)
+
+    def coordinator(*args, **kwargs):
+        robot = _mock_coordinator(args[2]["deviceId"])
+        if robot.device_id == "mqtt_dev":
+
+            async def _init():
+                kwargs["reload_when_logins_resume"](600.0)
+                raise OSError("refused")
+
+            robot.initialize = AsyncMock(side_effect=_init)
+        return robot
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later:
+        login = _mock_login(mock_login_cls, "mqtt_dev")
+        login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
+        login.has_user_center = True
+        login.login_hold_off_left = MagicMock(return_value=600.0)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert call_later.call_count == 1
+    assert "left out while Eufy logins are on hold" not in caplog.text
+
+
+async def test_robots_share_one_reload_for_the_end_of_the_login_hold_off(
+    hass: HomeAssistant,
+):
+    """A robot whose new credentials are rejected too asks for the reload:
+    one timer at a time per entry, armed again after it fired, cancelled on
+    unload."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="runtime_hold_off_entry",
+    )
+    entry.add_to_hass(hass)
+    created: list = []
+
+    def coordinator(*args, **kwargs):
+        created.append(kwargs)
+        return _mock_coordinator(args[2]["deviceId"])
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later, patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ) as reload:
+        _mock_login(mock_login_cls, "dev1", "dev2")
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        first, second = (c["reload_when_logins_resume"] for c in created)
+        call_later.assert_not_called()
+
+        assert first(600.0) is True
+        assert second(300.0) is False
+        assert call_later.call_count == 1
+        _hass, delay, action = call_later.call_args.args
+        assert 600.0 < delay <= 602.0
+        action(None)
+        reload.assert_called_once_with(entry.entry_id)
+        assert second(900.0) is True
+        assert call_later.call_count == 2
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
     call_later.return_value.assert_called_once()
 
 

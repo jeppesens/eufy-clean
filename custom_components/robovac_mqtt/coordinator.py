@@ -399,8 +399,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         eufy_login: EufyLogin,
         device_info: dict[str, Any],
         config_entry: ConfigEntry | None = None,
+        reload_when_logins_resume: Callable[[float], bool] | None = None,
     ) -> None:
-        """Initialize coordinator."""
+        """Initialize coordinator.
+
+        ``reload_when_logins_resume(wait)`` arms the entry's one reload for
+        when the login hold-off ends, in ``wait`` s; False if one is armed.
+        """
         self.entry_id = config_entry.entry_id if config_entry else ""
         self.device_id = device_info["deviceId"]
         self.device_model = device_info["deviceModel"]
@@ -572,6 +577,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         # How the current streak's attempts were turned away: EXPLICIT only
         # while every one of them was.
         self._streak_rejection: Rejection | None = None
+        self._reload_when_logins_resume = reload_when_logins_resume
         # The MQTT credentials the current client uses.
         self._mqtt_credentials: dict[str, Any] | None = None
         self._mqtt_credentials_replacing: bool = False
@@ -956,7 +962,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             if rejected is None:
                 return
             creds = await self._async_new_mqtt_credentials(rejected)
-            if not creds or self._is_closing():
+            if self._is_closing():
+                return
+            if not creds:
+                self._reload_after_the_login_hold_off(rejected)
                 return
             old = self.client
             if old is not None and hasattr(old, "set_connection_listener"):
@@ -990,6 +999,19 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     _LOGGER.debug("Error disconnecting %s: %s", self.device_name, err)
         finally:
             self._mqtt_credentials_replacing = False
+
+    def _reload_after_the_login_hold_off(self, rejected: dict[str, Any]) -> None:
+        """No login in this run replaces ``rejected``: reload the entry when
+        the login hold-off ends, so its setup logs in once more."""
+        wait = self.eufy_login.mqtt_reload_wait(rejected)
+        if wait is None or self._reload_when_logins_resume is None:
+            return
+        if self._reload_when_logins_resume(wait):
+            _LOGGER.warning(
+                "%s: the MQTT broker turns away the credentials of a new login "
+                "too; reloading the entry when the login hold-off ends, in %.0f min",
+                self.device_name, wait / 60,
+            )
 
     async def _initialize_cloud(self) -> None:
         """Initialize cloud polling connection."""
