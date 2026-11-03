@@ -1,5 +1,6 @@
 from unittest.mock import MagicMock
 
+import pytest
 from homeassistant.core import HomeAssistant
 
 from custom_components.robovac_mqtt.const import ACCESSORY_MAX_LIFE, DOMAIN
@@ -55,7 +56,57 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
     assert rb_sensor.native_value == 0  # Should be 0, not -40 (max(0, ...))
 
 
-async def test_accessory_sensors_model_override(hass: HomeAssistant):
+@pytest.mark.parametrize(
+    ("model", "usage", "expected"),
+    [
+        # Values reported by an L60 SES.
+        (
+            "T2277",
+            AccessoryState(
+                filter_usage=30,
+                main_brush_usage=31,
+                side_brush_usage=21,
+                sensor_usage=138,
+                dustbag_usage=171,
+            ),
+            {
+                "Filter Remaining": (170, 200),
+                "Rolling Brush Remaining": (329, 360),
+                "Side Brush Remaining": (229, 250),
+                "Dust Bag Remaining": (1269, 1440),
+            },
+        ),
+        # Values reported by an Omni E35 (#186). Its table doesn't list the
+        # scrape and dustbag counters, so they get no sensor.
+        (
+            "T210M",
+            AccessoryState(
+                filter_usage=27,
+                main_brush_usage=27,
+                side_brush_usage=27,
+                sensor_usage=27,
+                scrape_usage=1,
+                mop_usage=19,
+                dustbag_usage=1,
+                dirty_waterfilter_usage=19,
+            ),
+            {
+                "Filter Remaining": (333, 360),
+                "Rolling Brush Remaining": (153, 180),
+                "Side Brush Remaining": (153, 180),
+                "Sensor Remaining": (93, 120),
+                "Mopping Cloth Remaining": (41, 60),
+                "Sewage Tank Filter Remaining": (161, 180),
+            },
+        ),
+    ],
+)
+async def test_accessory_sensors_model_override(
+    hass: HomeAssistant,
+    model: str,
+    usage: AccessoryState,
+    expected: dict[str, tuple[int, int]],
+):
     """A model with its own lifespan table gets exactly those accessories."""
     entry = MagicMock()
     entry.entry_id = "test_entry"
@@ -64,20 +115,9 @@ async def test_accessory_sensors_model_override(hass: HomeAssistant):
     coordinator.device_name = "RoboVac"
     coordinator.device_id = "test_device"
     coordinator.device_info = {}
-    coordinator.device_model = "T2277"
+    coordinator.device_model = model
     coordinator.api_type = "novel"
-
-    # Values reported by an L60 SES; the app shows 170/200, 329/360,
-    # 229/250 and 1269/1440 hours remaining for the same device.
-    coordinator.data = VacuumState(
-        accessories=AccessoryState(
-            filter_usage=30,
-            main_brush_usage=31,
-            side_brush_usage=21,
-            sensor_usage=138,
-            dustbag_usage=171,
-        )
-    )
+    coordinator.data = VacuumState(accessories=usage)
 
     # A second, default-table vacuum set up after it must not leak its
     # lifespans into the first one's sensors.
@@ -99,24 +139,20 @@ async def test_accessory_sensors_model_override(hass: HomeAssistant):
         for e in added_entities
         if e.coordinator is coordinator and e._attr_name.endswith("Remaining")
     }
-    assert set(remaining) == {
-        "Filter Remaining",
-        "Rolling Brush Remaining",
-        "Side Brush Remaining",
-        "Dust Bag Remaining",
-    }
-    assert remaining["Filter Remaining"].native_value == 170
-    assert remaining["Rolling Brush Remaining"].native_value == 329
-    assert remaining["Side Brush Remaining"].native_value == 229
-    assert remaining["Dust Bag Remaining"].native_value == 1269
-    assert (
-        remaining["Dust Bag Remaining"].extra_state_attributes["total_life_hours"]
-        == 1440
-    )
+    # (remaining, total) hours, as the app shows them for the same device.
+    assert {
+        name: (e.native_value, e.extra_state_attributes["total_life_hours"])
+        for name, e in remaining.items()
+    } == expected
 
 
-async def test_accessory_sensors_default_table_has_no_dustbag(hass: HomeAssistant):
-    """Models without an override keep the default accessories (no dust bag)."""
+async def test_accessory_sensors_default_table_has_no_per_model_parts(
+    hass: HomeAssistant,
+):
+    """Models without an override keep the default accessories.
+
+    The dust bag and sewage tank filter only exist in per-model tables.
+    """
     entry = MagicMock()
     entry.entry_id = "test_entry"
 
@@ -134,12 +170,11 @@ async def test_accessory_sensors_default_table_has_no_dustbag(hass: HomeAssistan
     await async_setup_entry(hass, entry, added_entities.extend)
 
     names = {e._attr_name for e in added_entities}
-    assert "Dust Bag Remaining" not in names
-    assert {
+    assert {n for n in names if n.endswith("Remaining")} == {
         "Filter Remaining",
         "Rolling Brush Remaining",
         "Side Brush Remaining",
         "Sensor Remaining",
         "Cleaning Tray Remaining",
         "Mopping Cloth Remaining",
-    } <= names
+    }
