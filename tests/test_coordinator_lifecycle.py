@@ -1533,22 +1533,24 @@ async def test_a_certificate_rejected_at_setup_is_replaced_and_connects(
 
 @pytest.mark.parametrize(
     ("before", "logins"),
-    [([], 0), ([_REVOKED], 1)],
-    ids=["cached-cert", "replacement-cert"],
+    [(0, 0), (1, 1), (2, 1)],
+    ids=["cached-cert", "after-an-alert", "after-two-closes"],
 )
 @pytest.mark.parametrize("error", [_EOF, _RESET], ids=["eof", "reset"])
 async def test_a_handshake_cut_off_once_at_setup_retries_the_same_certificate(
     hass, login, before, logins, error
 ):
     """One closed handshake may be the network: the same cert, cached or
-    just fetched, is tried again after a short delay instead of replaced."""
+    just fetched (after an alert, or after the cached one was closed twice),
+    is tried again after a short delay instead of replaced."""
     account = _account_login(login.mqtt_credentials)
     coordinator = _coordinator(hass, account)
     delay = 0.05
+    replaced = {0: [], 1: [_REVOKED], 2: [error, error]}[before]
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
         f"{_MOD}._SETUP_HANDSHAKE_RETRY_DELAY", delay
     ):
-        *_, closed, connected = _clients_connecting(client_cls, *before, error, None)
+        *_, closed, connected = _clients_connecting(client_cls, *replaced, error, None)
         started = asyncio.get_running_loop().time()
         await coordinator.initialize()
         waited = asyncio.get_running_loop().time() - started
