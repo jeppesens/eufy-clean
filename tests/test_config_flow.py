@@ -707,6 +707,11 @@ async def test_reauth_failure_keeps_the_stored_cache(hass: HomeAssistant):
             "rate_limited",
             "120",
         ),
+        (
+            EufyLoginRateLimitedError("100028", retry_after=None, code=100028),
+            "rate_limited",
+            "1",
+        ),
         (EufyLoginChallengeError("captcha", code=100032), "login_challenge", None),
     ],
 )
