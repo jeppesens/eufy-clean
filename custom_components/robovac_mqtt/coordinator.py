@@ -35,7 +35,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EufyCleanClient
-from .api.cloud import EufyLogin
+from .api.cloud import EufyLogin, EufyLoginError
 from .api.commands import build_command
 from .api.legacy_commands import (
     build_legacy_command,
@@ -94,6 +94,7 @@ from .api.tuya_mqtt import (
     random_device_id44,
 )
 from .api.tuya_storage import TuyaMapStorage
+from .auth_store import AuthStore
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_VERSION,
@@ -176,7 +177,8 @@ _MAP_STATE_SAVE_DELAY = 30.0
 _BIZ_INLINE_HEX_MAX = 200
 # The transport must stay down this long before entities go unavailable.
 _CONNECTION_LOSS_GRACE = 60.0
-# Consecutive broker auth refusals before one warning is logged.
+# Broker auth refusals in a row before one warning is logged; each multiple
+# of it asks EufyLogin for replacement credentials.
 _AUTH_FAILURE_WARN_AFTER = 3
 
 
@@ -560,6 +562,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._connection_loss_cancel: CALLBACK_TYPE | None = None
         self._transport_available: bool = True
         self._auth_failures: int = 0
+        # The MQTT credentials the current client uses.
+        self._mqtt_credentials: dict[str, Any] | None = None
+        self._mqtt_credentials_replacing: bool = False
         self._map_refresh_in_progress: bool = False
         self._map_attempt_cid: int | None = None
         self._map_attempt_ts: float = 0.0
@@ -842,25 +847,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
             # Before connect(): pushes are parsed against the stored state.
             await self.async_load_storage()
-            self.client = EufyCleanClient(
-                device_id=self.device_id,
-                user_id=creds["user_id"],
-                app_name=creds["app_name"],
-                thing_name=creds["thing_name"],
-                access_key="",
-                ticket="",
-                openudid=self.eufy_login.openudid,
-                certificate_pem=creds["certificate_pem"],
-                private_key=creds["private_key"],
-                device_model=self.device_model,
-                endpoint=creds["endpoint_addr"],
-            )
-
-            self.client.set_on_message(self._handle_mqtt_message)
-            self.client.set_on_biz_message(self._handle_biz_message)
-            if hasattr(self.client, "set_connection_listener"):
-                self.client.set_connection_listener(self._on_connection_change)
-            await self.client.connect()
+            await self._async_connect_mqtt(creds)
 
         except BaseException as e:
             _LOGGER.error(
@@ -869,6 +856,79 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             # The client wrote its certificate and key to temp files.
             await self._async_drop_client()
             raise
+
+    async def _async_connect_mqtt(self, creds: dict[str, Any]) -> None:
+        """Create the MQTT client for ``creds`` and connect it."""
+        self._mqtt_credentials = creds
+        self.client = EufyCleanClient(
+            device_id=self.device_id,
+            user_id=creds["user_id"],
+            app_name=creds["app_name"],
+            thing_name=creds["thing_name"],
+            access_key="",
+            ticket="",
+            openudid=self.eufy_login.openudid,
+            certificate_pem=creds["certificate_pem"],
+            private_key=creds["private_key"],
+            device_model=self.device_model,
+            endpoint=creds["endpoint_addr"],
+        )
+
+        self.client.set_on_message(self._handle_mqtt_message)
+        self.client.set_on_biz_message(self._handle_biz_message)
+        if hasattr(self.client, "set_connection_listener"):
+            self.client.set_connection_listener(self._on_connection_change)
+        await self.client.connect()
+
+    async def _async_replace_rejected_credentials(self) -> None:
+        """Reconnect with new MQTT credentials when the broker keeps rejecting ours."""
+        rejected = self._mqtt_credentials
+        try:
+            if rejected is None:
+                return
+            cache = self.eufy_login.auth_cache
+
+            async def _save() -> None:
+                if cache is not None and self.config_entry is not None:
+                    await AuthStore(self.hass, self.entry_id).async_save(cache)
+
+            try:
+                fresh = await self.eufy_login.replace_rejected_mqtt_credentials(
+                    rejected, _save
+                )
+            except EufyLoginError as err:
+                _LOGGER.warning(
+                    "%s: the Eufy login was refused (%s); re-authentication needed",
+                    self.device_name, err,
+                )
+                if self.config_entry is not None:
+                    self.config_entry.async_start_reauth(self.hass)
+                return
+            creds = self.eufy_login.mqtt_credentials
+            if not fresh or not creds or self._is_closing():
+                return
+            old = self.client
+            if old is not None and hasattr(old, "set_connection_listener"):
+                # its disconnect must not count against the new credentials
+                old.set_connection_listener(None)
+            await self._async_drop_client()
+            self._auth_failures = 0
+            try:
+                await self._async_connect_mqtt(creds)
+            except Exception as err:  # noqa: BLE001 - setup retries the transport
+                _LOGGER.warning(
+                    "%s: reconnecting with new MQTT credentials failed (%s); "
+                    "reloading the entry",
+                    self.device_name, err,
+                )
+                await self._async_drop_client()
+                if self.config_entry is not None:
+                    self.hass.config_entries.async_schedule_reload(self.entry_id)
+                return
+            if self._is_closing():
+                await self._async_drop_client()
+        finally:
+            self._mqtt_credentials_replacing = False
 
     async def _initialize_cloud(self) -> None:
         """Initialize cloud polling connection."""
@@ -2680,6 +2740,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return
         if connected:
             self._auth_failures = 0
+            self.eufy_login.mqtt_credentials_accepted(self._mqtt_credentials)
             if self._connection_loss_cancel is not None:
                 self._connection_loss_cancel()
                 self._connection_loss_cancel = None
@@ -2696,6 +2757,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     "%s: the MQTT broker rejected the client credentials %d times"
                     " in a row",
                     self.device_name, self._auth_failures,
+                )
+            if (
+                self._auth_failures % _AUTH_FAILURE_WARN_AFTER == 0
+                and not self._mqtt_credentials_replacing
+            ):
+                self._mqtt_credentials_replacing = True
+                self._spawn(
+                    self._async_replace_rejected_credentials(), "mqtt_credentials"
                 )
         if self._transport_available and self._connection_loss_cancel is None:
             self._connection_loss_cancel = async_call_later(

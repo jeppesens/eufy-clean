@@ -20,6 +20,7 @@ from custom_components.robovac_mqtt.auth_store import (
     LOGIN_HOLD_OFF_DEFAULT,
     LOGIN_HOLD_OFF_MAX,
     AuthCache,
+    AuthStore,
     certificate_not_after,
     mqtt_credentials_fresh,
     new_openudid,
@@ -747,3 +748,29 @@ async def test_stale_cache_actually_clears_the_cached_tokens():
     assert seen.get("after_reset") is None, "tokens were not cleared before re-login"
     assert cache.openudid == "stable", "identity must survive a token reset"
     assert cache.session != {"access_token": original_token}
+
+
+async def test_a_certificate_the_broker_rejected_is_not_reused_after_a_restart(hass):
+    """Rejected cached cert, replacement login fails: the next setup logs in."""
+    store = AuthStore(hass, "entry")
+    await store.async_save(_usable_cache())
+
+    def discover(login):
+        login.mqtt_devices = [{"deviceId": "d1"}]
+
+    cache = await store.async_load()
+    login = _login_with_cache(cache)
+    login.getDevices.side_effect = lambda: discover(login)
+    await login.init()
+    login.login.assert_not_awaited()
+
+    login.login.side_effect = EufyLoginTransientError("HTTP 503")
+    rejected = login.mqtt_credentials
+    assert not await login.replace_rejected_mqtt_credentials(
+        rejected, lambda: store.async_save(cache)
+    )
+
+    restarted = _login_with_cache(await store.async_load())
+    restarted.getDevices.side_effect = lambda: discover(restarted)
+    await restarted.init()
+    restarted.login.assert_awaited_once()

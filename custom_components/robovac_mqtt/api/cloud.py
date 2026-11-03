@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import aiohttp
@@ -89,6 +90,9 @@ class EufyLogin:
         self._tuya_login_lock = asyncio.Lock()
         # One MQTT-credential login for all coordinators that find none.
         self._check_login_lock = asyncio.Lock()
+        # MQTT credentials whose rejection gets no further login: a replacement
+        # the broker has not accepted yet, or ones the account login refused.
+        self._mqtt_relogin_spent: dict[str, Any] | None = None
         # Persisted handshake reused across restarts; None disables caching.
         self.auth_cache = auth_cache
         if auth_cache is not None:
@@ -281,6 +285,62 @@ class EufyLogin:
                 return
             await self.login({"mqtt": True})
             self._capture_auth_cache()
+
+    async def replace_rejected_mqtt_credentials(
+        self,
+        rejected: dict[str, Any],
+        save: Callable[[], Awaitable[None]],
+    ) -> bool:
+        """Replace MQTT credentials the broker rejects, with one login for all callers.
+
+        The rejected credentials leave the auth cache, so the next setup logs in
+        instead of reusing them. No login runs during the login hold-off, nor
+        for credentials a replacement already produced or the login refused.
+        ``save`` persists the cache after a change. Returns True when the caller
+        should reconnect with ``mqtt_credentials``. Raises EufyLoginError when
+        the account login is refused.
+        """
+        async with self._check_login_lock:
+            current = self.mqtt_credentials
+            if current and current is not rejected:
+                return True
+            changed = False
+            cache = self.auth_cache
+            if cache is not None and cache.mqtt_credentials is not None:
+                cache.mqtt_credentials = None
+                changed = True
+            try:
+                if rejected is self._mqtt_relogin_spent:
+                    _LOGGER.debug("Replacement MQTT credentials rejected too; no login")
+                    return False
+                if self._login_hold_off_left() is not None:
+                    return False
+                changed = True
+                try:
+                    await self.login({"mqtt": True})
+                except EufyLoginError:
+                    self._mqtt_relogin_spent = rejected
+                    raise
+                except (
+                    EufyLoginTransientError, aiohttp.ClientError, TimeoutError
+                ) as err:
+                    _LOGGER.warning("Could not fetch new MQTT credentials: %s", err)
+                    return False
+                self._capture_auth_cache()
+                if not self.mqtt_credentials:
+                    self._hold_off_logins(None)
+                    return False
+                self._mqtt_relogin_spent = self.mqtt_credentials
+                _LOGGER.info("Fetched new MQTT credentials after a broker rejection")
+                return True
+            finally:
+                if changed:
+                    await save()
+
+    def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> None:
+        """The broker accepted ``credentials``: a later rejection may log in again."""
+        if credentials is not None and credentials is self._mqtt_relogin_spent:
+            self._mqtt_relogin_spent = None
 
     async def tuya_login(self) -> None:
         """Log in to the Tuya cloud with the Eufy user_id, probing EU then US."""
