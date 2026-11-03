@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
 from unittest.mock import AsyncMock, MagicMock
@@ -580,6 +581,20 @@ def test_retry_after_reads_an_http_date():
     got = _retry_after(_rate_limited(_http_date(timedelta(seconds=300))))
     assert got is not None and 290 <= got <= 300
     assert _retry_after(_rate_limited(_http_date(timedelta(seconds=-60)))) == 0.0
+
+
+def test_retry_after_reads_a_date_without_a_zone_as_utc(monkeypatch):
+    """A "-0000" date is UTC whatever the host's time zone."""
+    monkeypatch.setenv("TZ", "JST-9")  # POSIX rule: no zone database needed
+    time.tzset()
+    try:
+        when = datetime.now(timezone.utc) + timedelta(seconds=300)
+        header = format_datetime(when.replace(tzinfo=None))
+        assert header.endswith("-0000")
+        assert _retry_after(_rate_limited(header)) == pytest.approx(300, abs=5)
+    finally:
+        monkeypatch.undo()
+        time.tzset()
 
 
 def test_retry_after_without_headers_is_none():

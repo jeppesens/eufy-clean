@@ -296,23 +296,44 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
             coord.initialize.assert_called_once()
 
 
-async def test_setup_auth_failure_raises_config_entry_auth_failed(hass: HomeAssistant):
-    """Login failure with EufyLoginError should result in SETUP_ERROR (auth failed)."""
+@pytest.mark.parametrize(
+    ("error", "keeps_tokens"),
+    [
+        (EufyLoginError("Invalid credentials"), False),
+        (EufyLoginChallengeError("captcha", code=100032), True),
+    ],
+    ids=["rejected", "challenge"],
+)
+async def test_setup_auth_failure_raises_config_entry_auth_failed(
+    hass: HomeAssistant, error, keeps_tokens
+):
+    """A refused login asks for reauth. Rejected credentials drop the stored
+    tokens; a verification code or captcha says nothing about them."""
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_USERNAME: "bad_user", CONF_PASSWORD: "bad_pass"},
         entry_id="test_auth_fail",
     )
     config_entry.add_to_hass(hass)
+    await AuthStore(hass, config_entry.entry_id).async_save(
+        AuthCache(openudid="0123456789abcdef", session={"access_token": "old"})
+    )
 
     with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
         mock_login = mock_login_cls.return_value
-        mock_login.init = AsyncMock(side_effect=EufyLoginError("Invalid credentials"))
+        mock_login.init = AsyncMock(side_effect=error)
 
         await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
 
     assert config_entry.state == ConfigEntryState.SETUP_ERROR
+    assert any(
+        flow["context"]["source"] == "reauth"
+        for flow in hass.config_entries.flow.async_progress()
+    )
+    stored = await AuthStore(hass, config_entry.entry_id).async_load()
+    assert (stored.session is not None) is keeps_tokens
+    assert stored.openudid == "0123456789abcdef"
 
 
 async def test_setup_network_failure_raises_config_entry_not_ready(hass: HomeAssistant):
@@ -469,6 +490,41 @@ async def test_failed_coordinator_init_is_torn_down(hass: HomeAssistant):
 
     assert entry.state is ConfigEntryState.SETUP_RETRY
     failed.async_teardown.assert_awaited_once()
+
+
+async def test_credentials_a_coordinator_fetched_are_saved(hass: HomeAssistant):
+    """A coordinator's login for MQTT credentials (checkLogin) runs after the
+    login's own save; setup saves the cache again."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="check_login_entry",
+    )
+    entry.add_to_hass(hass)
+    caches = []
+
+    def _factory(*args, **kwargs):
+        caches.append(kwargs["auth_cache"])
+        return _mock_login(MagicMock(), "dev_a")
+
+    def _coordinator(*args, **kwargs):
+        coordinator = _mock_coordinator(args[2]["deviceId"])
+
+        async def _initialize():
+            caches[0].mqtt_credentials = {"certificate_pem": "fetched"}
+
+        coordinator.initialize = AsyncMock(side_effect=_initialize)
+        return coordinator
+
+    with patch("custom_components.robovac_mqtt.EufyLogin", side_effect=_factory), patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=_coordinator
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    stored = await AuthStore(hass, entry.entry_id).async_load()
+    assert stored.mqtt_credentials == {"certificate_pem": "fetched"}
 
 
 @pytest.mark.parametrize(
@@ -874,10 +930,15 @@ async def test_removing_an_entry_deletes_its_repair_issues(hass: HomeAssistant):
     kept = await _set_up_kicked_out(hass, "kept_entry")
     devices = dr.async_get(hass)
     issues = ir.async_get(hass)
-    for entry, device_id in ((removed, "dev_removed"), (kept, "dev_kept")):
+    for entry, identifiers in (
+        # another integration's identifier on our device names no issue of ours
+        (removed, {(DOMAIN, "dev_removed"), ("other_domain", "dev_kept")}),
+        (kept, {(DOMAIN, "dev_kept")}),
+    ):
         devices.async_get_or_create(
-            config_entry_id=entry.entry_id, identifiers={(DOMAIN, device_id)}
+            config_entry_id=entry.entry_id, identifiers=identifiers
         )
+        device_id = next(i for d, i in identifiers if d == DOMAIN)
         ir.async_create_issue(
             hass,
             DOMAIN,
@@ -895,21 +956,3 @@ async def test_removing_an_entry_deletes_its_repair_issues(hass: HomeAssistant):
     assert issues.async_get_issue(DOMAIN, "segments_changed_dev_removed") is None
     assert issues.async_get_issue(DOMAIN, "session_replaced_kept_entry")
     assert issues.async_get_issue(DOMAIN, "segments_changed_dev_kept")
-
-
-async def test_login_challenge_asks_for_reauth(hass: HomeAssistant):
-    entry = MockConfigEntry(
-        domain=DOMAIN,
-        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
-        entry_id="challenge_entry",
-    )
-    entry.add_to_hass(hass)
-
-    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
-        mock_login_cls.return_value.init = AsyncMock(
-            side_effect=EufyLoginChallengeError("captcha", code=100032)
-        )
-        await hass.config_entries.async_setup(entry.entry_id)
-        await hass.async_block_till_done()
-
-    assert entry.state is ConfigEntryState.SETUP_ERROR
