@@ -10,6 +10,7 @@ from custom_components.robovac_mqtt.api.commands import (
     build_command,
     build_map_load_command,
     build_room_clean_command,
+    build_schedule_timer,
     build_set_boost_iq_command,
     build_set_child_lock_command,
     build_set_cleaning_intensity_command,
@@ -21,6 +22,7 @@ from custom_components.robovac_mqtt.api.commands import (
     build_set_volume_command,
     build_set_volume_novel_command,
     build_set_water_level_command,
+    build_timer_request_command,
     build_zone_clean_command,
 )
 from custom_components.robovac_mqtt.api.parser import _extract_off_peak_charging
@@ -28,11 +30,16 @@ from custom_components.robovac_mqtt.const import (
     DPS_MAP,
     EUFY_CLEAN_CONTROL,
     SCALAR_DPS,
+    SCHEDULE_DAY_BITS,
 )
 from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
 from custom_components.robovac_mqtt.proto.cloud.map_edit_pb2 import MapEditRequest
 from custom_components.robovac_mqtt.proto.cloud.multi_maps_pb2 import (
     MultiMapsManageRequest,
+)
+from custom_components.robovac_mqtt.proto.cloud.timing_pb2 import (
+    TimerInfo,
+    TimerRequest,
 )
 from custom_components.robovac_mqtt.proto.cloud.unisetting_pb2 import UnisettingRequest
 from custom_components.robovac_mqtt.utils import (
@@ -403,3 +410,57 @@ def test_set_room_custom_keeps_room_zero():
     assert decoded.method == MapEditRequest.SET_ROOMS_CUSTOM
     assert decoded.map_id == 1
     assert [r.id for r in decoded.rooms_custom.rooms_parm.rooms] == [0, 2]
+
+
+def test_build_timer_request_inquiry():
+    """INQUIRY encodes method+seq with no timer."""
+    result = build_timer_request_command(TimerRequest.INQUIRY, 1001)
+    assert DPS_MAP["TIMING"] in result
+    decoded = decode(TimerRequest, result[DPS_MAP["TIMING"]])
+    assert decoded.method == TimerRequest.INQUIRY
+    assert decoded.seq == 1001
+    assert not decoded.HasField("timer")
+
+
+def test_build_schedule_timer_rooms_roundtrip():
+    """A rooms-type timer keeps room id 0, map id, days and time. Room order
+    is a zero-based slot, as the Eufy app stores it on T2080A."""
+    week_bits = SCHEDULE_DAY_BITS["sun"] | SCHEDULE_DAY_BITS["thu"]
+    timer = build_schedule_timer(
+        hours=9,
+        minutes=30,
+        week_bits=week_bits,
+        action_type="rooms",
+        room_ids=[0, 6],
+        map_id=1,
+        enabled=True,
+        summer=True,
+    )
+    result = build_timer_request_command(TimerRequest.ADD, 1002, timer)
+    decoded = decode(TimerRequest, result[DPS_MAP["TIMING"]])
+    t = decoded.timer
+    # ADD carries no id (the device assigns one).
+    assert t.id.value == 0
+    assert t.status.valid is True
+    assert t.status.opened is True
+    assert t.desc.trigger == TimerInfo.Desc.CYCLE
+    assert t.desc.timing.hours == 9
+    assert t.desc.timing.minutes == 30
+    assert t.desc.timing.summer is True
+    assert t.desc.cycle.week_bits == week_bits
+    assert t.action.type == TimerInfo.Action.SCHEDULE_ROOMS_CLEAN
+    general = t.action.sche_rooms_clean.general
+    assert general.map_id == 1
+    assert [(r.id, r.order) for r in general.rooms] == [(0, 0), (6, 1)]
+
+
+def test_build_schedule_timer_once_auto():
+    """No week bits -> one-shot SINGLE trigger; auto clean selects the oneof."""
+    timer = build_schedule_timer(
+        hours=22, minutes=5, week_bits=0, action_type="auto", enabled=False
+    )
+    assert timer.desc.trigger == TimerInfo.Desc.SINGLE
+    assert not timer.desc.HasField("cycle")
+    assert timer.status.opened is False
+    assert timer.action.type == TimerInfo.Action.SCHEDULE_AUTO_CLEAN
+    assert timer.action.WhichOneof("Param") == "sche_auto_clean"

@@ -111,7 +111,8 @@ get_schedules:
   description: >-
     Query the robot's cleaning schedules (timers). Returns the full list with
     each schedule's id, enabled state, time, weekdays, type (auto/rooms) and —
-    for room schedules — the map id and room ids. Novel/protobuf devices only.
+    for room schedules — the map id and room ids. Novel/protobuf devices on a
+    push connection (MQTT or local Tuya) only.
   target:
     entity:
       domain: vacuum
@@ -122,7 +123,8 @@ add_schedule:
   description: >-
     Create a cleaning schedule on the robot. The robot assigns the new
     schedule's id; the response contains the updated schedule list. Times are
-    the robot's local wall-clock time. Novel/protobuf devices only.
+    the robot's local wall-clock time. Novel/protobuf devices on a push
+    connection (MQTT or local Tuya) only.
   target:
     entity:
       domain: vacuum
@@ -130,7 +132,7 @@ add_schedule:
   fields:
     time:
       name: Time
-      description: Start time, 24h "HH:MM" (robot-local wall clock).
+      description: Start time, "HH:MM" or "HH:MM:SS" (robot-local wall clock).
       required: true
       example: "09:30"
       selector:
@@ -165,7 +167,7 @@ add_schedule:
       name: Map ID
       description: >-
         Map the room ids belong to. Defaults to the device's resolved map id
-        (the "Map ID override" option, when set).
+        (the "Map ID overrides" option, when set).
       required: false
       selector:
         number:
@@ -185,7 +187,8 @@ update_schedule:
     Modify an existing schedule. Only the provided fields change; everything
     else — including cleaning parameters set from the Eufy app — is preserved
     (the device requires the full schedule on every modify, so the last
-    device-reported copy is used as the base). Novel/protobuf devices only.
+    device-reported copy is used as the base). Novel/protobuf devices on a
+    push connection (MQTT or local Tuya) only.
   target:
     entity:
       domain: vacuum
@@ -201,7 +204,7 @@ update_schedule:
           mode: box
     time:
       name: Time
-      description: New start time, 24h "HH:MM".
+      description: New start time, "HH:MM" or "HH:MM:SS" (robot-local wall clock).
       required: false
       selector:
         time:
@@ -230,7 +233,9 @@ update_schedule:
 
 delete_schedule:
   name: Delete schedule
-  description: Delete a schedule by id. Novel/protobuf devices only.
+  description: >-
+    Delete a schedule by id. Novel/protobuf devices on a push connection
+    (MQTT or local Tuya) only.
   target:
     entity:
       domain: vacuum
@@ -247,7 +252,9 @@ delete_schedule:
 
 set_schedule_enabled:
   name: Enable/disable schedule
-  description: Turn a schedule on or off without deleting it. Novel/protobuf devices only.
+  description: >-
+    Turn a schedule on or off without deleting it. Novel/protobuf devices on
+    a push connection (MQTT or local Tuya) only.
   target:
     entity:
       domain: vacuum

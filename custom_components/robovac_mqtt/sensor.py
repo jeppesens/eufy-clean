@@ -329,8 +329,9 @@ async def async_setup_entry(
                 enabled_default=False,
                 supported_api_types=(API_TYPE_NOVEL,),
             ),
-            # Schedules (read-only; scalar/Tuya devices, DPS 151). State =
-            # entry count; the decoded entries are exposed as attributes.
+            # Schedules: scalar DPS 151 (read-only) or the novel TimerResponse
+            # on the TIMING DP. State = entry count; the decoded entries are
+            # exposed as attributes.
             RoboVacSensor(
                 coordinator,
                 "schedules",
@@ -343,7 +344,7 @@ async def async_setup_entry(
                 category=EntityCategory.DIAGNOSTIC,
                 availability_fn=lambda s: "schedules" in s.received_fields,
                 extra_state_attributes_fn=lambda s: {"entries": s.schedules},
-                supported_api_types=(API_TYPE_SCALAR,),
+                supported_api_types=(API_TYPE_SCALAR, API_TYPE_NOVEL),
             ),
         ]
 

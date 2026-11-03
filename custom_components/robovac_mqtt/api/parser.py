@@ -534,6 +534,7 @@ def _process_other_dps(
                 if timer_resp is not None:
                     if "schedules" in timer_resp:
                         changes["schedules"] = timer_resp["schedules"]
+                        changes["schedule_raw"] = timer_resp["schedule_raw"]
                         # Lights up the shared Schedules sensor (also fed by
                         # scalar DPS 151 on scalar devices).
                         track_received_field(state, changes, "schedules")
@@ -861,12 +862,7 @@ _TIMER_ACTION_TYPES = {
 
 
 def _timer_info_to_dict(timer: TimerInfo) -> dict[str, Any]:
-    """Flatten a TimerInfo into a service-friendly dict.
-
-    ``raw`` carries the full TimerInfo bytes (base64) so MOTIFY requests can
-    reproduce every field the device stored — including action parameters we
-    don't model — instead of silently stripping them.
-    """
+    """Flatten a TimerInfo into a service-friendly dict."""
     days = [
         name
         for bit, name in sorted(_DAY_NAME_BY_BIT.items())
@@ -881,7 +877,6 @@ def _timer_info_to_dict(timer: TimerInfo) -> dict[str, Any]:
         "days": days,
         "once": timer.desc.trigger == TimerInfo.Desc.SINGLE,
         "type": action_type,
-        "raw": base64.b64encode(timer.SerializeToString()).decode(),
     }
     if action_type == "rooms":
         general = timer.action.sche_rooms_clean.general
@@ -903,12 +898,22 @@ def _parse_timer_response(value: Any) -> dict[str, Any] | None:
     successful decode is not enough: require positive evidence — a timer
     list or an explicit result message, or a non-zero seq echoing one of
     our own requests (our seqs start at 1001; MapEdit acks carry seq 0 or
-    the app's low map-edit seqs on a different field number).
+    the app's low map-edit seqs on a different field number). Every timer
+    must carry an id: a MapEditResponse ``fail_code`` (field 4) otherwise
+    decodes as one id-less timer. Echoes of our own TimerRequests are
+    dropped earlier, in the coordinator.
+
+    Returns ``schedules`` (service/sensor dicts) and ``schedule_raw``
+    (base64 TimerInfo bytes per id, so MOTIFY can reproduce every field the
+    device stored, including action parameters we don't model).
     """
     try:
         resp = decode(TimerResponse, value)
     except Exception as e:  # noqa: BLE001 - non-timer payloads share this DP
         _LOGGER.debug("TimerResponse parse failed (non-timer payload?): %s", e)
+        return None
+    if not all(timer.HasField("id") for timer in resp.timers):
+        _LOGGER.debug("DPS %s payload has a timer without id; ignoring", value)
         return None
     confident = bool(resp.timers) or resp.HasField("result")
     if not confident and resp.seq == 0:
@@ -923,6 +928,10 @@ def _parse_timer_response(value: Any) -> dict[str, Any] | None:
     }
     if confident:
         parsed["schedules"] = [_timer_info_to_dict(t) for t in resp.timers]
+        parsed["schedule_raw"] = {
+            t.id.value: base64.b64encode(t.SerializeToString()).decode()
+            for t in resp.timers
+        }
     return parsed
 
 

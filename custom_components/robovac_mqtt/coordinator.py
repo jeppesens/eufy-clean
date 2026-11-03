@@ -53,6 +53,7 @@ from .const import (
     DEFAULT_NOTIFY_MOBILE_SERVICE,
     DEFAULT_ROBOT_STYLE,
     DOMAIN,
+    DPS_MAP,
 )
 from .models import VacuumState
 
@@ -158,6 +159,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         # low two-digit sequence numbers.
         self._timer_waiters: dict[int, asyncio.Future[dict[str, Any]]] = {}
         self._timer_seq: int = 1000
+        # Encoded TimerRequests in flight. A device can reflect our own write
+        # back on the TIMING DP; such an echo would otherwise decode as a
+        # TimerResponse and resolve the request before the device answers.
+        self._pending_timer_payloads: set[str] = set()
         self._store = Store(hass, 1, f"{DOMAIN}.{self.device_id}")
         self._map_data_chan_id: int | None = None
         self._map_data: MapData | None = None
@@ -190,6 +195,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         """
         if self.api_type == "legacy":
             return update_state_legacy(self.data, dps)
+        if dps.get(DPS_MAP["TIMING"]) in self._pending_timer_payloads:
+            _LOGGER.debug("Ignoring echo of our own schedule request")
+            dps = {k: v for k, v in dps.items() if k != DPS_MAP["TIMING"]}
         return update_state(self.data, dps)
 
     @callback
@@ -222,10 +230,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             asyncio.get_running_loop().create_future()
         )
         self._timer_waiters[seq] = fut
+        command = build_timer_request_command(method, seq, timer)
+        payload = command[DPS_MAP["TIMING"]]
+        self._pending_timer_payloads.add(payload)
         try:
-            await self.async_send_command(
-                build_timer_request_command(method, seq, timer)
-            )
+            await self.async_send_command(command)
             return await asyncio.wait_for(fut, timeout)
         except TimeoutError as e:
             raise HomeAssistantError(
@@ -234,6 +243,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             ) from e
         finally:
             self._timer_waiters.pop(seq, None)
+            self._pending_timer_payloads.discard(payload)
 
     def resolve_map_id(self) -> int:
         """Return the map id to use in room/zone clean commands.

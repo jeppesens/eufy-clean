@@ -585,10 +585,9 @@ DPS_MAP = {
     "ERROR_CODE": "177",
     "SCENE_INFO": "180",
     "MAP_DATA": "165",
-    "MAP_EDIT": "164",
-    # Cleaning schedules (TimerRequest/TimerResponse) ride the same DP as the
-    # MapEditResponse ack: the device publishes TimerResponse (with the FULL
-    # timer list) on 164 after every schedule change, app-side or ours.
+    # Cleaning schedules: TimerRequest out, TimerResponse in. The device
+    # publishes a TimerResponse (with the FULL timer list) on 164 after every
+    # schedule change, app-side or ours. MapEditResponse acks share this DP.
     # Verified on T2080A fw 7.0.168 by capturing app schedule edits.
     "TIMING": "164",
     "MULTI_MAP_SW": "156",

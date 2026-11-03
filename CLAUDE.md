@@ -127,7 +127,7 @@ DPS keys are numeric strings that route to specific protobuf message types:
 | "158" | CLEAN_SPEED | (plain int index) | Both |
 | "160" | FIND_ROBOT | (plain bool) | Both |
 | "163" | BATTERY_LEVEL | (plain int) | Receive |
-| "164" | MAP_EDIT | MapEditRequest | Send |
+| "164" | TIMING | TimerRequest (send) / TimerResponse (recv); MapEditResponse acks share it | Both |
 | "165" | MAP_DATA | UniversalDataResponse / RoomParams | Receive |
 | "166" | MAP_STREAM | — | (unused) |
 | "167" | CLEANING_STATISTICS | CleanStatistics | Receive |

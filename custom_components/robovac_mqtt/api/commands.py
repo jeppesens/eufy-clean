@@ -187,6 +187,22 @@ def build_timer_request_command(
     return {DPS_MAP["TIMING"]: encode_message(req)}
 
 
+def set_schedule_rooms(
+    general: TimerInfo.Action.ScheduleRoomsClean.General, room_ids: list[int]
+) -> None:
+    """Replace a rooms schedule's room list, in cleaning order.
+
+    ``order`` is a zero-based slot: timers written by the Eufy app on T2080A
+    store the first room with order 0 (#170 shows the same for
+    SelectRoomsClean), so one-based orders would shift every room by one.
+    """
+    del general.rooms[:]
+    for order, rid in enumerate(room_ids):
+        room = general.rooms.add()
+        room.id = int(rid)
+        room.order = order
+
+
 def build_schedule_timer(
     hours: int,
     minutes: int,
@@ -225,10 +241,7 @@ def build_schedule_timer(
         action.type = TimerInfo.Action.SCHEDULE_ROOMS_CLEAN
         general = action.sche_rooms_clean.general
         general.map_id = int(map_id)
-        for i, rid in enumerate(room_ids or []):
-            room = general.rooms.add()
-            room.id = int(rid)
-            room.order = i + 1
+        set_schedule_rooms(general, room_ids or [])
     else:
         action.type = TimerInfo.Action.SCHEDULE_AUTO_CLEAN
         # Presence of the (empty) message selects the oneof; parameters are
