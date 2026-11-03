@@ -73,6 +73,10 @@ async def test_load_unload_entry(hass: HomeAssistant):
             config_entry.state == ConfigEntryState.LOADED
         ), f"Entry state is {config_entry.state}, expected {ConfigEntryState.LOADED}"
 
+        # No update listener: OptionsFlowWithReload raises if one exists, and
+        # HA deprecates one next to async_update_reload_and_abort (#168).
+        assert not config_entry.update_listeners
+
         # Verify calls
         mock_login_cls.assert_called_with(
             "test_user", "test_password", unittest.mock.ANY, websession=unittest.mock.ANY

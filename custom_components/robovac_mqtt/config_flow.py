@@ -198,13 +198,16 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         return title, errors
 
 
-class OptionsFlowHandler(config_entries.OptionsFlow):
+class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     """Eufy Robovac options: global settings + per-device local-Tuya overrides.
 
     Global settings cover map rendering, robot style and notifications. The
     per-device section lets a user opt a Tuya Cloud device into direct local
     push by entering its LAN address (the local key is auto-supplied by the
     Tuya Cloud login), plus manual room id->name overrides.
+
+    Saving changed options reloads the entry (OptionsFlowWithReload), so the
+    entry must not register an update listener: HA raises if it does.
     """
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:

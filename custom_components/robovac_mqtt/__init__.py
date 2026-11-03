@@ -121,10 +121,6 @@ def _int_keyed(
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
-    # NOTE: the options update listener is registered later, AFTER the legacy
-    # last_seen_segments cleanup, so the cleanup's async_update_entry() does not
-    # trigger a reload mid-setup. (Registering it here too would double-fire.)
-
     # Register the bundled card once `frontend` is set up. async_when_setup fires
     # immediately if it already is, else when it finishes — so the card registers
     # regardless of integration load order. Calling _async_register_frontend_card
@@ -291,10 +287,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Removed legacy last_seen_segments from config entry %s", entry.entry_id
         )
 
-    # Register update listener AFTER segment cleanup to avoid triggering
-    # a reload from async_update_entry during setup
-    entry.async_on_unload(entry.add_update_listener(update_listener))
-
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
@@ -322,7 +314,3 @@ async def async_remove_config_entry_device(
 ) -> bool:
     """Remove a config entry device."""
     return True
-
-
-async def update_listener(hass: HomeAssistant, entry: ConfigEntry):
-    await hass.config_entries.async_reload(entry.entry_id)
