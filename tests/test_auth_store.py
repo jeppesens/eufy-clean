@@ -421,6 +421,74 @@ async def test_a_fallback_session_is_reused_while_the_login_budget_is_spent():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("session_left", "cert_left", "keeps_credentials"),
+    [
+        (None, None, False),
+        (None, timedelta(hours=6), True),
+        (None, timedelta(hours=-1), False),
+        (3600.0, timedelta(days=30), True),
+    ],
+    ids=["no-cert", "cert-in-margin", "cert-expired", "session-in-margin"],
+)
+async def test_a_stored_session_serves_while_logins_are_refused(
+    session_left, cert_left, keeps_credentials
+):
+    """can_skip_login is False, but the throttle refuses a login: the stored
+    session still serves the Tuya robots, and MQTT credentials that have not
+    expired. No login is sent."""
+    cache = _usable_cache()
+    cache.throttle = {"logins": [time.time() - 60] * LOGIN_BUDGET}
+    cache.mqtt_credentials = _creds(_self_signed(cert_left)) if cert_left else None
+    if session_left is not None:
+        cache.session_expires_at = time.time() + session_left
+    assert not cache.can_skip_login
+    login = _login_with_cache(cache)
+    del login.login  # the real login(), refused by the budget
+
+    async def discover():
+        login.mqtt_devices = [{"deviceId": "d1"}]
+        login.cloud_devices = [{"deviceId": "tuya1"}]
+
+    login.getDevices.side_effect = discover
+
+    await login.init()
+
+    login._websession.post.assert_not_called()
+    assert login.cloud_devices == [{"deviceId": "tuya1"}]
+    assert bool(login.mqtt_credentials) is keeps_credentials
+    assert bool(cache.mqtt_credentials) is keeps_credentials
+    assert cache.session == {"access_token": "t", "user_id": "uid"}
+
+
+@pytest.mark.asyncio
+async def test_an_expired_stored_session_is_not_tried_while_logins_are_refused():
+    cache = _usable_cache()
+    cache.throttle = {"logins": [time.time() - 60] * LOGIN_BUDGET}
+    cache.session_expires_at = time.time() - 60
+    login = _login_with_cache(cache)
+    del login.login
+
+    with pytest.raises(EufyLoginRateLimitedError):
+        await login.init()
+
+    login.getDevices.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_session_inside_its_expiry_margin_is_not_tried_when_a_login_is_allowed():
+    """The login comes first: discovery runs once, with the fresh session."""
+    cache = _usable_cache()
+    cache.session_expires_at = time.time() + 3600
+    login = _login_with_cache(cache)
+
+    await login.init()
+
+    login.login.assert_awaited_once()
+    login.getDevices.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_a_fallback_session_survives_a_failed_login_for_mqtt_credentials():
     """The proved session stays stored when that login fails, so the next
     setup can still serve the Tuya devices with it."""

@@ -175,17 +175,22 @@ def test_a_hold_off_is_capped_at_the_lockout_length():
     assert throttle.held_off("requests") == pytest.approx(LOCKOUT_HOLD_OFF)
 
 
-def test_login_allowed_follows_the_hold_off_and_the_budget():
+def test_login_wait_follows_the_hold_off_and_the_budget():
     clock = Clock()
     throttle = CloudThrottle(clock=clock)
     assert throttle.login_allowed()
+    assert throttle.login_wait() is None
     throttle.hold_off("login", 60)
     assert not throttle.login_allowed()
+    assert throttle.login_wait() == pytest.approx(60)
     clock.now += 61
     assert throttle.login_allowed()
     for _ in range(LOGIN_BUDGET):
         throttle.note_login()
+        clock.now += 3600
+    # logins at 0, 1 h and 2 h, now 3 h: the oldest leaves the window first
     assert not throttle.login_allowed()
+    assert throttle.login_wait() == pytest.approx(LOGIN_BUDGET_WINDOW - LOGIN_BUDGET * 3600)
 
 
 def test_an_ordinary_answer_starts_no_hold_off():

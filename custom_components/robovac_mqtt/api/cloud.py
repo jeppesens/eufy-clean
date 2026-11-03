@@ -5,11 +5,17 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from datetime import timedelta
 from typing import Any
 
 import aiohttp
 
-from ..auth_store import session_expiry, trim_session, trim_user_info
+from ..auth_store import (
+    mqtt_credentials_fresh,
+    session_expiry,
+    trim_session,
+    trim_user_info,
+)
 from ..const import DPS_MAP, EUFY_CLEAN_DEVICES, SCALAR_DPS, TUYA_PRODUCT_MODELS
 from ..utils import is_protobuf_dps_value
 from .errors import (
@@ -134,14 +140,29 @@ class EufyLogin:
         cache; a throttle answer or a local hold-off raises
         EufyLoginRateLimitedError.
 
+        While the throttle refuses a login, a stored session that has not
+        expired is tried even when ``can_skip_login`` is False (expiry margins,
+        missing MQTT credentials): it may still serve the Tuya robots.
+
         A session ended with body code 26084 gets one login, like an expired
         token. A rejection within SESSION_REPLACED_WINDOW of that login latches
         the kick-out: EufySessionReplacedError until a reauth or reconfigure.
         """
-        if self.auth_cache is not None and self.auth_cache.session_replaced_at:
+        cache = self.auth_cache
+        if cache is not None and cache.session_replaced_at:
             raise EufySessionReplacedError(_SESSION_REPLACED_MESSAGE)
         relogin_for_replaced = False
-        cached = self.auth_cache is not None and self.auth_cache.can_skip_login
+        cached = cache is not None and cache.can_skip_login
+        if (
+            cache is not None
+            and not cached
+            and cache.has_live_session
+            and not self.throttle.login_allowed()
+        ):
+            _LOGGER.debug("Logins are refused; trying the stored session")
+            cached = True
+            if not mqtt_credentials_fresh(self.mqtt_credentials, skew=timedelta(0)):
+                self.mqtt_credentials = None
         if cached:
             _LOGGER.debug("EufyLogin.init() starting: reusing cached credentials")
             await self._discover()

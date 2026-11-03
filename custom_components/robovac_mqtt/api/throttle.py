@@ -160,13 +160,17 @@ class CloudThrottle:
                 retry_after=left,
             )
 
-    def login_allowed(self) -> bool:
-        """Would check_login() let a login through now?"""
+    def login_wait(self) -> float | None:
+        """Seconds until check_login() lets a login through; None when it does now."""
         try:
             self.check_login()
-        except EufyLoginRateLimitedError:
-            return False
-        return True
+        except EufyLoginRateLimitedError as err:
+            return err.retry_after or 0.0
+        return None
+
+    def login_allowed(self) -> bool:
+        """Would check_login() let a login through now?"""
+        return self.login_wait() is None
 
     def note_login(self) -> None:
         """Count a login attempt; called before it is sent (a timeout may still land)."""

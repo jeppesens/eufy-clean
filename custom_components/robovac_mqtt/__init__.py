@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,12 +17,13 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_STOP,
     Platform,
 )
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_when_setup
@@ -362,6 +364,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not coordinators:
         raise ConfigEntryNotReady("No Eufy Clean devices could be initialized")
 
+    _schedule_reload_for_mqtt_credentials(hass, entry, eufy_login)
+
     current_device_ids = {c.device_id for c in coordinators}
     device_registry = dr.async_get(hass)
     registry_devices = dr.async_entries_for_config_entry(
@@ -413,6 +417,37 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+def _schedule_reload_for_mqtt_credentials(
+    hass: HomeAssistant, entry: ConfigEntry, eufy_login: EufyLogin
+) -> None:
+    """Reload the entry once a login is allowed when MQTT robots were left
+    without MQTT credentials because logins were refused.
+
+    A fallback-session account never gets MQTT credentials: no reload.
+    """
+    if (
+        eufy_login.mqtt_credentials
+        or not eufy_login.mqtt_devices
+        or not eufy_login.has_user_center
+    ):
+        return
+    wait = eufy_login.throttle.login_wait()
+    if wait is None:
+        return
+    _LOGGER.info(
+        "%d MQTT device(s) wait for MQTT credentials; reloading when a login is "
+        "allowed, in %.0f min",
+        len(eufy_login.mqtt_devices),
+        wait / 60,
+    )
+
+    @callback
+    def _reload(_now: datetime) -> None:
+        hass.config_entries.async_schedule_reload(entry.entry_id)
+
+    entry.async_on_unload(async_call_later(hass, wait, _reload))
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:

@@ -35,6 +35,7 @@ from custom_components.robovac_mqtt.api.cloud import (
 )
 from custom_components.robovac_mqtt.api.throttle import (
     LOGIN_BUDGET,
+    LOGIN_BUDGET_WINDOW,
     REQUEST_HOLD_OFF,
     CloudThrottle,
 )
@@ -653,6 +654,57 @@ async def test_a_rejected_cached_session_refused_a_login_is_not_retried(
     assert entry.state is ConfigEntryState.SETUP_RETRY
     assert websession.get.call_count == cached_calls
     websession.post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("mqtt_robot", "has_user_center", "credentials", "budget_spent", "reloads"),
+    [
+        (True, True, None, True, True),
+        (False, True, None, True, False),
+        (True, False, None, True, False),
+        (True, True, {"certificate_pem": "pem"}, True, False),
+        (True, True, None, False, False),
+    ],
+    ids=["refused", "no-mqtt-robot", "fallback-session", "has-credentials", "login-allowed"],
+)
+async def test_mqtt_robots_left_without_credentials_reload_once_a_login_is_allowed(
+    hass: HomeAssistant, mqtt_robot, has_user_center, credentials, budget_spent, reloads
+):
+    """Logins refused at setup: the Tuya robot comes up, the MQTT robot without
+    credentials does not, and the entry reloads when a login is allowed."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="refused_entry",
+    )
+    entry.add_to_hass(hass)
+    logins = [time.time() - 3600] * LOGIN_BUDGET if budget_spent else []
+
+    def coordinator(*args, **kwargs):
+        device_id = args[2]["deviceId"]
+        failure = OSError("no MQTT credentials") if device_id == "mqtt_dev" else None
+        return _mock_coordinator(device_id, init_error=failure)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later:
+        login = _mock_login(mock_login_cls, *(["mqtt_dev"] if mqtt_robot else []))
+        login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
+        login.mqtt_credentials = credentials
+        login.has_user_center = has_user_center
+        login.throttle = CloudThrottle({"logins": logins})
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert call_later.called is reloads
+    if not reloads:
+        return
+    _hass, delay, action = call_later.call_args.args
+    assert delay == pytest.approx(LOGIN_BUDGET_WINDOW - 3600, abs=10)
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        action(None)
+    reload.assert_called_once_with(entry.entry_id)
 
 
 async def test_global_registration_runs_once_for_several_entries(hass: HomeAssistant):

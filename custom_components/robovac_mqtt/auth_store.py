@@ -98,8 +98,10 @@ def certificate_not_after(certificate_pem: str) -> datetime | None:
         return None
 
 
-def mqtt_credentials_fresh(credentials: dict[str, Any] | None) -> bool:
-    """True when cached MQTT credentials are present and not near expiry."""
+def mqtt_credentials_fresh(
+    credentials: dict[str, Any] | None, skew: timedelta = _CERT_EXPIRY_SKEW
+) -> bool:
+    """True when cached MQTT credentials are present and valid ``skew`` from now."""
     if not isinstance(credentials, dict) or not credentials:
         return False
     # must stay in step with coordinator._initialize_mqtt: a missing key there
@@ -110,7 +112,7 @@ def mqtt_credentials_fresh(credentials: dict[str, Any] | None) -> bool:
     not_after = certificate_not_after(credentials.get("certificate_pem", ""))
     if not_after is None:
         return False
-    return datetime.now(timezone.utc) + _CERT_EXPIRY_SKEW < not_after
+    return datetime.now(timezone.utc) + skew < not_after
 
 
 @dataclass
@@ -185,20 +187,30 @@ class AuthCache:
         ``user_info`` may legitimately be absent (fallback-session accounts have
         no user_center and no MQTT credential).
         """
-        if not isinstance(self.session, dict) or not self.session.get("access_token"):
+        if not self._session_valid_for(_SESSION_EXPIRY_SKEW.total_seconds()):
             return False
-        if self.session_expires_at is not None:
-            try:
-                expires_at = float(self.session_expires_at)
-            except (TypeError, ValueError):
-                return False
-            if time.time() + _SESSION_EXPIRY_SKEW.total_seconds() >= expires_at:
-                return False
         if not isinstance(self.user_info, dict):
             # None: fallback session; EufyLogin.init() logs in again when it
             # finds MQTT robots that this session cannot serve
             return self.user_info is None and self.mqtt_credentials is None
         return mqtt_credentials_fresh(self.mqtt_credentials)
+
+    @property
+    def has_live_session(self) -> bool:
+        """A session token that has not expired (no margin, unlike ``can_skip_login``)."""
+        return self._session_valid_for(0.0)
+
+    def _session_valid_for(self, seconds: float) -> bool:
+        """A session token still valid ``seconds`` from now; an unknown expiry is."""
+        if not isinstance(self.session, dict) or not self.session.get("access_token"):
+            return False
+        if self.session_expires_at is None:
+            return True
+        try:
+            expires_at = float(self.session_expires_at)
+        except (TypeError, ValueError):
+            return False
+        return time.time() + seconds < expires_at
 
     def replaced_relogin_age(self) -> float | None:
         """Seconds since the login a body code 26084 caused; None if unknown.
