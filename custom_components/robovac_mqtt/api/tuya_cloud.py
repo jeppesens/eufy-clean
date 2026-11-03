@@ -237,6 +237,27 @@ class TuyaCloudClient:
         _LOGGER.debug("Tuya get_device_list: total %d devices", len(all_devices))
         return all_devices
 
+    async def get_rtc_config(self, device_id: str) -> dict[str, Any] | None:
+        """Fetch the P2P/RTC config for one device.
+
+        Returns ``{"device_password", "ice_config"}`` where ``ice_config`` holds
+        the offer's ``token`` (the ICE servers), ``tcp_token`` and ``log``. The
+        conversation-0 credential is derived from ``device_password``; the ICE
+        servers are required for the device to gather its host candidate.
+        """
+        result = await self.request("m.ipc.v4.rtc.config.get", {"devId": device_id}, version="1.0")
+        if not result:
+            return None
+        p2p = result.get("p2pConfig", {}) or {}
+        return {
+            "device_password": result.get("password", ""),
+            "ice_config": {
+                "token": p2p.get("ices", []),
+                "tcp_token": p2p.get("tcpRelay", {}),
+                "log": p2p.get("log", {}),
+            },
+        }
+
     async def get_device(self, device_id: str) -> dict[str, Any] | None:
         """Poll a single device's state (DPS) from Tuya Cloud."""
         devices = await self.get_device_list()

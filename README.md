@@ -140,7 +140,7 @@ Room segments with guaranteed unique names (duplicates auto-suffixed, e.g. `Kitc
 | C-Series | T1250, T2117, T2118, T2120, T2128, T2130, T2132, T2280, T2292 (C20, C28 Omni) |
 | L-Series | T2190, T2267, T2268, T2278 (L60, L70) |
 | G-Series | T2210–T2278 (G20, G30, G35, G40, G50) |
-| S-Series | T2119, T2080 (RoboVac 11S, S1) |
+| S-Series | T2119, T2080, T2080A (RoboVac 11S, S1, S1 Pro) |
 
 ---
 
@@ -211,19 +211,21 @@ unavailable just because the LAN address has shifted.
 > integration debug logs that might contain it into public issues.
 
 > [!NOTE]
-> Live map and live X/Y position are **not** available over either Tuya
-> transport — Eufy delivers them through a separate encrypted P2P channel
-> (`eufy_mega` SDK) that no public reverse-engineering has cracked yet.
-> Everything else — vacuum/mop mode, water level, clean count, spot/zone/room
-> commands, station status, consumables, lifetime stats, all sensors —
-> works fine over both transports.
+> On Tuya-transport devices the map and room list are not on MQTT; they ride an
+> encrypted local P2P channel. This integration now opens and decodes that
+> channel, so the room list and the floor-map camera work on Tuya devices too
+> (verified end to end on the S1 Pro, T2080A). Live X/Y position and cleaning
+> path ride the same channel and are reachable, but are not exposed as entities
+> yet. See `docs/P2P_MAP_CHANNEL.md`. Everything else (vacuum/mop mode, water
+> level, clean count, spot/zone/room commands, station status, consumables,
+> lifetime stats, all sensors) works over both transports.
 
 ### Optional: Manual room name overrides
 
-The room list (and the `select.robovac_clean_room` entity that targets it)
-normally comes from the same encrypted P2P channel as the map, so on Tuya
-transports the dropdown is empty. If you'd like to drive room cleaning from
-HA anyway, you can supply your own `room_id: name` mapping:
+The room list (and the `select.robovac_clean_room` entity that targets it) is
+fetched automatically over the local P2P channel on Tuya devices. If that path
+is unavailable (no Tuya cloud session, or a device that does not answer), you can
+supply your own `room_id: name` mapping instead:
 
 1.  Settings → Devices & Services → **Eufy Robovac MQTT** → **Configure**.
 2.  In the **Rooms** field for your vacuum, enter one room per line:
