@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import re
+import ssl
 import time
 import zlib
 from collections.abc import Callable, Sequence
@@ -34,8 +35,8 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api.client import EufyCleanClient
-from .api.cloud import EufyLogin
+from .api.client import EufyCleanClient, is_certificate_rejection
+from .api.cloud import EufyLogin, EufyLoginError
 from .api.commands import build_command
 from .api.legacy_commands import (
     build_legacy_command,
@@ -65,6 +66,7 @@ from .api.parser_scalar import (
     build_scalar_schedule_payload,
     scalar_pattern_to_int,
     scalar_raw_to_schedule_entry,
+    scalar_schedule_raw_entries,
     scalar_suction_to_int,
     schedule_entry_to_scalar_raw,
 )
@@ -94,6 +96,7 @@ from .api.tuya_mqtt import (
     random_device_id44,
 )
 from .api.tuya_storage import TuyaMapStorage
+from .auth_store import AuthStore
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_VERSION,
@@ -170,13 +173,17 @@ _LEGACY_MAP_FRESHNESS_MAX_FAILURES = 3
 _MAP_EVENT_MIN_INTERVAL = 0.5
 # Min gap between legacy schedule fetches that were not asked for explicitly.
 _SCHEDULE_REFRESH_RETRY_COOLDOWN = 300.0
+# Loaded legacy schedules are fetched again this often, for edits made in the app.
+_SCHEDULE_REFRESH_INTERVAL = 1800.0
 # Max seconds between a map-state change and its write to .storage.
 _MAP_STATE_SAVE_DELAY = 30.0
 # biz/ frames at least this long (hex chars) are decoded in the executor.
 _BIZ_INLINE_HEX_MAX = 200
 # The transport must stay down this long before entities go unavailable.
 _CONNECTION_LOSS_GRACE = 60.0
-# Consecutive broker auth refusals before one warning is logged.
+# Connection attempts in a row on which the broker rejected the client
+# identity before one warning is logged; each multiple of it asks EufyLogin
+# for replacement credentials.
 _AUTH_FAILURE_WARN_AFTER = 3
 
 
@@ -268,7 +275,7 @@ def _normalize_schedule_time(value: str) -> str:
     elif len(raw) == 4 and raw.isdigit():
         hour, minute = int(raw[:2]), int(raw[2:])
     if hour is None or minute is None or not 0 <= hour <= 23 or not 0 <= minute <= 59:
-        raise HomeAssistantError(
+        raise ServiceValidationError(
             f"Invalid time format: {value!r}. Expected 'HH:MM'."
         )
     return f"{hour:02d}:{minute:02d}"
@@ -476,7 +483,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         # async_load_storage runs AFTER the first DPS parse.
         self._storage_loaded = False
         self._robot_pixel: tuple[float, float] | None = None
-        self._current_room: tuple[int, str | None] = (0, None)
+        self._current_room: tuple[int, str | None] | None = None
         self._robot_trail: list[tuple[float, float]] = []
         # Per trail entry: 0 = cleaning, 1 = transit (0x67 only).
         self._robot_trail_types: list[int] = []
@@ -552,8 +559,11 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._store_data: dict[str, Any] | None = None
         self._store_load_lock = asyncio.Lock()
         self._last_notified_error_code: int = 0
-        self._sched_refresh_in_progress: bool = False
+        # Held by a legacy schedule fetch; a second fetch waits, then runs.
+        self._sched_refresh_lock = asyncio.Lock()
         self._sched_attempt_ts: float = -_SCHEDULE_REFRESH_RETRY_COOLDOWN
+        # DPS 151 is written whole: one read-modify-write at a time.
+        self._scalar_schedule_lock = asyncio.Lock()
         # Set first in teardown; every await that can start something checks it.
         self._closing: bool = False
         # Bumped per novel map frame sent to the executor; stale results drop.
@@ -562,6 +572,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._connection_loss_cancel: CALLBACK_TYPE | None = None
         self._transport_available: bool = True
         self._auth_failures: int = 0
+        # The MQTT credentials the current client uses.
+        self._mqtt_credentials: dict[str, Any] | None = None
+        self._mqtt_credentials_replacing: bool = False
         self._map_refresh_in_progress: bool = False
         self._map_attempt_cid: int | None = None
         self._map_attempt_ts: float = 0.0
@@ -844,25 +857,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
             # Before connect(): pushes are parsed against the stored state.
             await self.async_load_storage()
-            self.client = EufyCleanClient(
-                device_id=self.device_id,
-                user_id=creds["user_id"],
-                app_name=creds["app_name"],
-                thing_name=creds["thing_name"],
-                access_key="",
-                ticket="",
-                openudid=self.eufy_login.openudid,
-                certificate_pem=creds["certificate_pem"],
-                private_key=creds["private_key"],
-                device_model=self.device_model,
-                endpoint=creds["endpoint_addr"],
-            )
-
-            self.client.set_on_message(self._handle_mqtt_message)
-            self.client.set_on_biz_message(self._handle_biz_message)
-            if hasattr(self.client, "set_connection_listener"):
-                self.client.set_connection_listener(self._on_connection_change)
-            await self.client.connect()
+            await self._async_connect_mqtt_at_setup(creds)
 
         except BaseException as e:
             _LOGGER.error(
@@ -871,6 +866,123 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             # The client wrote its certificate and key to temp files.
             await self._async_drop_client()
             raise
+
+    async def _async_connect_mqtt(self, creds: dict[str, Any]) -> EufyCleanClient:
+        """Create the MQTT client for ``creds``, connect it and return it."""
+        self._mqtt_credentials = creds
+        client = self.client = EufyCleanClient(
+            device_id=self.device_id,
+            user_id=creds["user_id"],
+            app_name=creds["app_name"],
+            thing_name=creds["thing_name"],
+            access_key="",
+            ticket="",
+            openudid=self.eufy_login.openudid,
+            certificate_pem=creds["certificate_pem"],
+            private_key=creds["private_key"],
+            device_model=self.device_model,
+            endpoint=creds["endpoint_addr"],
+        )
+
+        client.set_on_message(self._handle_mqtt_message)
+        client.set_on_biz_message(self._handle_biz_message)
+        if hasattr(client, "set_connection_listener"):
+            client.set_connection_listener(self._on_connection_change)
+        await client.connect()
+        return client
+
+    async def _async_connect_mqtt_at_setup(self, creds: dict[str, Any]) -> None:
+        """Connect; a certificate the broker rejects in the TLS handshake is
+        replaced once (EufyLogin bounds the logins) and the connect retried.
+
+        With TLS 1.3 the alert comes after connect() and is counted like a
+        refused CONNACK instead.
+        """
+        for attempt in range(2):
+            try:
+                await self._async_connect_mqtt(creds)
+                return
+            except ssl.SSLError as err:
+                if not is_certificate_rejection(err):
+                    raise
+                _LOGGER.warning(
+                    "%s: the MQTT broker rejected the client certificate (%s)",
+                    self.device_name, err,
+                )
+                await self._async_drop_client()
+                # also drops the rejected ones from the cache
+                fresh = await self._async_new_mqtt_credentials(creds)
+                if fresh is None or attempt:
+                    raise
+                creds = fresh
+
+    async def _async_save_auth_cache(self) -> None:
+        """Persist the account's auth cache (no-op without a config entry)."""
+        cache = self.eufy_login.auth_cache
+        if cache is not None and self.config_entry is not None:
+            await AuthStore(self.hass, self.entry_id).async_save(cache)
+
+    async def _async_new_mqtt_credentials(
+        self, rejected: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Credentials to replace ``rejected`` with, or None for none now.
+
+        A refused account login starts re-authentication.
+        """
+        try:
+            fresh = await self.eufy_login.replace_rejected_mqtt_credentials(
+                rejected, self._async_save_auth_cache
+            )
+        except EufyLoginError as err:
+            _LOGGER.warning(
+                "%s: the Eufy login was refused (%s); re-authentication needed",
+                self.device_name, err,
+            )
+            if self.config_entry is not None:
+                self.config_entry.async_start_reauth(self.hass)
+            return None
+        return self.eufy_login.mqtt_credentials if fresh else None
+
+    async def _async_replace_rejected_credentials(self) -> None:
+        """Reconnect with new MQTT credentials when the broker keeps rejecting ours."""
+        rejected = self._mqtt_credentials
+        try:
+            if rejected is None:
+                return
+            creds = await self._async_new_mqtt_credentials(rejected)
+            if not creds or self._is_closing():
+                return
+            old = self.client
+            if old is not None and hasattr(old, "set_connection_listener"):
+                # its disconnect must not count against the new credentials
+                old.set_connection_listener(None)
+            await self._async_drop_client()
+            self._auth_failures = 0
+            try:
+                client = await self._async_connect_mqtt(creds)
+            except Exception as err:  # noqa: BLE001 - setup retries the transport
+                await self._async_drop_client()
+                if self._is_closing():
+                    return
+                _LOGGER.warning(
+                    "%s: reconnecting with new MQTT credentials failed (%s); "
+                    "reloading the entry",
+                    self.device_name, err,
+                )
+                if self.config_entry is not None:
+                    self.hass.config_entries.async_schedule_reload(self.entry_id)
+                return
+            if self._is_closing():
+                # teardown may have run while connect() did; the client's
+                # disconnect() does nothing until connect() has returned
+                if self.client is client:
+                    self.client = None
+                try:
+                    await client.disconnect()
+                except Exception as err:  # noqa: BLE001 - cleanup must not raise
+                    _LOGGER.debug("Error disconnecting %s: %s", self.device_name, err)
+        finally:
+            self._mqtt_credentials_replacing = False
 
     async def _initialize_cloud(self) -> None:
         """Initialize cloud polling connection."""
@@ -903,10 +1015,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         return self._closing
 
     def _maybe_refresh_legacy_schedules(self) -> None:
-        """Fetch legacy cleaning schedules if not yet loaded, at most every 5 min."""
-        if self.api_type != "legacy" or "schedules" in self.data.received_fields:
+        """Fetch legacy cleaning schedules in the background.
+
+        Until loaded at most every ``_SCHEDULE_REFRESH_RETRY_COOLDOWN``, then every
+        ``_SCHEDULE_REFRESH_INTERVAL``; never while a fetch runs.
+        """
+        if self.api_type != "legacy":
             return
-        if self._sched_refresh_in_progress or self._is_closing():
+        if self._sched_refresh_lock.locked() or self._is_closing():
             return
         if not (
             getattr(self.eufy_login, "tuya_thing_client", None)
@@ -914,7 +1030,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         ):
             return
         now = time.monotonic()
-        if now - self._sched_attempt_ts < _SCHEDULE_REFRESH_RETRY_COOLDOWN:
+        gap = (
+            _SCHEDULE_REFRESH_INTERVAL
+            if "schedules" in self.data.received_fields
+            else _SCHEDULE_REFRESH_RETRY_COOLDOWN
+        )
+        if now - self._sched_attempt_ts < gap:
             return
         self._sched_attempt_ts = now
         self._spawn(self.async_refresh_legacy_schedules(), "sched_fetch")
@@ -1429,6 +1550,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         _LOGGER.debug("legacy meta: live dock placed for %s", self.device_name)
         md.dock_pixel = cell
         self._dock_pixel = cell
+        if self._robot_trail_raw:
+            # trail points are dock-relative
+            self._rebuild_trail_from_raw()
+            self._notify_map_trail_reset()
         self._notify_map_pose()
         self._rerender_map()
         return True
@@ -1742,11 +1867,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
 
     async def async_refresh_legacy_schedules(self) -> bool:
-        """Fetch legacy cleaning schedules from Tuya cloud."""
-        if self.api_type != "legacy":
-            return False
+        """Fetch legacy cleaning schedules from Tuya cloud.
 
-        if self._sched_refresh_in_progress:
+        A call during a running fetch waits for it, then fetches again, so the
+        list it leaves is never older than the call. True if the list changed.
+        """
+        if self.api_type != "legacy":
             return False
 
         thing_client = getattr(self.eufy_login, "tuya_thing_client", None)
@@ -1754,8 +1880,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         if thing_client is None and tuya_client is None:
             return False
 
-        self._sched_refresh_in_progress = True
-        try:
+        async with self._sched_refresh_lock:
+            # paces the background fetch: any fetch counts as its last attempt
+            self._sched_attempt_ts = time.monotonic()
             raw, _ = await self._tuya_timer_call(
                 "timer.list", ("tuya.m.timer.all.list",)
             )
@@ -1787,8 +1914,6 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 len(schedules),
             )
             return True
-        finally:
-            self._sched_refresh_in_progress = False
 
     def _resolve_schedule_id(self, schedule_id: int | str | None) -> int | str | None:
         """Resolve schedule_id from an explicit id, a label, or the selection."""
@@ -1804,6 +1929,54 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 return int(sched_str)
             return sched_str
         return schedule_id
+
+    def _scalar_raw_entries(
+        self, schedules: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """DPS 151 entries for ``schedules``.
+
+        An entry unchanged but for ``enabled`` since the last DPS 151 report goes
+        back as reported, so values the client has no name for survive; the rest
+        are encoded. Raises ServiceValidationError on an entry that cannot be.
+        """
+        try:
+            reported = {
+                raw.get("id"): raw
+                for raw in scalar_schedule_raw_entries(self.data.raw_dps.get("151") or {})
+                if isinstance(raw, dict)
+            }
+        except (AttributeError, TypeError, ValueError):  # unreadable: encode all
+            reported = {}
+        entries = []
+        for entry in schedules:
+            enabled = bool(entry.get("enabled", True))
+            raw = reported.get(entry.get("id"))
+            if raw is not None and {
+                **scalar_raw_to_schedule_entry(raw), "enabled": enabled
+            } == {**entry, "enabled": enabled}:
+                entries.append({**raw, "e": enabled})
+                continue
+            try:
+                entries.append(schedule_entry_to_scalar_raw(entry))
+            except ValueError as err:
+                raise ServiceValidationError(
+                    f"Schedule {entry.get('id')} on {self.device_name}: {err}"
+                ) from err
+        return entries
+
+    async def _async_write_scalar_schedules(
+        self, schedules: list[dict[str, Any]]
+    ) -> None:
+        """Send ``schedules`` as DPS 151 and keep them as the parser reads them back."""
+        raw_entries = self._scalar_raw_entries(schedules)
+        await self.async_send_command(
+            {"151": build_scalar_schedule_payload(raw_entries)}
+        )
+        self.data = replace(
+            self.data,
+            schedules=[scalar_raw_to_schedule_entry(raw) for raw in raw_entries],
+        )
+        self.async_update_listeners()
 
     async def async_set_schedule_status(
         self, schedule_id: int | str | None, enabled: bool
@@ -1840,28 +2013,19 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return True
 
         if self.api_type == "scalar":
-            schedules = list(self.data.schedules or [])
-            found = False
             sid_int = int(actual_id) if str(actual_id).isdigit() else actual_id
-            raw_entries = []
-            for s in schedules:
-                raw = schedule_entry_to_scalar_raw(s)
-                if s.get("id") == sid_int:
-                    raw["e"] = bool(enabled)
-                    found = True
-                raw_entries.append(raw)
-            if not found:
-                raise HomeAssistantError(
-                    f"Schedule ID {actual_id} not found on {self.device_name}"
+            async with self._scalar_schedule_lock:
+                schedules = list(self.data.schedules or [])
+                if not any(s.get("id") == sid_int for s in schedules):
+                    raise HomeAssistantError(
+                        f"Schedule ID {actual_id} not found on {self.device_name}"
+                    )
+                await self._async_write_scalar_schedules(
+                    [
+                        {**s, "enabled": bool(enabled)} if s.get("id") == sid_int else s
+                        for s in schedules
+                    ]
                 )
-            payload = build_scalar_schedule_payload(raw_entries)
-            await self.async_send_command({"151": payload})
-            updated_schedules = [
-                {**s, "enabled": enabled} if s.get("id") == sid_int else s
-                for s in schedules
-            ]
-            self.data = replace(self.data, schedules=updated_schedules)
-            self.async_update_listeners()
             return True
 
         raise HomeAssistantError(
@@ -1900,26 +2064,17 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return True
 
         if self.api_type == "scalar":
-            schedules = list(self.data.schedules or [])
             sid_int = int(actual_id) if str(actual_id).isdigit() else actual_id
-            raw_entries = []
-            found = False
-            for s in schedules:
-                if s.get("id") == sid_int:
-                    found = True
-                    continue
-                raw_entries.append(schedule_entry_to_scalar_raw(s))
-            if not found:
-                raise HomeAssistantError(
-                    f"Schedule ID {actual_id} not found on {self.device_name}"
-                )
+            async with self._scalar_schedule_lock:
+                schedules = list(self.data.schedules or [])
+                kept = [s for s in schedules if s.get("id") != sid_int]
+                if len(kept) == len(schedules):
+                    raise HomeAssistantError(
+                        f"Schedule ID {actual_id} not found on {self.device_name}"
+                    )
+                await self._async_write_scalar_schedules(kept)
             if str(self.selected_schedule_id) == str(actual_id):
                 self.selected_schedule_id = None
-            payload = build_scalar_schedule_payload(raw_entries)
-            await self.async_send_command({"151": payload})
-            updated_schedules = [s for s in schedules if s.get("id") != sid_int]
-            self.data = replace(self.data, schedules=updated_schedules)
-            self.async_update_listeners()
             return True
 
         raise HomeAssistantError(
@@ -2068,50 +2223,38 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 raise ServiceValidationError(
                     f"Unknown suction {suction!r} for a schedule on {self.device_name}"
                 )
-            schedules = list(self.data.schedules or [])
-            existing = None
-            if actual_id is not None:
-                existing = self._schedule_entry(actual_id)
+            async with self._scalar_schedule_lock:
+                schedules = list(self.data.schedules or [])
+                existing = None
+                if actual_id is not None:
+                    existing = self._schedule_entry(actual_id)
+                    if existing is None:
+                        raise HomeAssistantError(
+                            f"Schedule ID {actual_id} not found on {self.device_name}"
+                        )
+                    entry = dict(existing)
+                else:
+                    existing_ids = [
+                        s["id"] for s in schedules if isinstance(s.get("id"), int)
+                    ]
+                    entry = {
+                        "id": max(existing_ids + [0]) + 1,
+                        "days": _NEW_SCHEDULE_DAYS,
+                        "enabled": True,
+                    }
+                entry["time"] = self._schedule_time(time, existing)
+                for key, value in (
+                    ("days", days),
+                    ("enabled", enabled),
+                    ("suction", suction),
+                    ("pattern", mode),
+                ):
+                    if value is not None:
+                        entry[key] = value
+                updated = [entry if s is existing else s for s in schedules]
                 if existing is None:
-                    raise HomeAssistantError(
-                        f"Schedule ID {actual_id} not found on {self.device_name}"
-                    )
-                entry = dict(existing)
-            else:
-                existing_ids = [s["id"] for s in schedules if isinstance(s.get("id"), int)]
-                entry = {
-                    "id": max(existing_ids + [0]) + 1,
-                    "days": _NEW_SCHEDULE_DAYS,
-                    "enabled": True,
-                }
-            entry["time"] = self._schedule_time(time, existing)
-            for key, value in (
-                ("days", days),
-                ("enabled", enabled),
-                ("suction", suction),
-                ("pattern", mode),
-            ):
-                if value is not None:
-                    entry[key] = value
-            try:
-                new_raw = schedule_entry_to_scalar_raw(entry)
-                raw_entries = [
-                    new_raw if s is existing else schedule_entry_to_scalar_raw(s)
-                    for s in schedules
-                ]
-            except ValueError as err:
-                raise ServiceValidationError(str(err)) from err
-            if existing is None:
-                raw_entries.append(new_raw)
-
-            payload = build_scalar_schedule_payload(raw_entries)
-            await self.async_send_command({"151": payload})
-            # The entries as the parser reads them back from the DPS 151 sent.
-            self.data = replace(
-                self.data,
-                schedules=[scalar_raw_to_schedule_entry(raw) for raw in raw_entries],
-            )
-            self.async_update_listeners()
+                    updated.append(entry)
+                await self._async_write_scalar_schedules(updated)
             return True
 
         raise HomeAssistantError(
@@ -2176,7 +2319,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         rooms = self.data.rooms
         if not rooms or not targets:
             return False
-        map_id = self.data.map_id or 1
+        map_id = self.resolve_map_id()
 
         room_config: list[dict[str, Any]] = []
         new_rooms: list[dict[str, Any]] = []
@@ -2682,6 +2825,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return
         if connected:
             self._auth_failures = 0
+            if self.eufy_login.mqtt_credentials_accepted(self._mqtt_credentials):
+                self._spawn(self._async_save_auth_cache(), "auth_cache_save")
             if self._connection_loss_cancel is not None:
                 self._connection_loss_cancel()
                 self._connection_loss_cancel = None
@@ -2695,9 +2840,17 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             self._auth_failures += 1
             if self._auth_failures == _AUTH_FAILURE_WARN_AFTER:
                 _LOGGER.warning(
-                    "%s: the MQTT broker rejected the client credentials %d times"
-                    " in a row",
+                    "%s: the MQTT broker rejected the client credentials on %d"
+                    " connection attempts in a row",
                     self.device_name, self._auth_failures,
+                )
+            if (
+                self._auth_failures % _AUTH_FAILURE_WARN_AFTER == 0
+                and not self._mqtt_credentials_replacing
+            ):
+                self._mqtt_credentials_replacing = True
+                self._spawn(
+                    self._async_replace_rejected_credentials(), "mqtt_credentials"
                 )
         if self._transport_available and self._connection_loss_cancel is None:
             self._connection_loss_cancel = async_call_later(
@@ -2969,21 +3122,25 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return None, None
         return rid, md.room_names.get(rid)
 
-    def current_room(self) -> tuple[int, str | None]:
-        """Resolve the physical room from the live map pose, not DPS coordinates."""
+    def current_room(self) -> tuple[int, str | None] | None:
+        """The (room id, name) under the live map pose, or None outside any room.
+
+        Resolved from the map, not DPS coordinates. Legacy robots number rooms
+        from 0, so 0 is a room.
+        """
         md = self._map_data
         if md is None or self._robot_pixel is None or md.width <= 0 or md.height <= 0:
-            return 0, None
+            return None
         px, py = self._robot_pixel
         if not (0 <= px < md.width and 0 <= py < md.height):
-            return 0, None
+            return None
         # cell centre, so the floor in room_id_at_normalized lands on this cell
         nx = (int(px) + 0.5) / md.width
         ny = 1.0 - (int(py) + 0.5) / md.height
         room_id, room_name = self.room_id_at_normalized(nx, ny)
         if room_id is None:
-            return 0, None
-        if room_id and not room_name:
+            return None
+        if not room_name:
             room_name = next(
                 (room.get("name") for room in self.data.rooms if room.get("id") == room_id),
                 None,

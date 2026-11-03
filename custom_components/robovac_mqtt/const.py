@@ -72,6 +72,10 @@ EUFY_API_MQTT_INFO: Final = (
     f"{EUFY_AIOT_API_BASE_URL}/app/devicemanage/get_user_mqtt_info"
 )
 
+# A SUBACK return code at or above this means the broker refused the
+# subscription: 0x80 in MQTT 3.1.1, and every MQTT 5 failure reason code.
+MQTT_SUBACK_FAILURE: Final = 0x80
+
 
 EUFY_CLEAN_DEVICES = {
     "T1250": "RoboVac 35C",
@@ -267,9 +271,12 @@ class EUFY_CLEAN_CONTROL(int, Enum):
     START_MAPPING_THEN_CLEAN = 25
 
 
+# Passes per room or zone the app offers; the services validate this range.
+MIN_CLEAN_TIMES = 1
+MAX_CLEAN_TIMES = 3
 # Whole-house passes (AutoClean.clean_times) for START_AUTO_CLEAN. The Eufy app
 # offers x1 and x2; start_auto clamps clean_times to this range.
-AUTO_CLEAN_TIMES_MIN = 1
+AUTO_CLEAN_TIMES_MIN = MIN_CLEAN_TIMES
 AUTO_CLEAN_TIMES_MAX = 2
 
 
@@ -753,7 +760,8 @@ LEGACY_ROOM_WATER_LEVELS = ("Low", "Mid", "High")
 LEGACY_ROOM_DEFAULT_FAN = LEGACY_ROOM_FAN_LEVELS[1]
 LEGACY_ROOM_DEFAULT_WATER = LEGACY_ROOM_WATER_LEVELS[1]
 # Schedule (timer) DPS 124 documents, as the eufy app writes them: suction by
-# its 0-4 index, water by the per-room level (key) in the timer's own spelling.
+# name (Quiet..Boost_IQ), water by the per-room level (key) in the timer's own
+# spelling.
 LEGACY_SCHEDULE_FAN_LEVELS = tuple(s.value for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED)
 LEGACY_SCHEDULE_WATER_MODES = {
     **dict(zip(LEGACY_ROOM_WATER_LEVELS, ("Low", "medium", "High"))),
@@ -783,7 +791,10 @@ TUYA_REGIONS = {
 
 # Monday first: scalar DPS 151 keys days "1".."7" (Mon..Sun) and indexes this
 # tuple; legacy Tuya `loops` is a Sunday-first bitmask (legacy_parser._LOOPS_DAYS).
-WEEKDAY_ABBREVIATIONS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+WEEKDAY_NAMES = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+)
+WEEKDAY_ABBREVIATIONS = tuple(name[:3] for name in WEEKDAY_NAMES)
 
 # Tuya Thing SDK credentials (et=3 transport)
 TUYA_THING_CLIENT_ID = "w8x4ppqkdxvqnd73ahj9"

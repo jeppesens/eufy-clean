@@ -1,14 +1,13 @@
-"""Python half of the golden grid-raster contract.
+"""Python checks of the golden grid-raster fixture.
 
-The JS half (``tests/frontend/golden.test.mjs``) decodes
-``tests/frontend/fixtures/golden_render.json`` with the shipped client renderer and
-asserts every cell agrees with the server. That check is only ever as good as the
-fixture, so this module does the two things the JS side cannot:
+``tests/frontend/fixtures/golden_render.json`` pins the colour and class
+``render_map_png`` gives each grid cell, so a client-side grid renderer can be
+checked against the server without running Python. Such a check is only ever as
+good as the fixture, so this module does the two things a consumer cannot:
 
 1. **Staleness** — regenerate the fixture and fail if it drifted. Without this a
    change to ``build_map_geometry`` or to ``render_map_png``'s colour rule would
-   leave the JS suite passing against an outdated contract, which is precisely the
-   failure the cross-language check exists to prevent.
+   leave a consumer passing against an outdated contract.
 2. **Provenance** — assert the fixture's "expected" colours are the ones a *real*
    ``render_map_png`` call produces. ``generate_golden_fixture.server_cell_colors``
    restates the renderer's step-1 loop (it has to: the renderer returns a PNG with
@@ -78,10 +77,10 @@ def _inflated(doc: dict) -> dict:
 
 @pytest.mark.parametrize("level", [9, 1], ids=["fixture-encoder", "other-encoder"])
 def test_golden_fixture_is_current(monkeypatch, level):
-    """The fixture the JS suite validates against must describe the code as it is now.
+    """The fixture must describe the code as it is now.
 
-    Neither suite can run the other's language, so the fixture is the only channel
-    between them and a stale one is a silently broken check rather than a failing one.
+    A consumer in another language cannot regenerate it, so a stale fixture is a
+    silently broken check rather than a failing one.
     Level 1 stands in for a zlib build that encodes the same planes differently.
     """
     real = zlib.compress
@@ -91,9 +90,7 @@ def test_golden_fixture_is_current(monkeypatch, level):
         assert rebuilt != _stored(), "the other encoder must change some stream"
     assert _inflated(_stored()) == _inflated(rebuilt), (
         "golden_render.json is stale — regenerate it with "
-        "`PYTHONPATH=. python3 tests/generate_golden_fixture.py` and re-run the JS "
-        "suite (cd tests/frontend && npm test), which verifies the client renderer "
-        "still matches render_map_png"
+        "`PYTHONPATH=. python3 tests/generate_golden_fixture.py`"
     )
 
 
@@ -140,10 +137,10 @@ def test_expected_colors_are_render_map_png_s_own(case_name: str):
 def test_class_plane_and_rgb_plane_describe_the_same_cells(case_name: str):
     """The two expected planes are two views of one decision, and must not disagree.
 
-    The JS side leans on both: the RGB plane for the classes whose colours the two
-    ends share exactly, the class plane for room fills (whose hues deliberately
-    differ). If one said "room" where the other said "wall" the JS assertions would
-    contradict each other with no way to tell which was right.
+    A consumer leans on both: the RGB plane for the classes whose colours both ends
+    share exactly, the class plane for room fills (whose hues may differ). If one
+    said "room" where the other said "wall", checks against them would contradict
+    each other with no way to tell which was right.
     """
     _, map_data = _cases()[case_name]
 
@@ -205,10 +202,9 @@ def test_fixture_covers_the_registration_details_it_claims_to():
 def test_no_room_mask_case_takes_the_renderer_s_else_branch():
     """A map with no room mask must colour from the occupancy value alone.
 
-    This is a separate code path in ``render_map_png`` (the ``else`` at
-    ``map_stream.py:504``) and a separate one in ``buildGridImageData`` (every
-    ``rooms_grid`` byte is 0), so it needs its own case rather than being assumed to
-    fall out of the masked one.
+    This is a separate code path in ``render_map_png`` (the branch for a map without
+    ``room_pixels``) and for a client renderer (every ``rooms_grid`` byte is 0), so
+    it needs its own case rather than being assumed to fall out of the masked one.
     """
     map_data: MapData = _cases()["no_room_mask"][1]
     assert map_data.room_pixels is None

@@ -345,17 +345,18 @@ def _decode_loops(loops: Any) -> str:
 def encode_legacy_loops(days: list[str] | str | None) -> str:
     """Encode day names into a 7-char Sunday-first Tuya ``loops`` mask.
 
-    A 7-char 0/1 mask passes through; anything else goes through
-    ``parse_weekdays`` (ValueError on an unknown word).
+    A 7-char 0/1 mask, alone or as the only list item, passes through; anything
+    else goes through ``parse_weekdays`` (ValueError on an unknown word).
     """
-    if isinstance(days, str) and len(days.strip()) == 7 and set(days.strip()) <= {"0", "1"}:
-        return days.strip()
+    mask = days[0] if isinstance(days, list) and len(days) == 1 else days
+    if isinstance(mask, str) and len(mask.strip()) == 7 and set(mask.strip()) <= {"0", "1"}:
+        return mask.strip()
     selected = {WEEKDAY_ABBREVIATIONS[i] for i in parse_weekdays(days)}
     return "".join("1" if day in selected else "0" for day in _LOOPS_DAYS)
 
 
 def _parse_legacy_timer(timer: dict[str, Any]) -> dict[str, Any]:
-    """Turn one Tuya timer object into a read-only schedule entry."""
+    """Turn one Tuya timer object into a schedule entry."""
     entry: dict[str, Any] = {
         "id": timer.get("timerId"),
         "enabled": timer.get("status") == 1,

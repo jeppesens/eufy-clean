@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -16,11 +17,12 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_STOP,
     Platform,
 )
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_when_setup
@@ -57,6 +59,9 @@ PLATFORMS: list[Platform] = [
     Platform.UPDATE,
 ]
 _LOGGER = logging.getLogger(__name__)
+
+# seconds past the login hold-off end, so the reload's login is allowed
+_HOLD_OFF_RELOAD_SLACK = 1.0
 
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
@@ -312,6 +317,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not coordinators:
         raise ConfigEntryNotReady("No Eufy Clean devices could be initialized")
 
+    _schedule_reload_for_mqtt_credentials(hass, entry, eufy_login, coordinators)
+
     current_device_ids = {c.device_id for c in coordinators}
     device_registry = dr.async_get(hass)
     registry_devices = dr.async_entries_for_config_entry(
@@ -343,9 +350,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Removed legacy last_seen_segments from config entry %s", entry.entry_id
         )
 
-    # After the segment cleanup, whose async_update_entry() would else reload us.
-    entry.async_on_unload(entry.add_update_listener(update_listener))
-
     async def _async_stop(_event: Event) -> None:
         """Close every transport when Home Assistant stops.
 
@@ -363,6 +367,41 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+def _schedule_reload_for_mqtt_credentials(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    eufy_login: EufyLogin,
+    coordinators: list[EufyCleanCoordinator],
+) -> None:
+    """Reload the entry once the login hold-off ends when MQTT robots were
+    left out of this setup while it runs (no MQTT credentials, or the broker
+    rejected the ones a login produced).
+
+    A fallback-session account never gets MQTT credentials: no reload.
+    """
+    started = {c.device_id for c in coordinators}
+    left_out = [d for d in eufy_login.mqtt_devices if d.get("deviceId") not in started]
+    if not left_out or not eufy_login.has_user_center:
+        return
+    wait = eufy_login.login_hold_off_left()
+    if wait is None:
+        return
+    _LOGGER.info(
+        "%d MQTT device(s) left out while Eufy logins are on hold; reloading "
+        "when the hold-off ends, in %.0f min",
+        len(left_out),
+        wait / 60,
+    )
+
+    @callback
+    def _reload(_now: datetime) -> None:
+        hass.config_entries.async_schedule_reload(entry.entry_id)
+
+    entry.async_on_unload(
+        async_call_later(hass, wait + _HOLD_OFF_RELOAD_SLACK, _reload)
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -390,7 +429,3 @@ async def async_remove_config_entry_device(
         domain == DOMAIN and eufy_id in live_ids
         for domain, eufy_id in device_entry.identifiers
     )
-
-
-async def update_listener(hass: HomeAssistant, entry: ConfigEntry):
-    await hass.config_entries.async_reload(entry.entry_id)

@@ -332,6 +332,14 @@ def test_current_room_sensor_values_and_unknown(mock_coordinator):
     assert sensor.extra_state_attributes == {"room_id": 7, "room_name": "Bathroom"}
     mock_coordinator.current_room.return_value = (7, None)
     assert sensor.native_value == "Room 7"
-    mock_coordinator.current_room.return_value = (0, None)
+    mock_coordinator.current_room.return_value = None
     assert sensor.native_value is None
     assert sensor.extra_state_attributes == {"room_id": None, "room_name": None}
+
+
+def test_current_room_sensor_shows_legacy_room_zero(mock_coordinator):
+    """Legacy robots number rooms from 0."""
+    sensor = CurrentRoomSensorEntity(mock_coordinator)
+    mock_coordinator.current_room.return_value = (0, None)
+    assert sensor.native_value == "Room 0"
+    assert sensor.extra_state_attributes == {"room_id": 0, "room_name": None}
