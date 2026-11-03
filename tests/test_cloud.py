@@ -11,7 +11,16 @@ import pytest
 from custom_components.robovac_mqtt.api import cloud as cloud_mod
 from custom_components.robovac_mqtt.api.cloud import (
     EufyLogin,
+    EufyLoginChallengeError,
     EufyLoginError,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+)
+from custom_components.robovac_mqtt.api.throttle import (
+    KIND_LOGIN,
+    KIND_REQUESTS,
+    LOGIN_BUDGET,
+    MISSING_CREDENTIALS_HOLD_OFF,
 )
 from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
 from custom_components.robovac_mqtt.auth_store import AuthCache
@@ -467,6 +476,154 @@ async def test_login_stores_user_id():
     await login.login({"mqtt": True})
 
     assert login._eufy_user_id == "eu_123"
+
+
+# ── Rejected MQTT credentials ───────────────────────────────────────
+
+_NEW_CREDENTIALS = {"certificate_pem": "new"}
+
+
+def _login_with_rejected_credentials():
+    """An EufyLogin whose cached MQTT credentials the broker rejects.
+
+    Its login runs through the HTTP client's throttle; only the requests are
+    stubbed.
+    """
+    rejected = {"certificate_pem": "old"}
+    login = EufyLogin(
+        "user@example.com",
+        "password123",
+        "open-udid",
+        websession=MagicMock(),
+        auth_cache=AuthCache(mqtt_credentials=rejected),
+    )
+    api = login.eufyApi
+    api._attempt_login = AsyncMock(return_value={"access_token": "t", "user_id": "u"})
+    api.get_user_info = AsyncMock(return_value={"user_center_id": "uc"})
+    api.get_mqtt_credentials = AsyncMock(return_value=dict(_NEW_CREDENTIALS))
+    return login, rejected, AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_rejected_credentials_are_replaced_by_one_login():
+    """The rejected cert leaves the cache, one budgeted login fetches new ones,
+    both persist."""
+    login, rejected, save = _login_with_rejected_credentials()
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+
+    assert len(login.auth_cache.throttle["logins"]) == 1
+    assert login.mqtt_credentials == _NEW_CREDENTIALS
+    assert login.auth_cache.mqtt_credentials == _NEW_CREDENTIALS
+    save.assert_awaited_once()
+
+
+def _spend_login_budget(login):
+    for _ in range(LOGIN_BUDGET):
+        login.throttle.note_login()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refuse",
+    [
+        lambda login: login.throttle.hold_off(KIND_LOGIN, 300),
+        lambda login: login.throttle.hold_off(KIND_REQUESTS, 300),
+        _spend_login_budget,
+    ],
+    ids=["login-hold-off", "request-hold-off", "budget-spent"],
+)
+async def test_rejected_credentials_send_no_login_while_the_throttle_refuses(refuse):
+    """No login; the rejected cert still leaves the persisted cache."""
+    login, rejected, save = _login_with_rejected_credentials()
+    refuse(login)
+    logins = list(login.auth_cache.throttle["logins"])
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi._attempt_login.assert_not_awaited()
+    assert login.auth_cache.throttle["logins"] == logins
+    assert login.auth_cache.mqtt_credentials is None
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "refusal",
+    [None, EufyLoginChallengeError("needs a code", code=26052)],
+    ids=["credentials", "challenge"],
+)
+async def test_rejected_credentials_after_a_refused_login_send_no_second_login(
+    refusal,
+):
+    """A refused account login raises once; the same rejection never retries it."""
+    login, rejected, save = _login_with_rejected_credentials()
+    if refusal is None:
+        login.eufyApi._attempt_login.return_value = None
+    else:
+        login.eufyApi._attempt_login.side_effect = refusal
+
+    with pytest.raises(EufyLoginError):
+        await login.replace_rejected_mqtt_credentials(rejected, save)
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    assert len(login.auth_cache.throttle["logins"]) == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [
+        EufyLoginTransientError("HTTP 503"),
+        aiohttp.ClientError("reset"),
+        TimeoutError(),
+        EufyLoginRateLimitedError("code 100028", retry_after=7200.0, code=100028),
+    ],
+    ids=["503", "client-error", "timeout", "throttle-answer"],
+)
+async def test_a_failed_replacement_login_keeps_the_rejected_cert_out(error):
+    """An outage or a throttle answer during the login: no replacement and no
+    refusal (no reauth); the drop is still persisted."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi._attempt_login.side_effect = error
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    assert login.auth_cache.mqtt_credentials is None
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_failed_replacement_persists_its_result():
+    """The cache is already dropped; the later successful login is still saved."""
+    login, rejected, save = _login_with_rejected_credentials()
+    session = login.eufyApi._attempt_login.return_value
+    login.eufyApi._attempt_login.side_effect = EufyLoginTransientError("HTTP 503")
+    await login.replace_rejected_mqtt_credentials(rejected, save)
+    login.eufyApi._attempt_login.side_effect = None
+    login.eufyApi._attempt_login.return_value = session
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+
+    assert save.await_count == 2
+    assert login.auth_cache.mqtt_credentials == _NEW_CREDENTIALS
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_login_without_mqtt_credentials_holds_off_logins():
+    """A login that yields no MQTT credentials must not repeat at every rejection."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.get_mqtt_credentials.return_value = None
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    assert len(login.auth_cache.throttle["logins"]) == 1
+    assert login.throttle.held_off(KIND_LOGIN) == pytest.approx(
+        MISSING_CREDENTIALS_HOLD_OFF, abs=10
+    )
+    assert login.throttle.held_off(KIND_REQUESTS) is None
 
 
 # ── Cloud device discovery ──────────────────────────────────────────

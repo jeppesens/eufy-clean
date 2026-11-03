@@ -23,6 +23,7 @@ from custom_components.robovac_mqtt.api.throttle import (
 )
 from custom_components.robovac_mqtt.auth_store import (
     AuthCache,
+    AuthStore,
     certificate_not_after,
     mqtt_credentials_fresh,
     new_openudid,
@@ -925,3 +926,29 @@ def test_the_login_throttle_state_lives_in_the_cache():
     login = EufyLogin("u", "p", "udid", websession=MagicMock(), auth_cache=cache)
     login.throttle.note_login()
     assert len(cache.throttle["logins"]) == 1
+
+
+async def test_a_certificate_the_broker_rejected_is_not_reused_after_a_restart(hass):
+    """Rejected cached cert, replacement login fails: the next setup logs in."""
+    store = AuthStore(hass, "entry")
+    await store.async_save(_usable_cache())
+
+    def discover(login):
+        login.mqtt_devices = [{"deviceId": "d1"}]
+
+    cache = await store.async_load()
+    login = _login_with_cache(cache)
+    login.getDevices.side_effect = lambda: discover(login)
+    await login.init()
+    login.login.assert_not_awaited()
+
+    login.login.side_effect = EufyLoginTransientError("HTTP 503")
+    rejected = login.mqtt_credentials
+    assert not await login.replace_rejected_mqtt_credentials(
+        rejected, lambda: store.async_save(cache)
+    )
+
+    restarted = _login_with_cache(await store.async_load())
+    restarted.getDevices.side_effect = lambda: discover(restarted)
+    await restarted.init()
+    restarted.login.assert_awaited_once()

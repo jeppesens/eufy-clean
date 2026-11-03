@@ -14,11 +14,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from custom_components.robovac_mqtt.api.cloud import EufyLogin, EufyLoginError
 from custom_components.robovac_mqtt.api.legacy_parser import parse_legacy_schedules
 from custom_components.robovac_mqtt.api.map_stream import MapData
 from custom_components.robovac_mqtt.api.parser import update_state
 from custom_components.robovac_mqtt.api.tuya_thing import TuyaThingClient
+from custom_components.robovac_mqtt.auth_store import AuthCache
 from custom_components.robovac_mqtt.coordinator import (
+    _AUTH_FAILURE_WARN_AFTER,
     _CONNECTION_LOSS_GRACE,
     _TUYA_SESSION_REFRESH_INTERVAL,
     EufyCleanCoordinator,
@@ -778,6 +781,206 @@ def test_repeated_auth_refusals_warn_once(login, caplog):
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
     login.checkLogin.assert_not_called()
+
+
+def _account_login(credentials):
+    """A real EufyLogin holding cached MQTT credentials; logins yield new ones."""
+    login = EufyLogin(
+        "u", "p", "test_udid", websession=MagicMock(),
+        auth_cache=AuthCache(mqtt_credentials=credentials),
+    )
+    issued = iter(range(1, 100))
+
+    async def _login(_config):
+        login.mqtt_credentials = {**credentials, "certificate_pem": f"new{next(issued)}"}
+
+    login.login = AsyncMock(side_effect=_login)
+    return login
+
+
+async def _settle() -> None:
+    for _ in range(20):
+        await asyncio.sleep(0)
+
+
+async def _connected_coordinators(hass, login, count, client_cls):
+    """``count`` MQTT coordinators of one account, each connected once."""
+    client_cls.side_effect = lambda **_kw: MagicMock(
+        connect=AsyncMock(), disconnect=AsyncMock()
+    )
+    coordinators = []
+    for n in range(count):
+        coordinator = _coordinator(hass, login, deviceId=f"dev{n}")
+        await coordinator.initialize()
+        coordinators.append(coordinator)
+    return coordinators
+
+
+def _entry() -> MagicMock:
+    """A config entry whose background tasks run on the test loop."""
+    entry = MagicMock()
+    entry.async_create_background_task = (
+        lambda _hass, coro, _name: asyncio.ensure_future(coro)
+    )
+    return entry
+
+
+def _refuse(coordinator, times: int) -> None:
+    for _ in range(times):
+        coordinator._on_connection_change(False, True)
+
+
+async def test_a_refusal_streak_reconnects_with_new_credentials(hass, login):
+    """The broker keeps rejecting the cert: one login, then a new client."""
+    account = _account_login(login.mqtt_credentials)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
+        old_client = coordinator.client
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+
+    account.login.assert_awaited_once()
+    old_client.set_connection_listener.assert_called_with(None)
+    old_client.disconnect.assert_awaited_once()
+    assert client_cls.call_args.kwargs["certificate_pem"] == "new1"
+    coordinator.client.connect.assert_awaited_once()
+    assert coordinator._auth_failures == 0
+    assert account.auth_cache.mqtt_credentials["certificate_pem"] == "new1"
+
+
+async def test_coordinators_of_one_account_share_one_replacement(hass, login):
+    """Two robots rejected together: one login, both reconnect with its result."""
+    account = _account_login(login.mqtt_credentials)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        first, second = await _connected_coordinators(hass, account, 2, client_cls)
+        _refuse(first, _AUTH_FAILURE_WARN_AFTER)
+        _refuse(second, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+
+    account.login.assert_awaited_once()
+    assert first._mqtt_credentials is account.mqtt_credentials
+    assert second._mqtt_credentials is account.mqtt_credentials
+
+
+async def test_a_rejected_replacement_does_not_loop(hass, login):
+    """The new cert is rejected too: no second login, no further reconnect."""
+    account = _account_login(login.mqtt_credentials)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+        clients = client_cls.call_count
+        for _ in range(4):
+            _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+            await _settle()
+
+    account.login.assert_awaited_once()
+    assert client_cls.call_count == clients
+    assert account.auth_cache.mqtt_credentials is None
+
+
+async def test_an_accepted_replacement_rearms_the_next_one(hass, login):
+    """A connect on the new cert ends the streak; a later rotation is replaced."""
+    account = _account_login(login.mqtt_credentials)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+        coordinator._on_connection_change(True, False)
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+
+    assert account.login.await_count == 2
+    assert client_cls.call_args.kwargs["certificate_pem"] == "new2"
+
+
+async def test_refusals_during_a_replacement_start_no_second_one(hass, login):
+    """More refusals while the login runs do not queue another replacement."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=False)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, login, 1, client_cls)
+        _refuse(coordinator, 3 * _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+
+    assert login.replace_rejected_mqtt_credentials.await_count == 2
+
+
+async def test_a_refused_replacement_login_starts_reauth(hass, login):
+    """The account login itself is refused (password changed): ask the user."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(
+        side_effect=EufyLoginError("Login failed")
+    )
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, login, 1, client_cls)
+        coordinator.config_entry = _entry()
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+
+    coordinator.config_entry.async_start_reauth.assert_called_once_with(hass)
+    assert client_cls.call_count == 1
+
+
+@pytest.mark.parametrize("during", ["login", "connect"])
+async def test_a_teardown_during_a_replacement_leaves_no_client(hass, login, during):
+    """Unload while the login or the reconnect runs: nothing outlives it."""
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, login, 1, client_cls)
+
+        async def _close(*_args):
+            coordinator._closing = True
+            return True
+
+        if during == "login":
+            login.replace_rejected_mqtt_credentials = AsyncMock(side_effect=_close)
+        else:
+            login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
+            client_cls.side_effect = lambda **_kw: MagicMock(
+                connect=AsyncMock(side_effect=_close), disconnect=AsyncMock()
+            )
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+
+    assert client_cls.call_count == (1 if during == "login" else 2)
+    if during == "connect":
+        assert coordinator.client is None
+
+
+async def test_a_failed_reconnect_reloads_the_entry(hass, login):
+    """The new client cannot connect: the entry reload retries the transport."""
+    account = _account_login(login.mqtt_credentials)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
+        coordinator.config_entry = _entry()
+        coordinator.entry_id = "entry"
+        client_cls.side_effect = lambda **_kw: MagicMock(
+            connect=AsyncMock(side_effect=OSError("no route")), disconnect=AsyncMock()
+        )
+        with patch(f"{_MOD}.AuthStore") as store_cls:
+            store_cls.return_value.async_save = AsyncMock()
+            _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+            await _settle()
+
+    hass.config_entries.async_schedule_reload.assert_called_once_with("entry")
+    assert coordinator.client is None
+    store_cls.return_value.async_save.assert_awaited_with(account.auth_cache)
 
 
 def test_teardown_cancels_the_pending_unavailable_timer(login):
