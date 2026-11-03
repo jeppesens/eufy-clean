@@ -168,10 +168,12 @@ class AuthCache:
 
     @property
     def can_skip_login(self) -> bool:
-        """True when the cache holds everything ``login()`` would have produced.
+        """True when the cached session can serve device discovery.
 
         ``user_info`` may legitimately be absent (fallback-session accounts have
-        no user_center and no MQTT credential).
+        no user_center and no MQTT credential). Missing MQTT credentials (one
+        the broker rejected was dropped) still allow it: ``EufyLogin.init()``
+        logs in for them unless the login hold-off runs.
         """
         if not isinstance(self.session, dict) or not self.session.get("access_token"):
             return False
@@ -186,6 +188,8 @@ class AuthCache:
             # None: fallback session; EufyLogin.init() logs in again when it
             # finds MQTT robots that this session cannot serve
             return self.user_info is None and self.mqtt_credentials is None
+        if self.mqtt_credentials is None:
+            return True
         return mqtt_credentials_fresh(self.mqtt_credentials)
 
     def login_hold_off_left(self) -> float | None:
