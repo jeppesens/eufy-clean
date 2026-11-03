@@ -32,6 +32,7 @@ from ..proto.cloud.control_pb2 import (
 from ..proto.cloud.map_edit_pb2 import MapEditRequest
 from ..proto.cloud.multi_maps_pb2 import MultiMapsManageRequest
 from ..proto.cloud.station_pb2 import StationRequest
+from ..proto.cloud.timing_pb2 import TimerInfo, TimerRequest
 from ..proto.cloud.undisturbed_pb2 import UndisturbedRequest
 from ..proto.cloud.unisetting_pb2 import UnisettingRequest
 from ..utils import encode, encode_message, encode_varint
@@ -167,6 +168,86 @@ def build_room_clean_command(
         )
     )
     return {DPS_MAP["PLAY_PAUSE"]: value}
+
+
+def build_timer_request_command(
+    method: int, seq: int, timer: TimerInfo | None = None
+) -> dict[str, str]:
+    """Build a schedule (timer) management request on the TIMING DP.
+
+    *method* is a ``TimerRequest.Method`` value (ADD/DELETE/MOTIFY/OPEN/
+    CLOSE/INQUIRY/IGNORE_ONCE). The device answers on the same DP with a
+    ``TimerResponse`` echoing *seq* and carrying the full timer list.
+    """
+    req = TimerRequest(
+        method=cast(TimerRequest.Method, int(method)), seq=int(seq)
+    )
+    if timer is not None:
+        req.timer.CopyFrom(timer)
+    return {DPS_MAP["TIMING"]: encode_message(req)}
+
+
+def set_schedule_rooms(
+    general: TimerInfo.Action.ScheduleRoomsClean.General, room_ids: list[int]
+) -> None:
+    """Replace a rooms schedule's room list, in cleaning order.
+
+    ``order`` is a zero-based slot: timers written by the Eufy app on T2080A
+    store the first room with order 0 (#170 shows the same for
+    SelectRoomsClean), so one-based orders would shift every room by one.
+    """
+    del general.rooms[:]
+    for order, rid in enumerate(room_ids):
+        room = general.rooms.add()
+        room.id = int(rid)
+        room.order = order
+
+
+def build_schedule_timer(
+    hours: int,
+    minutes: int,
+    week_bits: int = 0,
+    action_type: str = "auto",
+    room_ids: list[int] | None = None,
+    map_id: int = 1,
+    timer_id: int | None = None,
+    enabled: bool = True,
+    summer: bool = False,
+) -> TimerInfo:
+    """Assemble a ``TimerInfo`` for ADD (timer_id None) or MOTIFY.
+
+    Mirrors the shape the Eufy app writes (captured on T2080A): hours and
+    minutes are the user's LOCAL wall-clock time with ``timing.summer``
+    flagging DST; ``user_tz`` is left unset, as the app does. ``week_bits``
+    of 0 makes a one-shot (SINGLE trigger) schedule.
+    """
+    timer = TimerInfo()
+    if timer_id is not None:
+        timer.id.value = int(timer_id)
+    timer.status.valid = True
+    timer.status.opened = bool(enabled)
+    desc = timer.desc
+    desc.trigger = (
+        TimerInfo.Desc.CYCLE if week_bits else TimerInfo.Desc.SINGLE
+    )
+    desc.timing.summer = bool(summer)
+    desc.timing.hours = int(hours)
+    desc.timing.minutes = int(minutes)
+    if week_bits:
+        desc.cycle.week_bits = int(week_bits)
+
+    action = timer.action
+    if action_type == "rooms":
+        action.type = TimerInfo.Action.SCHEDULE_ROOMS_CLEAN
+        general = action.sche_rooms_clean.general
+        general.map_id = int(map_id)
+        set_schedule_rooms(general, room_ids or [])
+    else:
+        action.type = TimerInfo.Action.SCHEDULE_AUTO_CLEAN
+        # Presence of the (empty) message selects the oneof; parameters are
+        # left unset so the device applies its current global settings.
+        action.sche_auto_clean.SetInParent()
+    return timer
 
 
 def build_zone_clean_command(

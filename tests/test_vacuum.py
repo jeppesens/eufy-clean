@@ -2,18 +2,22 @@
 
 # pylint: disable=redefined-outer-name, unused-argument
 
+import base64
+import datetime as dt
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components.vacuum import VacuumActivity
 from homeassistant.exceptions import HomeAssistantError
 
+from custom_components.robovac_mqtt.api.commands import build_schedule_timer
 from custom_components.robovac_mqtt.const import (
     EUFY_CLEAN_CLEAN_SPEED,
     EUFY_CLEAN_VACUUMCLEANER_STATE,
 )
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.proto.cloud.timing_pb2 import TimerRequest
 from custom_components.robovac_mqtt.vacuum import RoboVacMQTTEntity
 
 
@@ -409,3 +413,69 @@ async def test_forget_map_active_raises(mock_coordinator, mock_config_entry):
         await entity.async_forget_map(11)
     mock_coordinator.async_forget_map.assert_not_called()
     mock_coordinator.async_send_command.assert_not_called()
+
+
+_SCHEDULE_SERVICE_CALLS = [
+    ("async_get_schedules", {}),
+    ("async_add_schedule", {"time": dt.time(9, 30), "days": [], "clean_type": "auto"}),
+    ("async_update_schedule", {"schedule_id": 1}),
+    ("async_delete_schedule", {"schedule_id": 1}),
+    ("async_set_schedule_enabled", {"schedule_id": 1, "enabled": True}),
+]
+
+
+@pytest.mark.parametrize(("method", "kwargs"), _SCHEDULE_SERVICE_CALLS)
+@pytest.mark.parametrize(
+    ("api_type", "connection_type"),
+    [("scalar", "local"), ("legacy", "cloud"), ("novel", "cloud")],
+)
+async def test_schedule_services_refuse_unsupported_devices(
+    mock_coordinator, mock_config_entry, method, kwargs, api_type, connection_type
+):
+    """Schedule services fail fast, before anything is sent: non-novel devices
+    can't speak TimerRequest, and on the cloud-polled transport the
+    TimerResponse never arrives (the robot would act, the call time out)."""
+    mock_coordinator.api_type = api_type
+    mock_coordinator.connection_type = connection_type
+    # Schedule 1 exists, so only the support check can stop update_schedule.
+    stored = build_schedule_timer(hours=7, minutes=0, timer_id=1)
+    mock_coordinator.data = VacuumState(
+        schedule_raw={1: base64.b64encode(stored.SerializeToString()).decode()}
+    )
+    mock_coordinator.async_timer_request = AsyncMock()
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    with pytest.raises(HomeAssistantError):
+        await getattr(entity, method)(**kwargs)
+    mock_coordinator.async_timer_request.assert_not_called()
+
+
+async def test_update_schedule_round_trips_stored_timer(
+    mock_coordinator, mock_config_entry
+):
+    """update_schedule starts from the stored raw TimerInfo, takes the time
+    from a datetime.time (the UI time selector sends HH:MM:SS), and rewrites
+    rooms with zero-based order."""
+    stored = build_schedule_timer(
+        hours=7, minutes=0, action_type="rooms", room_ids=[1], map_id=2, timer_id=5
+    )
+    mock_coordinator.connection_type = "local"
+    mock_coordinator.data = VacuumState(
+        schedule_raw={5: base64.b64encode(stored.SerializeToString()).decode()}
+    )
+    mock_coordinator.async_timer_request = AsyncMock(
+        return_value={"success": True, "err_code": 0, "schedules": []}
+    )
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+
+    await entity.async_update_schedule(
+        schedule_id=5, time=dt.time(9, 30, 0), room_ids=[6, 2]
+    )
+
+    method, timer = mock_coordinator.async_timer_request.await_args.args
+    assert method == TimerRequest.MOTIFY
+    assert timer.id.value == 5
+    assert (timer.desc.timing.hours, timer.desc.timing.minutes) == (9, 30)
+    general = timer.action.sche_rooms_clean.general
+    assert general.map_id == 2
+    assert [(r.id, r.order) for r in general.rooms] == [(6, 0), (2, 1)]

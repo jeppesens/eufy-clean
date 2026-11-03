@@ -72,6 +72,14 @@ class VacuumState:
     rooms: list[dict[str, Any]] = field(default_factory=list)
     scenes: list[dict[str, Any]] = field(default_factory=list)
 
+    # Schedule request correlation (novel TimerResponse on the TIMING DP):
+    # the device echoes the request seq with every response, letting the
+    # coordinator match responses to pending schedule service calls. The
+    # schedule list itself lands in the shared ``schedules`` field below.
+    last_timer_seq: int = 0
+    last_timer_result: int = 0
+    last_timer_err: int = 0
+
     # Detailed Status
     status_code: int = 0  # Raw status value if needed
     dock_status: str | None = None  # Text description (debounced in coordinator)
@@ -114,7 +122,12 @@ class VacuumState:
     )
     auto_return: bool = False  # "Auto-Return Cleaning" toggle (DPS 135)
     activity_log_upload: bool = False  # Activity-log upload toggle (DPS 142)
-    schedules: list[dict[str, Any]] = field(default_factory=list)  # DPS 151 (read-only)
+    # Cleaning schedules: scalar DPS 151 (read-only) or novel TimerResponse
+    # on the TIMING DP (full list republished after every schedule change).
+    schedules: list[dict[str, Any]] = field(default_factory=list)
+    # Novel only: base64 TimerInfo bytes per schedule id, kept out of
+    # ``schedules`` so update_schedule can round-trip fields we don't model.
+    schedule_raw: dict[int, str] = field(default_factory=dict)
 
     # Device settings (from DPS 176 UnisettingResponse)
     wifi_signal: float = -100.0  # AP signal strength in dBm (converted from 0-100%)

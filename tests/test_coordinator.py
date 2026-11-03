@@ -2,6 +2,8 @@
 
 # pylint: disable=redefined-outer-name
 
+import asyncio
+import json
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -9,9 +11,16 @@ import pytest
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
+from custom_components.robovac_mqtt.api.commands import build_schedule_timer
 from custom_components.robovac_mqtt.api.map_stream import MapData
+from custom_components.robovac_mqtt.const import DPS_MAP
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.proto.cloud.timing_pb2 import (
+    TimerRequest,
+    TimerResponse,
+)
+from custom_components.robovac_mqtt.utils import decode, encode_message
 
 
 @pytest.fixture
@@ -810,3 +819,81 @@ def test_current_room_name_fallback(current_room_coordinator):
     assert coordinator.current_room() == (7, None)
     coordinator.data.rooms = [{"id": 7, "name": "Bathroom"}]
     assert coordinator.current_room() == (7, "Bathroom")
+
+
+def _push_timing_dp(coordinator, value: str) -> None:
+    """Deliver a TIMING DP value through the normal MQTT push path."""
+    envelope = json.dumps(
+        {"payload": json.dumps({"data": {DPS_MAP["TIMING"]: value}})}
+    ).encode()
+    # The dock-status debounce path calls async_call_later on a mock hass.
+    with patch("custom_components.robovac_mqtt.coordinator.async_call_later"):
+        coordinator._handle_mqtt_message(envelope)
+
+
+def _timer_response(seq: int, timer_id: int) -> str:
+    """Encode a device TimerResponse echoing *seq* with one timer at 09:00."""
+    resp = TimerResponse(seq=seq)
+    resp.result.value = TimerResponse.Result.SUCCESS
+    timer = resp.timers.add()
+    timer.id.value = timer_id
+    timer.status.opened = True
+    timer.desc.timing.hours = 9
+    return encode_message(resp)
+
+
+async def test_coordinator_timer_request_correlation(mock_hass, mock_login):
+    """async_timer_request resolves when a TimerResponse with the matching
+    seq arrives through the normal DPS-update path."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2080A",
+        "deviceName": "Test Vac",
+        "dps": {},
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.async_send_command = AsyncMock()
+    request = asyncio.create_task(
+        coordinator.async_timer_request(TimerRequest.INQUIRY, timeout=5)
+    )
+    await asyncio.sleep(0)  # let the request register its waiter + send
+    assert coordinator.async_send_command.await_count == 1
+    sent = coordinator.async_send_command.await_args.args[0]
+    seq = decode(TimerRequest, sent[DPS_MAP["TIMING"]]).seq
+
+    _push_timing_dp(coordinator, _timer_response(seq, timer_id=7))
+
+    result = await asyncio.wait_for(request, 5)
+    assert result["success"] is True
+    assert [s["id"] for s in result["schedules"]] == [7]
+    assert coordinator.data.schedules[0]["time"] == "09:00"
+
+
+async def test_coordinator_timer_request_ignores_own_echo(mock_hass, mock_login):
+    """A device reflecting our own TimerRequest back on the TIMING DP must not
+    resolve the request (the ADD echo's timer decodes as a TimerResponse
+    result) or touch the schedule list; only the real answer does."""
+    device_info = {
+        "deviceId": "test_id",
+        "deviceModel": "T2080A",
+        "deviceName": "Test Vac",
+        "dps": {},
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.async_send_command = AsyncMock()
+    timer = build_schedule_timer(hours=9, minutes=0)
+    request = asyncio.create_task(
+        coordinator.async_timer_request(TimerRequest.ADD, timer, timeout=5)
+    )
+    await asyncio.sleep(0)
+    sent = coordinator.async_send_command.await_args.args[0][DPS_MAP["TIMING"]]
+
+    _push_timing_dp(coordinator, sent)
+    await asyncio.sleep(0)
+    assert not request.done()
+    assert coordinator.data.schedules == []
+
+    seq = decode(TimerRequest, sent).seq
+    _push_timing_dp(coordinator, _timer_response(seq, timer_id=4))
+    result = await asyncio.wait_for(request, 5)
+    assert [s["id"] for s in result["schedules"]] == [4]

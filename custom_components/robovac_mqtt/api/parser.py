@@ -21,6 +21,7 @@ from ..const import (
     FAN_SUCTION_NAMES,
     KNOWN_UNPROCESSED_DPS,
     MOP_WATER_LEVEL_NAMES,
+    SCHEDULE_DAY_BITS,
     STATION_WATER_LEVEL_NAMES,
     TRIGGER_SOURCE_NAMES,
     WORK_MODE_NAMES,
@@ -40,6 +41,7 @@ from ..proto.cloud.multi_maps_pb2 import MultiMapsManageResponse
 from ..proto.cloud.scene_pb2 import SceneResponse
 from ..proto.cloud.station_pb2 import StationResponse
 from ..proto.cloud.stream_pb2 import RoomParams
+from ..proto.cloud.timing_pb2 import TimerInfo, TimerResponse
 from ..proto.cloud.undisturbed_pb2 import UndisturbedResponse
 from ..proto.cloud.unisetting_pb2 import UnisettingResponse
 from ..proto.cloud.universal_data_pb2 import UniversalDataResponse
@@ -524,6 +526,22 @@ def _process_other_dps(
                     changes["total_cleaning_count"] = stats.user_total.clean_count
                     track_received_field(state, changes, "cleaning_totals")
 
+            elif key == DPS_MAP["TIMING"]:
+                # TimerResponse (cleaning schedules). The same DP also carries
+                # MapEditResponse acks on some models — those fail this decode
+                # (wire-type clash on field 3) and stay raw-only, as before.
+                timer_resp = _parse_timer_response(value)
+                if timer_resp is not None:
+                    if "schedules" in timer_resp:
+                        changes["schedules"] = timer_resp["schedules"]
+                        changes["schedule_raw"] = timer_resp["schedule_raw"]
+                        # Lights up the shared Schedules sensor (also fed by
+                        # scalar DPS 151 on scalar devices).
+                        track_received_field(state, changes, "schedules")
+                    changes["last_timer_seq"] = timer_resp["seq"]
+                    changes["last_timer_result"] = timer_resp["result"]
+                    changes["last_timer_err"] = timer_resp["err_code"]
+
             elif key == DPS_MAP["SCENE_INFO"]:
                 _LOGGER.debug("Received SCENE_INFO: %s", value)
                 changes["scenes"] = _parse_scene_info(value)
@@ -831,6 +849,90 @@ def _map_dock_status(value: StationResponse) -> str:
     except Exception as e:
         _LOGGER.debug("Error mapping dock status: %s", e)
         return "Unknown"
+
+
+_DAY_NAME_BY_BIT = {bit: name for name, bit in SCHEDULE_DAY_BITS.items()}
+
+_TIMER_ACTION_TYPES = {
+    TimerInfo.Action.SCHEDULE_AUTO_CLEAN: "auto",
+    TimerInfo.Action.SCHEDULE_ROOMS_CLEAN: "rooms",
+    TimerInfo.Action.SCHEDULE_CRUISE: "cruise",
+    TimerInfo.Action.SCHEDULE_SCENE_CLEAN: "scene",
+}
+
+
+def _timer_info_to_dict(timer: TimerInfo) -> dict[str, Any]:
+    """Flatten a TimerInfo into a service-friendly dict."""
+    days = [
+        name
+        for bit, name in sorted(_DAY_NAME_BY_BIT.items())
+        if timer.desc.cycle.week_bits & bit
+    ]
+    action_type = _TIMER_ACTION_TYPES.get(timer.action.type, "unknown")
+    entry: dict[str, Any] = {
+        "id": timer.id.value,
+        "enabled": timer.status.opened,
+        "valid": timer.status.valid,
+        "time": f"{timer.desc.timing.hours:02d}:{timer.desc.timing.minutes:02d}",
+        "days": days,
+        "once": timer.desc.trigger == TimerInfo.Desc.SINGLE,
+        "type": action_type,
+    }
+    if action_type == "rooms":
+        general = timer.action.sche_rooms_clean.general
+        rooms = sorted(
+            ((r.id, r.order) for r in general.rooms), key=lambda x: x[1]
+        )
+        entry["map_id"] = general.map_id
+        entry["room_ids"] = [rid for rid, _order in rooms]
+    elif action_type == "scene":
+        entry["scene_id"] = timer.action.sche_scene_clean.scene_id
+    return entry
+
+
+def _parse_timer_response(value: Any) -> dict[str, Any] | None:
+    """Parse a TimerResponse from the TIMING DP; None if it isn't one.
+
+    The DP is shared with MapEditResponse acks, which "decode" as an empty
+    TimerResponse (their clashing fields just become unknown fields), so a
+    successful decode is not enough: require positive evidence — a timer
+    list or an explicit result message, or a non-zero seq echoing one of
+    our own requests (our seqs start at 1001; MapEdit acks carry seq 0 or
+    the app's low map-edit seqs on a different field number). Every timer
+    must carry an id: a MapEditResponse ``fail_code`` (field 4) otherwise
+    decodes as one id-less timer. Echoes of our own TimerRequests are
+    dropped earlier, in the coordinator.
+
+    Returns ``schedules`` (service/sensor dicts) and ``schedule_raw``
+    (base64 TimerInfo bytes per id, so MOTIFY can reproduce every field the
+    device stored, including action parameters we don't model).
+    """
+    try:
+        resp = decode(TimerResponse, value)
+    except Exception as e:  # noqa: BLE001 - non-timer payloads share this DP
+        _LOGGER.debug("TimerResponse parse failed (non-timer payload?): %s", e)
+        return None
+    if not all(timer.HasField("id") for timer in resp.timers):
+        _LOGGER.debug("DPS %s payload has a timer without id; ignoring", value)
+        return None
+    confident = bool(resp.timers) or resp.HasField("result")
+    if not confident and resp.seq == 0:
+        _LOGGER.debug("DPS %s payload is not a TimerResponse; ignoring", value)
+        return None
+    _LOGGER.debug("Decoded TimerResponse: %s", resp)
+    parsed: dict[str, Any] = {
+        "seq": resp.seq,
+        "result": resp.result.value,
+        "err_code": resp.result.err_code,
+        "confident": confident,
+    }
+    if confident:
+        parsed["schedules"] = [_timer_info_to_dict(t) for t in resp.timers]
+        parsed["schedule_raw"] = {
+            t.id.value: base64.b64encode(t.SerializeToString()).decode()
+            for t in resp.timers
+        }
+    return parsed
 
 
 def _parse_scene_info(value: Any) -> list[dict[str, Any]]:

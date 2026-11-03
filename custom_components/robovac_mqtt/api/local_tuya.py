@@ -176,16 +176,29 @@ class LocalTuyaClient:
         )
         # tinytuya's set_multiple_values takes {dp_index: value} where dp_index
         # may be int or string. Returns a dict on success / error info dict on
-        # failure; we only care about exceptions.
+        # failure.
         try:
             async with self._dev_lock:
-                await self._loop.run_in_executor(
+                result = await self._loop.run_in_executor(
                     None, self._dev.set_multiple_values, dps
                 )
         except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
             raise LocalTuyaError(
                 f"Failed to send local Tuya command to {self.device_id}: {e}"
             ) from e
+        if isinstance(result, dict):
+            if result.get("Error"):
+                _LOGGER.warning(
+                    "Local Tuya %s: device returned error for DPS %s write: %s",
+                    self.device_id, list(dps.keys()), result.get("Error"),
+                )
+            elif isinstance(result.get("dps"), dict):
+                # A device can answer a request DP so quickly that tinytuya
+                # consumes the report INSIDE the set call (its read window
+                # follows the write ACK on the same socket) — the listen loop
+                # never sees it. Dispatch it like a push so response-correlated
+                # requests (e.g. schedule TimerResponses) still resolve.
+                self._dispatch(result)
 
     async def _listen_loop(self) -> None:
         """Pump status() and receive() in the background, dispatching DPS pushes."""

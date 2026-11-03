@@ -1,6 +1,7 @@
 """Unit tests for api/parser.py: work status mapping, cleaning parameters,
 room name parsing, deduplication, and related const lookups."""
 
+import base64
 from unittest.mock import MagicMock, patch
 
 from custom_components.robovac_mqtt.api.parser import (
@@ -8,6 +9,7 @@ from custom_components.robovac_mqtt.api.parser import (
     _map_task_status,
     _map_work_status,
     _parse_map_data,
+    _parse_timer_response,
     _process_cleaning_parameters,
     update_state,
 )
@@ -19,7 +21,9 @@ from custom_components.robovac_mqtt.proto.cloud.clean_statistics_pb2 import (
 )
 from custom_components.robovac_mqtt.proto.cloud.common_pb2 import Numerical
 from custom_components.robovac_mqtt.proto.cloud.language_pb2 import LanguageResponse
+from custom_components.robovac_mqtt.proto.cloud.map_edit_pb2 import MapEditResponse
 from custom_components.robovac_mqtt.proto.cloud.station_pb2 import StationResponse
+from custom_components.robovac_mqtt.proto.cloud.timing_pb2 import TimerInfo
 from custom_components.robovac_mqtt.utils import encode_message
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -775,3 +779,85 @@ def test_cleaning_stats_user_total():
     assert new_state.total_cleaning_time == 18000
     assert new_state.total_cleaning_count == 42
     assert "cleaning_totals" in new_state.received_fields
+
+
+# A REAL TimerResponse captured from a RoboVac Omni S1 Pro (T2080A, fw
+# 7.0.168) over local Tuya on 2026-08-15: the device's full timer list as
+# published on the TIMING DP after an app-side schedule edit, 4 timers.
+# Timer #3 is a Saturday whole-house rooms clean listing all 9 rooms of the
+# map (including room id 0); timer #2 is a single-room (id 0) weekday one.
+CAPTURED_TIMER_LIST = (
+    "jgIaACItCgIIBBICCAEaCBIGEAEYCCAtIgIIASoVGhMSEQoCCAISAggCGgIIAiIAiAECIjUKAg"
+    "gBEgQIARABGgwIARIEEAEYCRoCCB8iAggBKhcaFQgBEhEKAggDEgIIAhoCCAIiAIgBASJrCgII"
+    "AxIECAEQARoOCAESBhABGBQgCBoCCEAiAggBKksIASJHEkUIARICCAMaAggCIgIIAioAMgIIAT"
+    "IECAkQATIECAMQAjIECAIQAzIECAoQBDIECAUQBTIECAYQBjIECAQQBzICEAiIAQEiNwoCCAIS"
+    "BAgBEAEaDAgBEgQQARgPGgIIHyICCAEqGQgBIhUSEwgBEgAaAggCIgIIAioAMgCIAQI="
+)
+
+
+def test_parse_captured_timer_list():
+    """The real T2080A timer list parses into 4 schedules with room data."""
+    parsed = _parse_timer_response(CAPTURED_TIMER_LIST)
+    assert parsed is not None
+    schedules = parsed["schedules"]
+    assert len(schedules) == 4
+    by_id = {s["id"]: s for s in schedules}
+
+    # Timer 1: Sun-Thu 09:00 auto clean, enabled.
+    t1 = by_id[1]
+    assert t1["type"] == "auto"
+    assert t1["time"] == "09:00"
+    assert t1["enabled"] is True
+    assert set(t1["days"]) == {"sun", "mon", "tue", "wed", "thu"}
+    assert t1["once"] is False
+
+    # Timer 3: Saturday whole-house rooms clean on map 1 — 9 rooms in
+    # cleaning order, INCLUDING room id 0.
+    t3 = by_id[3]
+    assert t3["type"] == "rooms"
+    assert t3["days"] == ["sat"]
+    assert t3["map_id"] == 1
+    assert t3["room_ids"] == [1, 9, 3, 2, 10, 5, 6, 4, 0]
+
+    # Timer 2: weekday single-room schedule targeting room 0.
+    t2 = by_id[2]
+    assert t2["type"] == "rooms"
+    assert t2["room_ids"] == [0]
+
+    # Raw TimerInfo bytes are kept per id (not in the public dicts) and
+    # round-trip losslessly.
+    assert all("raw" not in sched for sched in schedules)
+    assert set(parsed["schedule_raw"]) == set(by_id)
+    for schedule_id, raw_b64 in parsed["schedule_raw"].items():
+        raw = TimerInfo()
+        raw.ParseFromString(base64.b64decode(raw_b64))
+        assert raw.id.value == schedule_id
+
+
+def test_update_state_routes_timing_dp():
+    """A TimerResponse on the TIMING DP lands in VacuumState.schedules."""
+    state = VacuumState(api_type="novel")
+    new_state, changes = update_state(
+        state, {DPS_MAP["TIMING"]: CAPTURED_TIMER_LIST}
+    )
+    assert len(new_state.schedules) == 4
+    assert len(new_state.schedule_raw) == 4
+    assert "last_timer_seq" in changes
+    assert new_state.last_timer_result == 0
+
+
+def test_update_state_timing_dp_tolerates_non_timer_payload():
+    """MapEditResponse acks share this DP and even "decode" as empty
+    TimerResponses (clashing fields become unknown fields) — they must not
+    touch schedules or the request-correlation fields. That includes a FAILED
+    ack whose ``fail_code`` (field 4) lands where ``timers`` lives and would
+    otherwise decode as one id-less timer."""
+    fail_code_ack = MapEditResponse(seq=7, result=MapEditResponse.FAILED)
+    fail_code_ack.fail_code.value = MapEditResponse.FailCode.AREA_SMALL
+    state = VacuumState(api_type="novel")
+    # Real FAILED and SUCCESS ack bytes, then the fail_code variant.
+    for ack in ("BAgFGAI=", "AggF", encode_message(fail_code_ack)):
+        new_state, changes = update_state(state, {DPS_MAP["TIMING"]: ack})
+        assert new_state.schedules == []
+        assert "schedules" not in changes
+        assert "last_timer_seq" not in changes

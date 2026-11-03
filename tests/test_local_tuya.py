@@ -389,3 +389,25 @@ def test_receive_with_timeout_guards_none_dev(patch_tinytuya):
     )
     assert client._dev is None
     assert client._receive_with_timeout() is None
+
+
+@pytest.mark.asyncio
+async def test_send_command_dispatches_report_consumed_by_set(
+    patch_tinytuya, fake_dev
+):
+    """A DP report consumed inside tinytuya's set call (fast device answer)
+    must be dispatched like a push, or response-correlated requests such as
+    schedule TimerResponses hang."""
+    fake_dev.set_multiple_values.return_value = {"dps": {"164": "kwII"}, "t": 1}
+    client = LocalTuyaClient(
+        device_id="dev1", local_key="k" * 16, host="1.2.3.4"
+    )
+    received: list[bytes] = []
+    client.set_on_message(received.append)
+    await client.connect()
+    try:
+        await client.send_command({"164": "BQgGEOsH"})
+    finally:
+        await client.disconnect()
+    data = [json.loads(json.loads(msg)["payload"])["data"] for msg in received]
+    assert {"164": "kwII"} in data

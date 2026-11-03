@@ -114,7 +114,7 @@ The DPS system is how the Eufy device communicates state and receives commands. 
 | **158** | `CLEAN_SPEED` | Read | Integer index | Fan speed level (0=Quiet, 1=Standard, 2=Turbo, 3=Max) |
 | **160** | `FIND_ROBOT` | R/W | Boolean | Triggers the "find my robot" beep |
 | **163** | `BATTERY_LEVEL` | Read | Integer | Battery percentage (0–100) |
-| **164** | `MAP_EDIT` | Read | — | Defined but **not currently parsed**. Map edit data. |
+| **164** | `TIMING` | R/W | `TimerRequest` / `TimerResponse` | Cleaning schedules: requests go out as `TimerRequest`; the device answers with a `TimerResponse` carrying the full schedule list, and republishes it after every schedule change. `MapEditResponse` acks share this DP and are ignored by the parser. |
 | **165** | `MAP_DATA` | Read | `UniversalDataResponse` / `RoomParams` | Room list + map ID |
 | **166** | `MAP_STREAM` | Read | — | Real-time map stream data |
 | **167** | `CLEANING_STATISTICS` | Read | `CleanStatistics` | Cleaning duration and area |
