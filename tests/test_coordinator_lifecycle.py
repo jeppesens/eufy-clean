@@ -1621,6 +1621,25 @@ async def test_another_connect_failure_at_setup_keeps_the_cached_certificate(
     assert account.auth_cache.mqtt_credentials is cached
 
 
+@pytest.mark.parametrize(
+    ("connection_type", "client", "down"),
+    [
+        ("mqtt", MagicMock(is_connected=True), False),
+        ("mqtt", MagicMock(is_connected=False), True),
+        ("mqtt", None, True),
+        ("cloud", None, False),
+    ],
+    ids=["connected", "disconnected", "no-client", "cloud-robot"],
+)
+def test_the_mqtt_session_is_down_while_an_mqtt_robot_has_no_connected_client(
+    login, connection_type, client, down
+):
+    coordinator = _coordinator(MagicMock(), login)
+    coordinator.connection_type = connection_type
+    coordinator.client = client
+    assert coordinator.mqtt_session_down is down
+
+
 def test_teardown_cancels_the_pending_unavailable_timer(login):
     """A timer firing on a torn-down coordinator would touch dead entities."""
     coordinator = _coordinator(MagicMock(), login)

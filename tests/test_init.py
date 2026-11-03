@@ -577,6 +577,56 @@ async def test_robots_share_one_reload_for_the_end_of_the_login_hold_off(
     call_later.return_value.assert_called_once()
 
 
+@pytest.mark.parametrize(
+    ("down", "left_out", "reloads"),
+    [
+        ((False, False), False, False),
+        ((False, True), False, True),
+        ((False, False), True, True),
+    ],
+    ids=["every-robot-back", "one-robot-down", "one-robot-left-out"],
+)
+async def test_the_hold_off_reload_fires_only_while_a_robot_is_still_out(
+    hass: HomeAssistant, caplog, down, left_out, reloads
+):
+    """A robot armed the reload; when it fires, every MQTT robot connected
+    again and none was left out of setup: no reload."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="recovered_entry",
+    )
+    entry.add_to_hass(hass)
+    created: list = []
+    states = dict(zip(("dev1", "dev2"), down))
+
+    def coordinator(*args, **kwargs):
+        created.append(kwargs)
+        device_id = args[2]["deviceId"]
+        if device_id not in states:
+            return _mock_coordinator(device_id, init_error=OSError("refused"))
+        robot = _mock_coordinator(device_id)
+        robot.mqtt_session_down = states[device_id]
+        return robot
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later, patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ) as reload:
+        login = _mock_login(mock_login_cls, "dev1", "dev2", *(["dev3"] if left_out else []))
+        login.replacement_login_wait = MagicMock(return_value=None)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        caplog.set_level(logging.DEBUG, logger="custom_components.robovac_mqtt")
+        assert created[0]["reload_when_logins_resume"](600.0) is True
+        call_later.call_args.args[2](None)
+
+        assert reload.called is reloads
+        assert ("every MQTT robot is connected" in caplog.text) is not reloads
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
 _CACHED_MQTT = {
     "user_id": "uid",
     "app_name": "app",

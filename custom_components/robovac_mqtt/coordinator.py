@@ -844,6 +844,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             entry, options={**entry.options, CONF_LOCAL_DEVICES: devices}
         )
 
+    @property
+    def mqtt_session_down(self) -> bool:
+        """An MQTT robot whose broker session is not up."""
+        if self.connection_type != "mqtt":
+            return False
+        return not getattr(self.client, "is_connected", False)
+
     async def _async_drop_client(self) -> None:
         """Disconnect and forget the transport client; never raises."""
         client, self.client = self.client, None

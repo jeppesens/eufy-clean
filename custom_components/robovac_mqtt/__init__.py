@@ -205,8 +205,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Persist refreshed tokens, or just the probe memos if the cache was reused.
     await auth_store.async_save(auth_cache)
 
-    reload = _HoldOffReload(hass, entry)
-    coordinators = []
+    coordinators: list[EufyCleanCoordinator] = []
+    reload = _HoldOffReload(hass, entry, eufy_login, coordinators)
 
     all_devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
     is_multi_device = len(all_devices) > 1
@@ -376,12 +376,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 class _HoldOffReload:
     """The entry's one reload for when the login hold-off ends.
 
-    Shared by setup and every robot of the entry; cancelled on unload.
+    Shared by setup and every robot of the entry; cancelled on unload, and
+    skipped when it fires while no MQTT robot is out.
     """
 
-    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        eufy_login: EufyLogin,
+        coordinators: list[EufyCleanCoordinator],
+    ) -> None:
         self._hass = hass
         self._entry = entry
+        self._eufy_login = eufy_login
+        # setup's list, filled as the robots come up
+        self._coordinators = coordinators
         self._cancel: CALLBACK_TYPE | None = None
         entry.async_on_unload(self._async_cancel)
 
@@ -398,6 +408,15 @@ class _HoldOffReload:
     @callback
     def _reload(self, _now: datetime) -> None:
         self._cancel = None
+        coordinators = self._coordinators
+        if not _mqtt_robots_left_out(self._eufy_login, coordinators) and not any(
+            c.mqtt_session_down for c in coordinators
+        ):
+            _LOGGER.debug(
+                "No reload at the end of the login hold-off: every MQTT robot "
+                "is connected"
+            )
+            return
         self._hass.config_entries.async_schedule_reload(self._entry.entry_id)
 
     @callback
@@ -405,6 +424,14 @@ class _HoldOffReload:
         if self._cancel is not None:
             self._cancel()
             self._cancel = None
+
+
+def _mqtt_robots_left_out(
+    eufy_login: EufyLogin, coordinators: list[EufyCleanCoordinator]
+) -> list[dict[str, Any]]:
+    """The discovered MQTT robots that have no coordinator in this setup."""
+    started = {c.device_id for c in coordinators}
+    return [d for d in eufy_login.mqtt_devices if d.get("deviceId") not in started]
 
 
 def _schedule_reload_for_mqtt_credentials(
@@ -418,8 +445,7 @@ def _schedule_reload_for_mqtt_credentials(
 
     A fallback-session account never gets MQTT credentials: no reload.
     """
-    started = {c.device_id for c in coordinators}
-    left_out = [d for d in eufy_login.mqtt_devices if d.get("deviceId") not in started]
+    left_out = _mqtt_robots_left_out(eufy_login, coordinators)
     if not left_out or not eufy_login.has_user_center:
         return
     wait = eufy_login.replacement_login_wait()
