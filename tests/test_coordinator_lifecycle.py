@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import socket
 import ssl
 import threading
 import time
@@ -20,6 +21,7 @@ from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.reasoncodes import ReasonCode
 
 from custom_components.robovac_mqtt.api import cloud as cloud_mod
+from custom_components.robovac_mqtt.api.client import Rejection
 from custom_components.robovac_mqtt.api.cloud import EufyLogin, EufyLoginError
 from custom_components.robovac_mqtt.api.legacy_parser import parse_legacy_schedules
 from custom_components.robovac_mqtt.api.map_stream import MapData
@@ -1009,7 +1011,7 @@ async def test_credentials_accepted_after_a_login_are_saved_as_accepted(
     login.mqtt_credentials_accepted = MagicMock(return_value=changed)
     coordinator._async_save_auth_cache = AsyncMock()
 
-    coordinator._on_connection_change(True, False)
+    coordinator._on_connection_change(True, None)
     await asyncio.sleep(0)
 
     assert coordinator._async_save_auth_cache.await_count == changed
@@ -1020,9 +1022,9 @@ def test_a_short_disconnect_keeps_entities_available(login):
     coordinator = _coordinator(MagicMock(), login)
     cancel = MagicMock()
     with patch(f"{_MOD}.async_call_later", return_value=cancel) as later:
-        coordinator._on_connection_change(False, False)
+        coordinator._on_connection_change(False, None)
         assert later.call_args.args[1] == _CONNECTION_LOSS_GRACE
-        coordinator._on_connection_change(True, False)
+        coordinator._on_connection_change(True, None)
 
     cancel.assert_called_once()
     assert coordinator.last_update_success is True
@@ -1034,7 +1036,7 @@ def test_a_sustained_disconnect_marks_entities_unavailable(login):
     listener = MagicMock()
     coordinator.async_add_listener(listener)
     with patch(f"{_MOD}.async_call_later", return_value=MagicMock()) as later:
-        coordinator._on_connection_change(False, False)
+        coordinator._on_connection_change(False, None)
     _armed(later)(None)
     assert coordinator.last_update_success is False
 
@@ -1042,25 +1044,99 @@ def test_a_sustained_disconnect_marks_entities_unavailable(login):
     coordinator.async_set_updated_data(VacuumState(battery_level=10))
     assert coordinator.last_update_success is False
 
-    coordinator._on_connection_change(True, False)
+    coordinator._on_connection_change(True, None)
     assert coordinator.last_update_success is True
     assert listener.call_count >= 2
 
 
-def test_repeated_auth_refusals_warn_once(login, caplog):
-    """One WARNING on the third refusal in a row, not one per retry."""
+_EXPLICIT, _SILENT = Rejection.EXPLICIT, Rejection.SILENT
+
+
+@pytest.mark.parametrize(
+    ("streak", "wording"),
+    [
+        ([_EXPLICIT] * 5, "rejected the client credentials"),
+        ([_SILENT] * 5, "closed the connection before answering"),
+        ([_EXPLICIT, _SILENT, _EXPLICIT, _EXPLICIT, _EXPLICIT],
+         "closed the connection before answering"),
+    ],
+    ids=["explicit", "silent", "mixed"],
+)
+def test_repeated_auth_refusals_warn_once(login, caplog, streak, wording):
+    """One WARNING on the third refusal in a row, not one per retry; a streak
+    with a connection closed without an answer is not called a rejection."""
     coordinator = _coordinator(MagicMock(), login)
     with patch(f"{_MOD}.async_call_later", return_value=MagicMock()):
-        for _ in range(5):
-            coordinator._on_connection_change(False, True)
+        for rejection in streak:
+            coordinator._on_connection_change(False, rejection)
     warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
     assert len(warnings) == 1
+    assert wording in warnings[0].getMessage()
     login.checkLogin.assert_not_called()
 
 
-async def test_refused_connects_count_once_each(hass, login):
-    """paho reports a refused CONNACK to on_connect, then to on_disconnect:
-    the third refused attempt, not the second, asks for new credentials."""
+@pytest.mark.parametrize("between", ["connect", "replacement"])
+async def test_a_new_streak_after_a_connect_or_a_replacement_is_worded_afresh(
+    hass, login, caplog, between
+):
+    """Silent closes before a connect, or before new credentials, do not
+    colour the wording of the next streak."""
+    account = _account_login(login.mqtt_credentials)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
+        if between == "connect":
+            _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER - 1, _SILENT)
+            coordinator._on_connection_change(True, None)
+        else:
+            _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER, _SILENT)
+            await _settle()
+            assert client_cls.call_count == 2
+        caplog.clear()
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+
+    streaks = [
+        r.getMessage() for r in caplog.records
+        if r.levelno == logging.WARNING and "attempts in a row" in r.getMessage()
+    ]
+    assert len(streaks) == 1
+    assert "rejected the client credentials" in streaks[0]
+
+
+def _refused_connack(client, paho) -> None:
+    """paho reports a refused CONNACK to on_connect, then to on_disconnect."""
+    client._on_socket_open(paho, None, MagicMock())
+    client._on_connect(
+        paho, None, MagicMock(), ReasonCode(PacketTypes.CONNACK, "Not authorized")
+    )
+    client._on_disconnect(
+        paho, None, MagicMock(), ReasonCode(PacketTypes.DISCONNECT, "Unspecified error")
+    )
+
+
+def _closed_before_the_connack(client, paho) -> None:
+    client._on_socket_open(paho, None, MagicMock())
+    client._on_disconnect(
+        paho, None, MagicMock(), ReasonCode(PacketTypes.DISCONNECT, "Unspecified error")
+    )
+
+
+def _closed_in_the_handshake(client, paho) -> None:
+    try:
+        raise ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
+    except OSError:
+        client._on_connect_fail(paho, None)
+
+
+@pytest.mark.parametrize(
+    "attempt",
+    [_refused_connack, _closed_before_the_connack, _closed_in_the_handshake],
+    ids=["refused-connack", "closed-before-connack", "closed-in-handshake"],
+)
+async def test_refused_connects_count_once_each(hass, login, attempt):
+    """Each attempt the broker turns away counts once, as paho reports it:
+    the third, not the second, asks for new credentials."""
     login.replace_rejected_mqtt_credentials = AsyncMock(return_value=False)
     paho = MagicMock()
     coordinator = _coordinator(hass, login)
@@ -1069,12 +1145,9 @@ async def test_refused_connects_count_once_each(hass, login):
         return_value=paho,
     ), patch(f"{_MOD}.async_call_later", return_value=MagicMock()):
         client = await coordinator._async_connect_mqtt(login.mqtt_credentials)
-        refused = ReasonCode(PacketTypes.CONNACK, "Not authorized")
-        dropped = ReasonCode(PacketTypes.DISCONNECT, "Unspecified error")
-        for attempt in range(1, _AUTH_FAILURE_WARN_AFTER + 1):
-            assert login.replace_rejected_mqtt_credentials.await_count == 0, attempt
-            client._on_connect(paho, None, MagicMock(), refused, None)
-            client._on_disconnect(paho, None, MagicMock(), dropped, None)
+        for n in range(1, _AUTH_FAILURE_WARN_AFTER + 1):
+            assert login.replace_rejected_mqtt_credentials.await_count == 0, n
+            attempt(client, paho)
             await _settle()
 
     login.replace_rejected_mqtt_credentials.assert_awaited_once()
@@ -1123,20 +1196,22 @@ def _entry() -> MagicMock:
     return entry
 
 
-def _refuse(coordinator, times: int) -> None:
+def _refuse(coordinator, times: int, rejection: Rejection = _EXPLICIT) -> None:
     for _ in range(times):
-        coordinator._on_connection_change(False, True)
+        coordinator._on_connection_change(False, rejection)
 
 
-async def test_a_refusal_streak_reconnects_with_new_credentials(hass, login):
-    """The broker keeps rejecting the cert: one login, then a new client."""
+@pytest.mark.parametrize("rejection", [_EXPLICIT, _SILENT])
+async def test_a_refusal_streak_reconnects_with_new_credentials(hass, login, rejection):
+    """The broker keeps rejecting the cert, or closing the connection without
+    an answer: one login, then a new client."""
     account = _account_login(login.mqtt_credentials)
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
         f"{_MOD}.async_call_later", return_value=MagicMock()
     ):
         (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
         old_client = coordinator.client
-        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER, rejection)
         await _settle()
 
     account.login.assert_awaited_once()
@@ -1192,7 +1267,7 @@ async def test_an_accepted_replacement_rearms_the_next_one(hass, login):
         (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()
-        coordinator._on_connection_change(True, False)
+        coordinator._on_connection_change(True, None)
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()
 
@@ -1367,14 +1442,30 @@ def _clients_connecting(client_cls, *outcomes) -> list[MagicMock]:
     return clients
 
 
-async def test_a_certificate_rejected_at_setup_is_replaced_and_connects(hass, login):
-    """TLS alert on the first connect: one login, then the new cert connects."""
+@pytest.mark.parametrize(
+    ("error", "wording"),
+    [
+        (_ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"), "rejected the client certificate"),
+        (
+            ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
+            "closed the connection in the TLS handshake",
+        ),
+        (
+            ConnectionResetError(104, "Connection reset by peer"),
+            "closed the connection in the TLS handshake",
+        ),
+    ],
+    ids=["certificate-alert", "eof-in-handshake", "reset-in-handshake"],
+)
+async def test_a_certificate_rejected_at_setup_is_replaced_and_connects(
+    hass, login, caplog, error, wording
+):
+    """TLS alert, or the broker cutting the handshake off, on the first
+    connect: one login, then the new cert connects."""
     account = _account_login(login.mqtt_credentials)
     coordinator = _coordinator(hass, account)
     with patch(f"{_MOD}.EufyCleanClient") as client_cls:
-        old, new = _clients_connecting(
-            client_cls, _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"), None
-        )
+        old, new = _clients_connecting(client_cls, error, None)
         await coordinator.initialize()
 
     account.login.assert_awaited_once()
@@ -1382,6 +1473,7 @@ async def test_a_certificate_rejected_at_setup_is_replaced_and_connects(hass, lo
     assert client_cls.call_args.kwargs["certificate_pem"] == "new1"
     assert coordinator.client is new
     assert account.auth_cache.mqtt_credentials["certificate_pem"] == "new1"
+    assert f"the MQTT broker {wording}" in caplog.text
 
 
 async def test_a_replacement_rejected_at_setup_too_fails_and_holds_off_logins(
@@ -1418,14 +1510,26 @@ async def test_setup_tries_one_replacement_certificate_at_most(hass, login):
     assert client_cls.call_count == 2
 
 
-async def test_another_tls_failure_at_setup_keeps_the_cached_certificate(hass, login):
-    """A handshake failure that is no verdict on the cert: no login, cert kept."""
+@pytest.mark.parametrize(
+    "error",
+    [
+        _ssl_error("SSLV3_ALERT_HANDSHAKE_FAILURE"),
+        ConnectionRefusedError(111, "Connection refused"),
+        TimeoutError("timed out"),
+        socket.gaierror(-2, "Name or service not known"),
+    ],
+    ids=["handshake-failure", "refused", "timeout", "dns"],
+)
+async def test_another_connect_failure_at_setup_keeps_the_cached_certificate(
+    hass, login, error
+):
+    """A failure that is no verdict on the cert: no login, cert kept."""
     account = _account_login(login.mqtt_credentials)
     cached = account.auth_cache.mqtt_credentials
     coordinator = _coordinator(hass, account)
     with patch(f"{_MOD}.EufyCleanClient") as client_cls:
-        _clients_connecting(client_cls, _ssl_error("SSLV3_ALERT_HANDSHAKE_FAILURE"))
-        with pytest.raises(ssl.SSLError):
+        _clients_connecting(client_cls, error)
+        with pytest.raises(OSError):
             await coordinator.initialize()
 
     account.login.assert_not_awaited()
@@ -1437,9 +1541,9 @@ def test_teardown_cancels_the_pending_unavailable_timer(login):
     coordinator = _coordinator(MagicMock(), login)
     cancel = MagicMock()
     with patch(f"{_MOD}.async_call_later", return_value=cancel):
-        coordinator._on_connection_change(False, False)
+        coordinator._on_connection_change(False, None)
     coordinator.async_shutdown_timers()
     cancel.assert_called_once()
     # Late events from paho's queue are ignored.
-    coordinator._on_connection_change(False, False)
+    coordinator._on_connection_change(False, None)
     assert coordinator._connection_loss_cancel is None
