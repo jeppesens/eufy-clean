@@ -755,7 +755,8 @@ async def test_stale_cache_actually_clears_the_cached_tokens():
 
 
 async def test_a_certificate_the_broker_rejected_is_not_reused_after_a_restart(hass):
-    """Rejected cached cert, replacement login fails: the next setup logs in."""
+    """Rejected cached cert, replacement login fails: the next setup logs in
+    for MQTT credentials and keeps the discovery its proved session made."""
     store = AuthStore(hass, "entry")
     await store.async_save(_usable_cache())
 
@@ -778,6 +779,9 @@ async def test_a_certificate_the_broker_rejected_is_not_reused_after_a_restart(h
     restarted.getDevices.side_effect = lambda: discover(restarted)
     await restarted.init()
     restarted.login.assert_awaited_once()
+    restarted.getDevices.assert_awaited_once()
+    assert restarted.mqtt_devices == [{"deviceId": "d1"}]
+    assert restarted.auth_cache.session == _usable_cache().session
 
 
 @pytest.mark.asyncio

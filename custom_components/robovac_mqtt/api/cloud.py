@@ -123,6 +123,7 @@ class EufyLogin:
         starts the login hold-off and raises EufyLoginRateLimitedError.
         """
         cached = self.auth_cache is not None and self.auth_cache.can_skip_login
+        discover = True
         if cached:
             _LOGGER.debug("EufyLogin.init() starting: reusing cached credentials")
             await self._discover()
@@ -147,22 +148,25 @@ class EufyLogin:
                     "cached session"
                 )
             if proved:
+                # the session just served discovery; only the login is missing
                 _LOGGER.info(
                     "Cached Eufy session has no MQTT credentials for %d MQTT "
                     "device(s); logging in again",
                     len(self.mqtt_devices),
                 )
+                discover = False
             else:
                 _LOGGER.info(
                     "Cached Eufy credentials were rejected or found nothing; "
                     "re-authenticating"
                 )
-            self._reset_after_stale_cache()
+                self._reset_after_stale_cache()
 
-        _LOGGER.debug("EufyLogin.init() starting: HTTP login + device discovery")
+        _LOGGER.debug("EufyLogin.init() starting: HTTP login")
         await self.login({"mqtt": True})
         try:
-            await self._discover()
+            if discover:
+                await self._discover()
         finally:
             # the login succeeded: keep its tokens even if discovery failed
             self._capture_auth_cache()
