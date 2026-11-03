@@ -999,6 +999,22 @@ def _armed(later: MagicMock):
     return later.call_args.args[2]
 
 
+@pytest.mark.parametrize("changed", [True, False])
+async def test_credentials_accepted_after_a_login_are_saved_as_accepted(
+    hass, login, changed
+):
+    """The stored cache stops marking them unaccepted, so a later rejection
+    after a restart may log in again."""
+    coordinator = _coordinator(hass, login)
+    login.mqtt_credentials_accepted = MagicMock(return_value=changed)
+    coordinator._async_save_auth_cache = AsyncMock()
+
+    coordinator._on_connection_change(True, False)
+    await asyncio.sleep(0)
+
+    assert coordinator._async_save_auth_cache.await_count == changed
+
+
 def test_a_short_disconnect_keeps_entities_available(login):
     """Paho reconnects within seconds; flapping to unavailable is noise."""
     coordinator = _coordinator(MagicMock(), login)

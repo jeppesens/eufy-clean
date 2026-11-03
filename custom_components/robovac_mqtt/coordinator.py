@@ -2823,7 +2823,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return
         if connected:
             self._auth_failures = 0
-            self.eufy_login.mqtt_credentials_accepted(self._mqtt_credentials)
+            if self.eufy_login.mqtt_credentials_accepted(self._mqtt_credentials):
+                self._spawn(self._async_save_auth_cache(), "auth_cache_save")
             if self._connection_loss_cancel is not None:
                 self._connection_loss_cancel()
                 self._connection_loss_cancel = None

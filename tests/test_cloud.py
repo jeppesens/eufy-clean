@@ -1,6 +1,7 @@
 """Unit tests for the cloud login module."""
 
 import asyncio
+import json
 import logging
 import time
 import unittest.mock
@@ -662,6 +663,32 @@ async def test_a_broker_that_rejects_again_soon_after_accepting_gets_no_second_l
 
     login.eufyApi.login.assert_awaited_once()
     assert login.auth_cache.mqtt_credentials is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("accepted", "logins"), [(False, 0), (True, 1)])
+async def test_a_reload_keeps_the_bound_on_credentials_from_a_login(accepted, logins):
+    """Credentials a login produced that the broker never accepted get no
+    replacement login from the reloaded entry either; accepted ones do."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    if accepted:
+        assert login.mqtt_credentials_accepted(login.mqtt_credentials) is True
+    stored = AuthCache.from_dict(json.loads(json.dumps(login.auth_cache.to_dict())))
+    with patch(
+        "custom_components.robovac_mqtt.api.cloud.EufyHTTPClient", autospec=True
+    ):
+        reloaded = EufyLogin("u", "p", "open-udid", auth_cache=stored)
+    reloaded.eufyApi = MagicMock(session=None, user_info=None, login_label=None)
+    reloaded.eufyApi.login = AsyncMock(return_value={"mqtt": {"certificate_pem": "3"}})
+
+    replaced = await reloaded.replace_rejected_mqtt_credentials(
+        reloaded.mqtt_credentials, save
+    )
+
+    assert replaced is accepted
+    assert reloaded.eufyApi.login.await_count == logins
+    assert (stored.login_hold_off_left() is None) is accepted
 
 
 @pytest.mark.asyncio

@@ -110,6 +110,8 @@ class EufyLogin:
                 auth_cache.session, auth_cache.user_info, auth_cache.login_label
             )
             self.mqtt_credentials = auth_cache.mqtt_credentials
+            if auth_cache.mqtt_credentials_unaccepted and self.mqtt_credentials:
+                self._mqtt_relogin_spent = self.mqtt_credentials
             if auth_cache.session:
                 self._eufy_user_id = auth_cache.session.get("user_id")
 
@@ -249,6 +251,10 @@ class EufyLogin:
             cache.session_expires_at = expiry
         cache.user_info = trim_user_info(self.eufyApi.user_info)
         cache.mqtt_credentials = self.mqtt_credentials
+        cache.mqtt_credentials_unaccepted = (
+            self.mqtt_credentials is not None
+            and self.mqtt_credentials is self._mqtt_relogin_spent
+        )
         # The fallback-session path never sets a label; writing None would
         # erase a previously good memo.
         if self.eufyApi.login_label:
@@ -310,9 +316,11 @@ class EufyLogin:
 
         The rejected credentials leave the auth cache, so the next setup logs in
         instead of reusing them. No login runs during the login hold-off, nor
-        for credentials a login produced or refused (that starts the hold-off,
-        which outlives a restart), nor within the retry delay of a failed replacement login or the
-        minimum interval after a successful one.
+        for credentials a login produced (until the broker accepts them; the
+        auth cache keeps that mark across a restart) or refused: their
+        rejection starts the hold-off, which outlives a restart. Nor within the
+        retry delay of a failed replacement login or the minimum interval after
+        a successful one.
         ``save`` persists the cache after a change. Returns True when the caller
         should reconnect with ``mqtt_credentials``. Raises EufyLoginError when
         the account login is refused.
@@ -366,10 +374,19 @@ class EufyLogin:
                 if changed:
                     await save()
 
-    def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> None:
-        """The broker accepted ``credentials``: a later rejection may log in again."""
-        if credentials is not None and credentials is self._mqtt_relogin_spent:
-            self._mqtt_relogin_spent = None
+    def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> bool:
+        """The broker accepted ``credentials``: a later rejection may log in again.
+
+        Returns True when the auth cache changed and should be saved.
+        """
+        if credentials is None or credentials is not self._mqtt_relogin_spent:
+            return False
+        self._mqtt_relogin_spent = None
+        cache = self.auth_cache
+        if cache is None or not cache.mqtt_credentials_unaccepted:
+            return False
+        cache.mqtt_credentials_unaccepted = False
+        return True
 
     async def tuya_login(self) -> None:
         """Log in to the Tuya cloud with the Eufy user_id, probing EU then US."""
