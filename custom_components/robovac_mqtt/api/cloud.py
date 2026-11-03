@@ -203,8 +203,8 @@ class EufyLogin:
         cache = self.auth_cache
         if cache is None or not self.eufyApi.auth_error:
             return
-        relogin_at = cache.replaced_relogin_at
-        if relogin_at is None or time.time() - relogin_at >= SESSION_REPLACED_WINDOW:
+        age = cache.replaced_relogin_age()
+        if age is None or age >= SESSION_REPLACED_WINDOW:
             return
         _LOGGER.warning(
             "The Eufy session was ended again soon after logging in; another "

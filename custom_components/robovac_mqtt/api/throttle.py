@@ -78,6 +78,8 @@ class CloudThrottle:
 
     ``state`` is the caller's persisted dict, updated in place:
     ``{"logins": [epoch, ...], "hold_off": {"login"|"requests": until_epoch}}``.
+    Its times are bounded by the clock on load and on every use (see
+    ``_clamp_to_clock``), so a clock that was far ahead cannot strand them.
     """
 
     def __init__(
@@ -101,10 +103,26 @@ class CloudThrottle:
             and isinstance(v, (int, float))
             and not isinstance(v, bool)
         }
+        self._clamp_to_clock()
+
+    def _clamp_to_clock(self) -> float:
+        """Bound the stored times by the clock; returns the clock's time.
+
+        A time recorded while the clock ran ahead is later than any real one:
+        a login counts from now (it was sent no later than now), a hold-off
+        ends at most LOCKOUT_HOLD_OFF from now. Written back, so a bounded
+        time expires.
+        """
+        now = self._clock()
+        self.state["logins"] = [min(t, now) for t in self.state["logins"]]
+        hold = self.state["hold_off"]
+        latest = now + LOCKOUT_HOLD_OFF
+        hold.update({k: min(until, latest) for k, until in hold.items()})
+        return now
 
     def held_off(self, kind: str) -> float | None:
         """Seconds left on ``kind``'s hold-off; a login also waits for requests."""
-        now = self._clock()
+        now = self._clamp_to_clock()
         kinds = (KIND_REQUESTS, KIND_LOGIN) if kind == KIND_LOGIN else (KIND_REQUESTS,)
         left = [
             until - now
@@ -115,7 +133,7 @@ class CloudThrottle:
 
     def recent_logins(self) -> list[float]:
         """Login attempts inside the budget window, oldest first."""
-        cutoff = self._clock() - LOGIN_BUDGET_WINDOW
+        cutoff = self._clamp_to_clock() - LOGIN_BUDGET_WINDOW
         return sorted(t for t in self.state["logins"] if t > cutoff)
 
     def check_request(self) -> None:
@@ -157,7 +175,7 @@ class CloudThrottle:
     def hold_off(self, kind: str, seconds: float) -> float:
         """Start or extend ``kind``'s hold-off; returns the seconds now left."""
         seconds = min(max(seconds, 0.0), LOCKOUT_HOLD_OFF)
-        until = self._clock() + seconds
+        until = self._clamp_to_clock() + seconds
         current = self.state["hold_off"].get(kind, 0.0)
         self.state["hold_off"][kind] = max(current, until)
         return self.state["hold_off"][kind] - self._clock()

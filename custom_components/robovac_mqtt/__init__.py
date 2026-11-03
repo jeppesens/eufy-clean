@@ -45,6 +45,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import EufyCleanCoordinator
+from .vacuum import segments_issue_id
 from .websocket_api import async_setup as async_setup_websocket_api
 
 PLATFORMS: list[Platform] = [
@@ -171,9 +172,23 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
+def _session_replaced_issue_id(entry_id: str) -> str:
+    """Repair issue id for an entry whose session another client keeps ending."""
+    return f"session_replaced_{entry_id}"
+
+
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Delete this entry's cached credentials (bearer tokens, X.509 private key)."""
+    """Delete this entry's cached credentials (bearer tokens, X.509 private key)
+    and its repair issues."""
     await AuthStore(hass, entry.entry_id).async_remove()
+    ir.async_delete_issue(hass, DOMAIN, _session_replaced_issue_id(entry.entry_id))
+    # Runs before HA detaches the entry's devices.
+    for device_entry in dr.async_entries_for_config_entry(
+        dr.async_get(hass), entry.entry_id
+    ):
+        for domain, eufy_id in device_entry.identifiers:
+            if domain == DOMAIN:
+                ir.async_delete_issue(hass, DOMAIN, segments_issue_id(eufy_id))
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -187,7 +202,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     auth_cache = await auth_store.async_load()
 
     session = async_get_clientsession(hass)
-    issue_id = f"session_replaced_{entry.entry_id}"
+    issue_id = _session_replaced_issue_id(entry.entry_id)
     # Constructed inside the try: it restores the persisted cache, and a corrupt
     # store must degrade to the retried ConfigEntryNotReady, not SETUP_ERROR.
     try:

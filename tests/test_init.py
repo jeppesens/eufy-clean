@@ -778,6 +778,73 @@ async def test_session_replaced_raises_reauth_and_a_repair_issue(hass: HomeAssis
     )
 
 
+async def _set_up_kicked_out(hass: HomeAssistant, entry_id: str) -> MockConfigEntry:
+    """An entry whose setup raised the session-replaced repair issue."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: f"{entry_id}@example.com", CONF_PASSWORD: "pw"},
+        entry_id=entry_id,
+    )
+    entry.add_to_hass(hass)
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
+        mock_login_cls.return_value.init = AsyncMock(
+            side_effect=EufySessionReplacedError("kicked out")
+        )
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return entry
+
+
+async def test_a_successful_setup_clears_the_session_replaced_issue(
+    hass: HomeAssistant,
+):
+    """After a reauth the entry sets up again, and the repair issue goes."""
+    entry = await _set_up_kicked_out(hass, "reauthed_entry")
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, "session_replaced_reauthed_entry")
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator",
+        side_effect=lambda *a, **k: _mock_coordinator(a[2]["deviceId"]),
+    ):
+        _mock_login(mock_login_cls, "dev_a")
+        await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert issues.async_get_issue(DOMAIN, "session_replaced_reauthed_entry") is None
+
+
+async def test_removing_an_entry_deletes_its_repair_issues(hass: HomeAssistant):
+    """The session-replaced issue and its devices' segment issues go with the
+    entry; another entry's stay."""
+    removed = await _set_up_kicked_out(hass, "removed_entry")
+    kept = await _set_up_kicked_out(hass, "kept_entry")
+    devices = dr.async_get(hass)
+    issues = ir.async_get(hass)
+    for entry, device_id in ((removed, "dev_removed"), (kept, "dev_kept")):
+        devices.async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers={(DOMAIN, device_id)}
+        )
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"segments_changed_{device_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="segments_changed",
+        )
+    assert issues.async_get_issue(DOMAIN, "session_replaced_removed_entry")
+
+    await hass.config_entries.async_remove(removed.entry_id)
+    await hass.async_block_till_done()
+
+    assert issues.async_get_issue(DOMAIN, "session_replaced_removed_entry") is None
+    assert issues.async_get_issue(DOMAIN, "segments_changed_dev_removed") is None
+    assert issues.async_get_issue(DOMAIN, "session_replaced_kept_entry")
+    assert issues.async_get_issue(DOMAIN, "segments_changed_dev_kept")
+
+
 async def test_login_challenge_asks_for_reauth(hass: HomeAssistant):
     entry = MockConfigEntry(
         domain=DOMAIN,

@@ -129,7 +129,8 @@ class AuthCache:
     throttle: dict[str, Any] = field(default_factory=dict)
     # When the login a body code 26084 caused was made (see init()).
     replaced_relogin_at: float | None = None
-    # When the session-replaced latch was set; set, no automatic login.
+    # When the session-replaced latch was set; set, no automatic login. Only
+    # its presence is read, so a time recorded with the clock ahead is harmless.
     session_replaced_at: float | None = None
 
     @classmethod
@@ -160,6 +161,7 @@ class AuthCache:
             value = data.get(name)
             if isinstance(value, (int, float)) and not isinstance(value, bool):
                 setattr(cache, name, float(value))
+        cache.replaced_relogin_age()  # drops a time later than now
         throttle = data.get("throttle")
         if isinstance(throttle, dict):
             cache.throttle = throttle
@@ -197,6 +199,19 @@ class AuthCache:
             # finds MQTT robots that this session cannot serve
             return self.user_info is None and self.mqtt_credentials is None
         return mqtt_credentials_fresh(self.mqtt_credentials)
+
+    def replaced_relogin_age(self) -> float | None:
+        """Seconds since the login a body code 26084 caused; None if unknown.
+
+        A time later than now was recorded with the clock ahead and is dropped:
+        it would turn recent once the clock catches up and latch an ordinary
+        expiry.
+        """
+        now = time.time()
+        relogin_at = self.replaced_relogin_at
+        if relogin_at is not None and relogin_at > now:
+            self.replaced_relogin_at = relogin_at = None
+        return None if relogin_at is None else now - relogin_at
 
     def clear_tokens(self) -> None:
         """Drop the credentials but keep the identity, the probe memos, the

@@ -6,6 +6,7 @@ import pytest
 
 from custom_components.robovac_mqtt.api.errors import EufyLoginRateLimitedError
 from custom_components.robovac_mqtt.api.throttle import (
+    KIND_LOGIN,
     LOCKOUT_HOLD_OFF,
     LOGIN_BUDGET,
     LOGIN_BUDGET_WINDOW,
@@ -66,6 +67,56 @@ def test_malformed_state_is_dropped_not_raised():
     assert throttle.state == {"logins": [5.0], "hold_off": {}}
     bad = CloudThrottle("not a dict")
     assert bad.state == {"logins": [], "hold_off": {}}
+
+
+# A clock that boots this far ahead (no working RTC) until NTP corrects it.
+_CLOCK_AHEAD = 30 * 86400.0
+
+
+def test_times_recorded_with_the_clock_ahead_are_bounded_on_load():
+    """A budget and hold-offs saved while the clock ran ahead count from now
+    and expire on the corrected clock."""
+    clock = Clock()
+    ahead = clock.now + _CLOCK_AHEAD
+    state = {
+        "logins": [ahead] * LOGIN_BUDGET,
+        "hold_off": {"login": ahead, "requests": ahead},
+    }
+    throttle = CloudThrottle(state, clock=clock)
+
+    capped = clock.now + LOCKOUT_HOLD_OFF
+    assert throttle.state == {
+        "logins": [clock.now] * LOGIN_BUDGET,
+        "hold_off": {"login": capped, "requests": capped},
+    }
+    clock.now += LOCKOUT_HOLD_OFF + 1
+    assert throttle.login_allowed()
+
+
+@pytest.mark.parametrize("first_use", ["held_off", "recent_logins", "hold_off"])
+def test_times_recorded_with_the_clock_ahead_are_bounded_on_use(first_use):
+    """The clock is corrected while running: whichever call comes first bounds
+    the stored times, so they expire on the corrected clock."""
+    clock = Clock(1_000_000.0 + _CLOCK_AHEAD)
+    throttle = CloudThrottle(clock=clock)
+    for _ in range(LOGIN_BUDGET):
+        throttle.note_login()
+    throttle.hold_off(KIND_LOGIN, LOCKOUT_HOLD_OFF)
+    clock.now -= _CLOCK_AHEAD
+
+    if first_use == "held_off":
+        assert throttle.held_off(KIND_LOGIN) == LOCKOUT_HOLD_OFF
+    elif first_use == "recent_logins":
+        assert throttle.recent_logins() == [clock.now] * LOGIN_BUDGET
+    else:
+        assert throttle.hold_off(KIND_LOGIN, 60) == LOCKOUT_HOLD_OFF
+
+    assert throttle.state == {
+        "logins": [clock.now] * LOGIN_BUDGET,
+        "hold_off": {"login": clock.now + LOCKOUT_HOLD_OFF},
+    }
+    clock.now += LOCKOUT_HOLD_OFF + 1
+    assert throttle.login_allowed()
 
 
 @pytest.mark.parametrize(

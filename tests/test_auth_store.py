@@ -863,6 +863,30 @@ async def test_a_rejection_after_the_window_logs_in_again(replaced):
 
 
 @pytest.mark.asyncio
+async def test_a_kick_out_login_time_ahead_of_the_clock_latches_nothing():
+    """A kick-out login time later than now (recorded with the clock ahead) is
+    unknown: a rejection logs in again, and the time is dropped so it cannot
+    turn recent once the clock catches up."""
+    cache = _usable_cache()
+    cache.replaced_relogin_at = time.time() + 30 * 86400
+    login = _kicked_out_login(cache, replaced=False)
+
+    await login.init()
+
+    login.login.assert_awaited_once()
+    assert cache.session_replaced_at is None
+    assert cache.replaced_relogin_at is None
+
+
+def test_a_kick_out_login_time_ahead_of_the_clock_is_dropped_on_load():
+    past = time.time() - 60
+    kept = AuthCache.from_dict({"replaced_relogin_at": past})
+    assert kept.replaced_relogin_at == past
+    ahead = AuthCache.from_dict({"replaced_relogin_at": time.time() + 30 * 86400})
+    assert ahead.replaced_relogin_at is None
+
+
+@pytest.mark.asyncio
 async def test_a_kick_out_login_is_capped_by_the_login_budget():
     """With the budget spent, a 26084 sends no login and latches nothing; the
     rejected tokens are dropped so the next setup goes straight to the refusal."""

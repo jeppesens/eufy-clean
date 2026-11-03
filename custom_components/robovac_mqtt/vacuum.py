@@ -63,6 +63,11 @@ else:
             group: str | None = None
 
 
+def segments_issue_id(device_id: str) -> str:
+    """Repair issue id for a device's changed segments."""
+    return f"segments_changed_{device_id}"
+
+
 def _serialize_segments(segments: list[Segment]) -> list[dict[str, Any]]:
     """Serialize segments for storage in config entry."""
     return [{"id": s.id, "name": s.name, "group": s.group} for s in segments]
@@ -349,7 +354,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
     def _get_segments_issue_id(self) -> str:
         """Return the repair issue id for segment changes."""
-        return f"segments_changed_{self.coordinator.device_id}"
+        return segments_issue_id(self.coordinator.device_id)
 
     def _has_config_entry(self) -> bool:
         """Return whether config-entry-backed segment persistence is available."""
