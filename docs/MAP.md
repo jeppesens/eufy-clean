@@ -215,9 +215,9 @@ room.
 
 The `set_nogo_zones` command (`vacuum.send_command`) therefore addresses existing
 shapes **by index** into the current geometry revision, refuses to move and remove the
-same index in one call, and refuses the write when the caller's `expect_revision` is no
-longer the current `map_geometry_revision`, so a stale index cannot delete the wrong
-shape.
+same index in one call, and, when the caller passes `expect_revision`, refuses the
+write if it is no longer the current `map_geometry_revision`, so a stale index cannot
+delete the wrong shape.
 
 ---
 
