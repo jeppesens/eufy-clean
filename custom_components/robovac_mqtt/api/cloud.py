@@ -740,6 +740,17 @@ class EufyLogin:
         tuya_device: dict | None = None,
     ):
         device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
+        # MQTT topics use the model resolved below ("Subscribing to ..." logs
+        # it); log the raw codes so a collapsed variant (e.g. a suffixed
+        # product code) is visible (#107).
+        _LOGGER.debug(
+            "Device %s: raw model codes: V2 product_code=%r, V2 device_model=%r, "
+            "AIOT device_model=%r",
+            deviceId,
+            ((device or {}).get("product") or {}).get("product_code"),
+            (device or {}).get("device_model"),
+            (aiot_device or {}).get("device_model"),
+        )
 
         if device:
             raw_code = (

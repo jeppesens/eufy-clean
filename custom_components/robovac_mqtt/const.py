@@ -72,6 +72,10 @@ EUFY_API_MQTT_INFO: Final = (
     f"{EUFY_AIOT_API_BASE_URL}/app/devicemanage/get_user_mqtt_info"
 )
 
+# A SUBACK return code at or above this means the broker refused the
+# subscription: 0x80 in MQTT 3.1.1, and every MQTT 5 failure reason code.
+MQTT_SUBACK_FAILURE: Final = 0x80
+
 
 EUFY_CLEAN_DEVICES = {
     "T1250": "RoboVac 35C",

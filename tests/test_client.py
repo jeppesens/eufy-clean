@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime
+import logging
 import ssl
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -70,6 +71,10 @@ def _connack(name: str) -> ReasonCode:
 
 def _disconnect(name: str) -> ReasonCode:
     return ReasonCode(PacketTypes.DISCONNECT, name)
+
+
+def _suback(value: int) -> ReasonCode:
+    return ReasonCode(PacketTypes.SUBACK, identifier=value)
 
 
 # --- client construction / TLS ---
@@ -166,6 +171,7 @@ def test_on_connect_success_sets_event_and_subscribes():
     client._loop = mock_loop
 
     mock_mqtt = MagicMock()
+    mock_mqtt.subscribe.return_value = (mqtt.MQTT_ERR_SUCCESS, 1)
     client._on_connect(mock_mqtt, None, MagicMock(), _connack("Success"), None)
 
     mock_loop.call_soon_threadsafe.assert_called_once_with(client._connected_event.set)
@@ -187,6 +193,27 @@ def test_on_connect_failure_does_not_subscribe():
         client._connected_event.clear
     )
     mock_mqtt.subscribe.assert_not_called()
+
+
+def test_on_subscribe_warns_only_for_refused_topic(caplog):
+    """A SUBACK of 128 logs a warning naming the refused topic; a grant doesn't."""
+    client = _make_client()
+    mids = {
+        "cmd/eufy_home/T2320/TEST123/res": 1,
+        "biz/eufy_home/T2320/TEST123/res": 2,
+    }
+    mock_mqtt = MagicMock()
+    mock_mqtt.subscribe.side_effect = lambda topic: (mqtt.MQTT_ERR_SUCCESS, mids[topic])
+    client._on_connect(mock_mqtt, None, MagicMock(), _connack("Success"), None)
+
+    with caplog.at_level(logging.DEBUG):
+        client._on_subscribe(mock_mqtt, None, 1, [_suback(128)], None)
+        client._on_subscribe(mock_mqtt, None, 2, [_suback(0)], None)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "refused the subscription to cmd/eufy_home/T2320/TEST123/res" in warnings[0]
+    assert "Subscribed to biz/eufy_home/T2320/TEST123/res (granted QoS 0)" in caplog.text
 
 
 def test_on_disconnect_clears_event():
@@ -217,8 +244,10 @@ def test_connection_listener_reports_connect_and_disconnect():
     client._loop = mock_loop
     listener = MagicMock()
     client.set_connection_listener(listener)
+    paho = MagicMock()
+    paho.subscribe.return_value = (mqtt.MQTT_ERR_SUCCESS, 1)
 
-    client._on_connect(MagicMock(), None, MagicMock(), _connack("Success"), None)
+    client._on_connect(paho, None, MagicMock(), _connack("Success"), None)
     client._on_disconnect(
         MagicMock(), None, MagicMock(), _disconnect("Unspecified error"), None
     )
@@ -376,15 +405,15 @@ def test_other_read_failures_are_not_counted(level, line):
 
 
 @pytest.mark.asyncio
-async def test_connect_hooks_the_failed_reconnect_and_the_log():
+async def test_connect_hooks_the_failed_reconnect_the_log_and_the_suback():
     client = _make_client()
     fake = MagicMock()
 
     with patch.object(client_mod, "get_blocking_mqtt_client", return_value=fake):
         await client.connect()
 
-    hooks = (fake.on_connect_fail, fake.on_log)
-    assert hooks == (client._on_connect_fail, client._on_log)
+    hooks = (fake.on_connect_fail, fake.on_log, fake.on_subscribe)
+    assert hooks == (client._on_connect_fail, client._on_log, client._on_subscribe)
 
 
 # --- sending ---

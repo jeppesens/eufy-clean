@@ -17,6 +17,8 @@ from paho.mqtt import client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 from paho.mqtt.reasoncodes import ReasonCode
 
+from ..const import MQTT_SUBACK_FAILURE
+
 _LOGGER = logging.getLogger(__name__)
 
 # CONNACK reasons that reject the client identity: retrying cannot help.
@@ -120,6 +122,7 @@ class EufyCleanClient:
 
         self._mqtt_client: mqtt.Client | None = None
         self._client_id: str | None = None
+        self._pending_subscriptions: dict[int, str] = {}  # SUBSCRIBE mid -> topic
         self._on_message_callback: Callable[[bytes], None] | None = None
         self._on_biz_message_callback: Callable[[bytes], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -237,6 +240,7 @@ class EufyCleanClient:
             ),
         )
         mqtt_client.on_connect = self._on_connect
+        mqtt_client.on_subscribe = self._on_subscribe
         mqtt_client.on_message = self._on_message
         mqtt_client.on_disconnect = self._on_disconnect
         mqtt_client.on_connect_fail = self._on_connect_fail
@@ -280,12 +284,43 @@ class EufyCleanClient:
         _LOGGER.info("Connected to MQTT Broker!")
         self._notify_connection(True, False)
         if self.device_id:
-            cmd_topic = f"cmd/eufy_home/{self.device_model}/{self.device_id}/res"
-            _LOGGER.debug("Subscribing to %s", cmd_topic)
-            client.subscribe(cmd_topic)
-            biz_topic = f"biz/eufy_home/{self.device_model}/{self.device_id}/res"
-            _LOGGER.debug("Subscribing to %s", biz_topic)
-            client.subscribe(biz_topic)
+            # A SUBSCRIBE left unanswered by an earlier connection never
+            # gets its SUBACK, so start each connection with an empty map.
+            self._pending_subscriptions.clear()
+            for topic in (
+                f"cmd/eufy_home/{self.device_model}/{self.device_id}/res",
+                f"biz/eufy_home/{self.device_model}/{self.device_id}/res",
+            ):
+                _LOGGER.debug("Subscribing to %s", topic)
+                _, mid = client.subscribe(topic)
+                self._pending_subscriptions[mid] = topic
+
+    def _on_subscribe(
+        self,
+        client: mqtt.Client,
+        userdata: Any,
+        mid: int,
+        reason_codes: list[ReasonCode],
+        properties: Any = None,
+    ) -> None:
+        """Log the broker's SUBACK answer to a subscription made in _on_connect.
+
+        A refused subscription is otherwise silent: the connection stays up,
+        but nothing the robot publishes arrives.
+        """
+        topic = self._pending_subscriptions.pop(mid, "an unknown topic")
+        for reason_code in reason_codes:
+            if reason_code.value >= MQTT_SUBACK_FAILURE:
+                _LOGGER.warning(
+                    "MQTT broker refused the subscription to %s (SUBACK %s); the "
+                    "robot's updates on this topic will not reach Home Assistant",
+                    topic,
+                    reason_code.value,
+                )
+            else:
+                _LOGGER.debug(
+                    "Subscribed to %s (granted QoS %s)", topic, reason_code.value
+                )
 
     def _on_disconnect(
         self,

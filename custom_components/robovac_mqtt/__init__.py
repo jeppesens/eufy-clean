@@ -347,9 +347,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Removed legacy last_seen_segments from config entry %s", entry.entry_id
         )
 
-    # After the segment cleanup, whose async_update_entry() would else reload us.
-    entry.async_on_unload(entry.add_update_listener(update_listener))
-
     async def _async_stop(_event: Event) -> None:
         """Close every transport when Home Assistant stops.
 
@@ -429,7 +426,3 @@ async def async_remove_config_entry_device(
         domain == DOMAIN and eufy_id in live_ids
         for domain, eufy_id in device_entry.identifiers
     )
-
-
-async def update_listener(hass: HomeAssistant, entry: ConfigEntry):
-    await hass.config_entries.async_reload(entry.entry_id)

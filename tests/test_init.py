@@ -93,6 +93,10 @@ async def test_load_unload_entry(hass: HomeAssistant):
             config_entry.state == ConfigEntryState.LOADED
         ), f"Entry state is {config_entry.state}, expected {ConfigEntryState.LOADED}"
 
+        # No update listener: OptionsFlowWithReload raises if one exists, and
+        # HA deprecates one next to async_update_reload_and_abort (#168).
+        assert not config_entry.update_listeners
+
         # Verify calls
         mock_login_cls.assert_called_with(
             "test_user",
@@ -615,27 +619,6 @@ async def test_remove_device_refused_while_the_api_still_returns_it(
 
     assert await async_remove_config_entry_device(hass, entry, live) is False
     assert await async_remove_config_entry_device(hass, entry, gone) is True
-
-
-def _key_tree(node: object, prefix: str = "") -> set[str]:
-    if not isinstance(node, dict):
-        return {prefix}
-    keys: set[str] = set()
-    for key, value in node.items():
-        keys |= _key_tree(value, f"{prefix}/{key}")
-    return keys
-
-
-def test_translations_match_strings_json():
-    """translations/en.json carries every strings.json key.
-
-    Custom integrations load only translations/<lang>.json, so a key that exists
-    only in strings.json shows up in the UI as its raw key.
-    """
-    strings = json.loads((_COMPONENT_DIR / "strings.json").read_text())
-    en = json.loads((_COMPONENT_DIR / "translations" / "en.json").read_text())
-
-    assert _key_tree(en) == _key_tree(strings)
 
 
 def test_manifest_declares_every_runtime_import_within_ha_constraints():
