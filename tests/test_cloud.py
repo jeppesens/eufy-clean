@@ -833,6 +833,31 @@ async def test_a_second_replacement_soon_after_the_last_latches_the_kick_out(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("refusal", ["hold-off", "budget"])
+async def test_a_rejection_in_the_window_while_logins_are_refused_only_waits(refusal):
+    """Logins refused soon after an accepted replacement: an explicit
+    rejection waits for the throttle like any other; no kick-out latch, no
+    login attempt and no retry delay."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save)
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+    if refusal == "hold-off":
+        login.throttle.hold_off(KIND_LOGIN, 600)
+    else:
+        _spend_login_budget(login)
+    attempts = login.eufyApi._attempt_login.await_count
+
+    assert await login.replace_rejected_mqtt_credentials(
+        replacement, save, Rejection.EXPLICIT
+    ) is False
+
+    assert login.auth_cache.session_replaced_at is None
+    assert login.eufyApi._attempt_login.await_count == attempts
+    assert login._retry_delay_left() is None
+
+
+@pytest.mark.asyncio
 async def test_a_silent_rejection_soon_after_a_replacement_waits_out_the_window():
     """A broker that closes the connection without an answer is no proof that
     another client took the account: inside the window no login and no
