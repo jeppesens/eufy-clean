@@ -432,4 +432,5 @@ are not generated at build or install time.
 
 `tests/` holds the pytest suite (pytest + asyncio, `pytest-homeassistant-custom-component`),
 one file per module under test, plus a jsdom-based behavioural suite for the card under
-`tests/frontend/`. Run everything with `python run_tests.py`.
+`tests/frontend/`. Run the pytest suite with `python run_tests.py`, the jsdom suite with
+`cd tests/frontend && npm ci && npm test`.

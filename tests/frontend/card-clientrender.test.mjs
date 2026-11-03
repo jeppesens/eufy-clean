@@ -693,22 +693,41 @@ await withRetryTimers(async (ctl) => {
 });
 
 // A card created while the integration is still loading starts in the same retry loop
-// rather than spending the one-shot fallback.
-console.log("[5b] start while the integration is not loaded yet");
-await withRetryTimers(async (ctl) => {
-  const r = makeRendererModule();
-  const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod), (c) => {
+// rather than spending the one-shot fallback. So does one whose socket drops mid-start:
+// home-assistant-js-websocket rejects every open request with code 3 (ERR_CONNECTION_LOST).
+console.log("[5b] start while the integration is not loaded yet, or the socket drops");
+const LOST = { code: 3, message: "Connection lost" };
+for (const [label, tune] of [
+  ["`not_found` on subscribe", (c) => {
     c.subscribeError = { code: "not_found", message: "No Eufy vacuum for entity vacuum.robot" };
+  }],
+  ["`unknown_command` on subscribe", (c) => {
+    c.subscribeError = { code: "unknown_command", message: "Unknown command." };
+  }],
+  ["a lost connection on subscribe", (c) => {
+    c.subscribeError = LOST;
+  }],
+  ["a lost connection on the first snapshot", (c) => {
+    c.geometry = async () => {
+      throw LOST;
+    };
+  }],
+]) {
+  await withRetryTimers(async (ctl) => {
+    const r = makeRendererModule();
+    const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod), tune);
+    ctl.card = card;
+    ok(card._crFailed === false, `${label}: not a permanent fallback`);
+    ok(card._els.img.hidden === false, `${label}: the PNG shows while it retries`);
+    ok(ctl.retry() && ctl.retry().ms === 2000, `${label}: a retry is scheduled`);
+    conn.subscribeError = null;
+    conn.geometry = async () => geom(11);
+    if (ctl.retry()) await ctl.fire(ctl.retry());
+    ok(card._crActive === true && card._els.canvas.hidden === false,
+      `${label}: the canvas comes up once it answers`);
+    card.remove();
   });
-  ctl.card = card;
-  ok(card._crFailed === false, "`not_found` on the start path is not a permanent fallback");
-  ok(card._els.img.hidden === false, "the PNG shows while it retries");
-  ok(ctl.retry() && ctl.retry().ms === 2000, "a retry is scheduled");
-  conn.subscribeError = null;
-  await ctl.fire(ctl.retry());
-  ok(card._crActive === true && card._els.canvas.hidden === false, "the canvas comes up once it answers");
-  card.remove();
-});
+}
 
 // ---- 6. room taps resolve locally, by id ----------------------------------------------------
 console.log("[6] room tap by id");
@@ -1534,6 +1553,267 @@ console.log("[21] detach pauses the renderer, re-attach resumes it");
   await settle();
   ok(r.calls.some((c) => c[0] === "resume"), "re-attach resumes it");
   card.remove();
+}
+
+// ---- 22. work of a stopped start or an older snapshot never lands --------------------------
+// setConfig and a detach stop the start in flight; its subscribe, snapshot and events can
+// still answer afterwards, and must not act on the start that replaced it.
+console.log("[22] a stopped start or an older snapshot never lands");
+const deferred = () => {
+  let res, rej;
+  const p = new Promise((a, b) => ((res = a), (rej = b)));
+  return { p, res, rej };
+};
+// Subscribes that answer only when the test says so; `pend[i]` settles the i-th one.
+const holdSubscribes = (pend) => (c) => {
+  c.subscribeMessage = (cb, msg, opts) => {
+    const rec = { cb, msg, opts, unsubbed: 0 };
+    c.subs.push(rec);
+    const d = deferred();
+    pend.push({ res: () => d.res(() => rec.unsubbed++), rej: d.rej });
+    return d.p;
+  };
+};
+const RECONFIG = { vacuum: "vacuum.robot", camera: "camera.robot_map", client_render: true };
+{
+  const pend = [];
+  const r = makeRendererModule();
+  const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod), holdSubscribes(pend));
+  card.setConfig(RECONFIG);
+  await settle();
+  pend[1].res();
+  await settle();
+  ok(card._crActive === true && conn.geomRequests().length === 1, "the new start subscribes and draws");
+  pend[0].res();
+  await settle();
+  ok(conn.subs[0].unsubbed === 1, "the subscribe of the stopped start is released when it answers");
+  ok(conn.geomRequests().length === 1, "and fetches no snapshot");
+  card.remove();
+}
+{
+  const pend = [];
+  const r = makeRendererModule();
+  const { card, conn, hass } = await mount({ client_render: true }, () => Promise.resolve(r.mod), holdSubscribes(pend));
+  card.setConfig(RECONFIG);
+  await settle();
+  pend[0].rej({ code: "unknown_error", message: "old subscribe failed" });
+  await settle();
+  pend[1].res();
+  await settle();
+  ok(card._crFailed === false && card._crActive === true,
+    "a failed subscribe of the stopped start does not fail the new one");
+  card.remove();
+  // Detached while the subscribe is out: the failure lands after the card left.
+  document.body.appendChild(card);
+  card.hass = hass;
+  await settle();
+  card.remove();
+  pend.at(-1).rej({ code: "unknown_error", message: "late failure" });
+  await settle();
+  document.body.appendChild(card);
+  card.hass = hass;
+  await settle();
+  pend.at(-1).res();
+  await settle();
+  ok(card._crFailed === false && card._crActive === true && conn.subs.at(-1).unsubbed === 0,
+    "a subscribe failing after a detach leaves the re-attached card drawing");
+  card.remove();
+}
+for (const [label, stop, restart] of [
+  ["setConfig", (card) => card.setConfig(RECONFIG), () => {}],
+  ["a detach", (card) => card.remove(), (card, hass) => {
+    document.body.appendChild(card);
+    card.hass = hass;
+  }],
+]) {
+  const first = deferred();
+  let n = 0;
+  const r = makeRendererModule();
+  const { card, hass } = await mount({ client_render: true }, () => Promise.resolve(r.mod), (c) => {
+    c.geometry = () => (++n === 1 ? first.p : Promise.resolve(geom(11)));
+  });
+  stop(card);
+  first.rej({ code: "unknown_error", message: "old request failed" });
+  await settle();
+  restart(card, hass);
+  await settle();
+  ok(card._crFailed === false && card._crActive === true && card._els.canvas.hidden === false,
+    `${label} while the first snapshot is out: its failure does not fail the next start`);
+  card.remove();
+}
+{
+  const r = makeRendererModule();
+  const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod));
+  const older = deferred();
+  const gate = deferred();
+  const realDecode = r.mod.decodeGeometry;
+  const decoded = [];
+  r.mod.decodeGeometry = async (p) => {
+    decoded.push(p.revision);
+    if (p.revision === 12) await gate.p;
+    return realDecode(p);
+  };
+  const applied = () => r.calls.filter((c) => c[0] === "setGeometry").map((c) => c[1]);
+  // A newer snapshot overtakes one still decoding.
+  conn.geometry = async () => geom(12);
+  conn.emit({ t: "geometry", revision: 12 });
+  await settle();
+  conn.geometry = async () => geom(13);
+  conn.emit({ t: "geometry", revision: 13 });
+  await settle();
+  gate.res();
+  await settle();
+  ok(card._crRevision === 13 && applied().at(-1) === 13,
+    `a snapshot decoded after a newer one is dropped (applied ${JSON.stringify(applied())})`);
+  // A reply that is already stale when it arrives is not even decoded.
+  conn.geometry = () => older.p;
+  conn.emit({ t: "geometry", revision: 14 });
+  conn.geometry = async () => geom(15);
+  conn.emit({ t: "geometry", revision: 15 });
+  await settle();
+  older.res(geom(14));
+  await settle();
+  ok(card._crRevision === 15 && !decoded.includes(14),
+    `a reply overtaken before it arrives is not decoded (decoded ${JSON.stringify(decoded)})`);
+  card.remove();
+}
+await withRetryTimers(async (ctl) => {
+  const r = makeRendererModule();
+  const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod));
+  ctl.card = card;
+  const old = conn.subs[0];
+  card.setConfig(RECONFIG);
+  await settle();
+  const before = r.calls.length;
+  // HAWS keeps calling the old callback until its unsubscribe is acknowledged.
+  old.cb({ t: "pose", robot: [3, 1] });
+  old.cb({ t: "trail", from: card._crTrailLen, p: [[1, 1]] });
+  old.cb({ t: "gone" });
+  ok(r.calls.length === before, "events of the previous subscription do not reach the new renderer");
+  ok(conn.subs[1].unsubbed === 0 && !ctl.retry(), "and its late `gone` leaves the new subscription alone");
+  card.remove();
+});
+
+// ---- 23. the editor reads the canvas snapshot -------------------------------------------------
+// With the canvas live every snapshot already feeds the editor's geometry, and a `geometry`
+// event re-fetches after a save; a second request would only race the first.
+console.log("[23] the editor reuses the canvas snapshot");
+{
+  const r = makeRendererModule();
+  const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod));
+  card._setMode("nogo");
+  await settle();
+  ok(conn.geomRequests().length === 1 && card._editGeo && card._editGeo.revision === 11,
+    "No-go mode edits the canvas snapshot without a request of its own");
+  card._zones = [{ x0: 0.1, y0: 0.1, x1: 0.3, y1: 0.3 }];
+  await card._saveNogoZones();
+  await settle();
+  ok(conn.geomRequests().length === 1, "a save waits for the geometry event");
+  conn.geometry = async () => geom(12);
+  conn.emit({ t: "geometry", revision: 12 });
+  await settle();
+  ok(conn.geomRequests().length === 2 && card._editGeo.revision === 12, "which brings the new revision");
+  card.remove();
+}
+
+console.log("[23b] while the canvas resubscribes, a save re-reads the revision itself");
+await withRetryTimers(async (ctl) => {
+  const r = makeRendererModule();
+  let rev = 11;
+  const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod), (c) => {
+    c.geometry = async () => geom(rev);
+  });
+  ctl.card = card;
+  card._setMode("nogo");
+  await settle();
+  conn.emit({ t: "gone" });
+  card._zones = [{ x0: 0.1, y0: 0.1, x1: 0.3, y1: 0.3 }];
+  rev = 12;
+  await card._saveNogoZones();
+  await settle();
+  ok(card._crActive && !card._crUnsub && ctl.retry() && card._editGeo.revision === 12,
+    `no subscription delivers the geometry event, so the save reads it (got revision ${card._editGeo.revision})`);
+  card.remove();
+});
+
+// ---- 24. a configured No-go/Wall mode reads the stored shapes ---------------------------------
+// Without them the shapes on the device have no delete or move grips.
+console.log("[24] a configured No-go mode reads the stored shapes without a mode switch");
+{
+  const ZONE = [[[0, 0], [10, 0], [10, 10], [0, 10]]];
+  const geomZ = (rev) => Object.assign(geom(rev), { forbidden_zones: ZONE });
+  const grips = (card) => (card._els.overlay.innerHTML.match(/data-(del|mov|rot)="forbidden:0"/g) || []).length;
+  const tune = (c) => {
+    c.geometry = async () => geomZ(5);
+  };
+  {
+    const { card, conn } = await mount({ client_render: false, mode: "nogo" }, undefined, tune);
+    layoutOverlay(card);
+    card._renderOverlay();
+    ok(conn.geomRequests().length === 1 && card._editGeo && card._editGeo.revision === 5 && grips(card) === 3,
+      `on the camera image, at load (got ${conn.geomRequests().length} requests, ${grips(card)} grips)`);
+    card.remove();
+  }
+  {
+    const fails = () => Promise.reject(new Error("import failed"));
+    const { card, conn } = await mount({ client_render: true, mode: "nogo" }, fails, tune);
+    ok(card._crFailed && conn.geomRequests().length === 1 && card._editGeo && card._editGeo.revision === 5,
+      `after the canvas falls back for good (got ${conn.geomRequests().length} requests)`);
+    card.remove();
+  }
+  {
+    const r = makeRendererModule();
+    const { card, conn, hass } = await mount({ client_render: true, mode: "nogo" }, () => Promise.resolve(r.mod), tune);
+    ok(card._crActive && conn.geomRequests().length === 1 && card._editGeo.revision === 5,
+      `with the canvas starting, its snapshot is the only read (got ${conn.geomRequests().length})`);
+    conn.emit({ t: "gone" });
+    const vac = hass.states["vacuum.robot"];
+    const off = { ...vac, attributes: { ...vac.attributes, nogo_zones_supported: false } };
+    card.hass = { ...hass, states: { ...hass.states, "vacuum.robot": off } };
+    card.hass = hass;
+    await settle();
+    ok(card._mode === "nogo" && conn.geomRequests().length === 1,
+      "a mode restored while resubscribing keeps the snapshot it has");
+    card.remove();
+  }
+  {
+    const conn = makeConnection();
+    let down = true;
+    conn.geometry = async () => {
+      if (down) throw new Error("timeout");
+      return geomZ(5);
+    };
+    const hass = makeHass(conn);
+    const vac = hass.states["vacuum.robot"];
+    const unsupported = { ...vac, attributes: { ...vac.attributes, nogo_zones_supported: false } };
+    hass.states["vacuum.robot"] = unsupported;
+    const cfg = { vacuum: "vacuum.robot", camera: "camera.robot_map", client_render: false, mode: "nogo" };
+    const card = new Card();
+    card.setConfig(cfg);
+    document.body.appendChild(card);
+    card.hass = hass;
+    await settle();
+    const tick = (v) => {
+      card.hass = { ...hass, states: { ...hass.states, "vacuum.robot": v } };
+    };
+    ok(card._mode === "rooms" && conn.geomRequests().length === 0, "nothing is read while the mode is held back");
+    tick(vac);
+    await settle();
+    ok(card._mode === "nogo" && conn.geomRequests().length === 1, "the mode restored by the vacuum's support reads them");
+    tick(unsupported);
+    tick(vac);
+    await settle();
+    ok(conn.geomRequests().length === 1, `a failed read is not repeated by later ticks (got ${conn.geomRequests().length})`);
+    down = false;
+    card._setMode("rooms");
+    card._setMode("nogo");
+    await settle();
+    ok(conn.geomRequests().length === 2 && card._editGeo.revision === 5, "entering the mode reads again");
+    card.setConfig(cfg);
+    await settle();
+    ok(conn.geomRequests().length === 3 && card._editGeo.revision === 5, "and so does a new config");
+    card.remove();
+  }
 }
 
 console.log(fail === 0 ? "\nALL PASSED" : `\n${fail} FAILURES`);

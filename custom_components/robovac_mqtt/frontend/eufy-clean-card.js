@@ -127,6 +127,7 @@ class EufyCleanCard extends HTMLElement {
     // Restricted geometry the device holds (`robovac_mqtt/map/geometry`), world cm.
     this._editGeo = null;
     this._editGeoSeq = 0; // fetch generation (a late reply must not overwrite a newer one)
+    this._editGeoAsked = false; // a fetch went out for this config (`_loadEditGeometry`)
     // Marked for deletion BY INDEX into `_editGeo`: normalized coordinates would clamp an
     // off-map shape, silently moving it.
     this._del = { forbidden: new Set(), ban_mop: new Set(), walls: new Set() };
@@ -142,6 +143,7 @@ class EufyCleanCard extends HTMLElement {
     this._tapStart = null; // press origin while detecting a rooms-mode tap
     this._built = false;
     this._dispatching = false; // in-flight send guard (prevents double-dispatch)
+    this._inFlight = null; // what the send that is out holds still: {shapes: Set, geometry} (`_frozen`)
     this._lastImgSrc = "";
     this._entCount = -1;
     // Post-switch gate: the frame stays on the OLD map until the robot re-localizes.
@@ -225,6 +227,10 @@ class EufyCleanCard extends HTMLElement {
     this._mode = ["zones", "rooms", "nogo", "wall", "parts"].includes(m) ? m : this._defaultMode;
     this._modeWanted = null;
     this._clearPending();
+    this._clearDeletions();
+    this._editGeo = null;
+    this._editGeoSeq++; // the previous vacuum's snapshot reply must not land
+    this._editGeoAsked = false;
     this._drag = null;
     this._ptrs.clear();
     this._nav = null;
@@ -387,9 +393,12 @@ class EufyCleanCard extends HTMLElement {
   /* Fetch the geometry the device already holds, so existing shapes get a delete handle and
    * a stable index. A failure only costs editing them, not drawing new ones. */
   async _fetchEditGeometry() {
+    // A live subscription feeds `_setEditGeometry` every snapshot, a save's included.
+    if (this._crUnsub) return;
     const conn = this._hass && this._hass.connection;
     const addr = this._crAddr || this._mapAddress();
     if (!conn || !addr || typeof conn.sendMessagePromise !== "function") return;
+    this._editGeoAsked = true;
     const seq = ++this._editGeoSeq;
     try {
       const payload = await conn.sendMessagePromise({
@@ -534,7 +543,7 @@ class EufyCleanCard extends HTMLElement {
   _toggleDelete(token) {
     const [kind, raw] = String(token || "").split(":");
     const index = Number(raw);
-    if (!Number.isInteger(index) || index < 0) return;
+    if (!Number.isInteger(index) || index < 0 || this._frozen(kind, index)) return;
     if (kind === "new") {
       if (index >= this._zones.length) return;
       this._zones.splice(index, 1);
@@ -546,6 +555,15 @@ class EufyCleanCard extends HTMLElement {
     }
     this._renderOverlay();
     this._syncControls();
+  }
+
+  /** While a send is out, the pending shapes it carries hold still: the device gets them as
+   * sent. A no-go save also holds the stored geometry, whose indices it renumbers. Shapes
+   * drawn meanwhile stay editable. */
+  _frozen(kind, index) {
+    const f = this._inFlight;
+    if (!f) return false;
+    return kind === "new" ? f.shapes.has(this._zones[index]) : f.geometry;
   }
 
   /* Rotating a pending shape: rotated goes on the wire as four corners, unrotated keeps the
@@ -715,7 +733,10 @@ class EufyCleanCard extends HTMLElement {
       // `resubscribe: false`: the library's own resubscribe after a reconnect fails silently
       // while the integration is still loading; the "ready" handler resubscribes instead.
       const unsub = await this._hass.connection.subscribeMessage(
-        (ev) => this._onMapEvent(ev),
+        // HAWS keeps calling this until the unsubscribe is acknowledged.
+        (ev) => {
+          if (gen === this._crGen) this._onMapEvent(ev);
+        },
         { type: "robovac_mqtt/map/subscribe", ...addr },
         { resubscribe: false }
       );
@@ -731,7 +752,7 @@ class EufyCleanCard extends HTMLElement {
       // Re-request the snapshot on EVERY subscribe: the subscription carries deltas only.
       await this._fetchGeometry();
     } catch (err) {
-      this._clientRenderFailed(err);
+      if (gen === this._crGen) this._clientRenderFailed(err); // else: a stopped start
     } finally {
       if (gen === this._crGen) this._crStarting = false;
     }
@@ -785,8 +806,9 @@ class EufyCleanCard extends HTMLElement {
         ...addr,
       });
       pend.replied = true;
+      // A newer snapshot (or a stop) won the race; applying this one would rewind grid and trail.
+      if (seq !== this._crGeomSeq) return;
       const geo = await this._crMod.decodeGeometry(payload);
-      // A newer snapshot won the race; applying this one would rewind grid and trail.
       if (seq !== this._crGeomSeq) return;
       if (!geo || !geo.width || !geo.height) throw new Error("empty map geometry");
       this._crRevision = payload.revision;
@@ -816,6 +838,7 @@ class EufyCleanCard extends HTMLElement {
         this._onTrailEvent(ev);
       }
     } catch (err) {
+      if (seq !== this._crGeomSeq) return; // a stopped or superseded fetch
       if (this._crPend === pend) this._crPend = null;
       // "No map yet" is not a failure: the one-shot `_crFailed` would lock the canvas out.
       if (err && err.code === "no_map") {
@@ -1036,11 +1059,12 @@ class EufyCleanCard extends HTMLElement {
 
   // Fatal (PNG for good) only on the START path — import, subscribe, first snapshot, or a
   // re-attach whose stale frame would freeze. Once live, log and keep the frame. While
-  // recovering, and for `not_found`/`unknown_command` (the integration is not loaded yet,
-  // as during an HA restart), retry with backoff instead.
+  // recovering, for `not_found`/`unknown_command` (the integration is not loaded yet, as
+  // during an HA restart) and for 3 (home-assistant-js-websocket's ERR_CONNECTION_LOST: the
+  // socket dropped mid-request), retry with backoff instead.
   _clientRenderFailed(err) {
     const code = err && err.code;
-    if (this._crRecovering || code === "not_found" || code === "unknown_command") {
+    if (this._crRecovering || code === "not_found" || code === "unknown_command" || code === 3) {
       // One warning per streak: the retries repeat every 30 s while the integration is down.
       if (!this._crRetryWarned) console.warn("[eufy-clean-card] map commands failed; retrying", err);
       this._crRetryWarned = true;
@@ -1429,6 +1453,7 @@ class EufyCleanCard extends HTMLElement {
     });
 
     this._els.rsStart.addEventListener("click", () => {
+      if (this._dispatching) return; // or the clear below drops what a send is still writing
       this._clearAll();
       this._callVacuum("start", "Starting");
     });
@@ -1581,6 +1606,16 @@ class EufyCleanCard extends HTMLElement {
     this._els.passes.hidden = !zones;
     this._applyGate(); // the post-switch pause owns the cursor + banner when active
     this._renderOverlay(); // repaint the correct overlay content for the mode
+    // A configured or restored No-go/Wall mode gets the stored shapes too, not only a mode
+    // switch. Deferred past the caller's canvas start, whose snapshot brings them.
+    if (nogo || wall) queueMicrotask(() => this._loadEditGeometry());
+  }
+
+  /** First read of the stored shapes for this config; after a failed one, only entering the
+   * mode reads again (`_setMode`). */
+  _loadEditGeometry() {
+    if (this._editGeo || this._editGeoAsked || this._crStarting) return;
+    this._fetchEditGeometry();
   }
 
   /* Map gestures. The overlay is the single input owner, because only the card knows what one
@@ -1804,7 +1839,7 @@ class EufyCleanCard extends HTMLElement {
   _startShapeDrag(action, token, e) {
     const [kind, raw] = String(token || "").split(":");
     const index = Number(raw);
-    if (!Number.isInteger(index) || index < 0) return;
+    if (!Number.isInteger(index) || index < 0 || this._frozen(kind, index)) return;
     let center;
     let base = 0;
     if (kind === "new") {
@@ -1834,6 +1869,7 @@ class EufyCleanCard extends HTMLElement {
       action,
       kind,
       index,
+      zone: kind === "new" ? this._zones[index] : null, // a send's success renumbers `_zones`
       prev: p,
       base,
       grip: this._angleAt(center, p),
@@ -1842,6 +1878,11 @@ class EufyCleanCard extends HTMLElement {
 
   _driveShapeDrag(e) {
     const d = this._shapeDrag;
+    if (d.zone) d.index = this._zones.indexOf(d.zone); // -1 once gone: ends below
+    if (this._frozen(d.kind, d.index)) {
+      this._shapeDrag = null; // a send took this shape (or the stored geometry) mid-drag
+      return;
+    }
     const p = this._mapNormFromClient(e.clientX, e.clientY);
     if (d.kind === "new") {
       const z = this._zones[d.index];
@@ -2559,9 +2600,8 @@ class EufyCleanCard extends HTMLElement {
   async _callVacuum(service, saying) {
     if (!this._hass || this._dispatching) return;
     this._dispatching = true;
-    this._syncControls();
-    this._syncRoboStatus();
     try {
+      this._syncControls();
       await this._hass.callService("vacuum", service, { entity_id: this._config.vacuum });
       this._setStatus(saying);
     } catch (err) {
@@ -2569,7 +2609,6 @@ class EufyCleanCard extends HTMLElement {
     } finally {
       this._dispatching = false;
       this._syncControls();
-      this._syncRoboStatus();
     }
   }
 
@@ -2577,7 +2616,6 @@ class EufyCleanCard extends HTMLElement {
     const hass = this._hass;
     if (!hass || !this._built) return;
 
-    this._syncRoboStatus();
     this._updateFrameGate();
 
     // The vacuum's state (and so its No-go capability) can arrive after the card is built.
@@ -2650,6 +2688,7 @@ class EufyCleanCard extends HTMLElement {
   }
 
   _syncControls() {
+    this._syncRoboStatus(); // Start/Stop/Home follow `_dispatching`
     if (this._mode === "wall" || this._mode === "nogo") {
       // Adds and deletes ride the same replace-all write, so one button commits both.
       const wall = this._mode === "wall";
@@ -2719,11 +2758,12 @@ class EufyCleanCard extends HTMLElement {
     }
   }
 
+  // What a send is still writing stays (`_frozen`); the rest is cleared.
   _clearAll() {
     if (this._isDrawMode()) {
-      this._zones = [];
+      this._zones = this._zones.filter((z, i) => this._frozen("new", i));
       this._drag = null;
-      this._clearDeletions();
+      if (!(this._inFlight && this._inFlight.geometry)) this._clearDeletions();
     } else {
       this._sel = [];
       this._roomPins = {};
@@ -3024,6 +3064,7 @@ class EufyCleanCard extends HTMLElement {
           );
           parts.push(`<line class="${cls}" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" />`);
         }
+        if (this._frozen(shape.kind, shape.index)) continue;
         const token = `${shape.kind}:${shape.index}`;
         parts.push(this._delHandle(shape.pts[0], token, shape.doomed));
         // The backend rejects a shape staged as both moved and deleted.
@@ -3040,6 +3081,7 @@ class EufyCleanCard extends HTMLElement {
         const b = this._overlayPos(pts[1].x, pts[1].y);
         parts.push(`<line class="wall" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}" />`);
         parts.push(`<text class="num" x="${a.x}" y="${a.y}" dx="6" dy="16">${i + 1}</text>`);
+        if (this._frozen("new", i)) return;
         parts.push(this._delHandle(pts[0], `new:${i}`, false));
         parts.push(this._rotHandle(pts[1], `new:${i}`));
         parts.push(this._movHandle(this._shapeCenter(z), `new:${i}`, false));
@@ -3062,6 +3104,7 @@ class EufyCleanCard extends HTMLElement {
       }
       const label = this._overlayPos(pts[0].x, pts[0].y);
       parts.push(`<text class="num" x="${label.x}" y="${label.y}" dx="6" dy="16">${i + 1}</text>`);
+      if (this._frozen("new", i)) return;
       // The number owns corner 0, so delete takes corner 1 and rotate corner 2.
       parts.push(this._delHandle(pts[1], `new:${i}`, false));
       parts.push(this._rotHandle(pts[2], `new:${i}`));
@@ -3113,6 +3156,7 @@ class EufyCleanCard extends HTMLElement {
     if (!this._hass || this._frameUngrounded || (this._zones.length === 0 && d === 0 && mv === 0)) {
       return;
     }
+    const sent = new Set(this._zones);
     const shapes = this._zones.map((z) => this._shapeParam(z));
     const n = shapes.length;
     const wall = this._isLineMode();
@@ -3145,50 +3189,59 @@ class EufyCleanCard extends HTMLElement {
     const label = `${noun}${n > 1 ? "s" : ""}`;
     const mode = this._mode; // the mode may change while the call is out
     this._dispatching = true;
-    this._syncControls();
+    this._inFlight = { shapes: sent, geometry: true };
     try {
+      this._renderOverlay();
+      this._syncControls();
       await this._hass.callService("vacuum", "send_command", {
         entity_id: this._config.vacuum,
         command: "set_nogo_zones",
         params,
       });
-      this._pending[mode] = [];
+      // Only what was sent: a shape drawn meanwhile is still to save.
+      this._pending[mode] = this._pending[mode].filter((z) => !sent.has(z));
       this._clearDeletions();
-      this._renderOverlay();
       const done = [];
       if (n) done.push(`saved ${n} ${label}`);
       if (mv) done.push(`moved ${mv}`);
       if (d) done.push(`deleted ${d}`);
       this._setStatus(done.join(", ").replace(/^./, (c) => c.toUpperCase()), true);
-      // Re-read: later deletions index against this geometry, and its revision guards the next write.
+      // Re-read: later deletions index against this geometry, and its revision guards the next
+      // write. With a live subscription the `geometry` event re-reads it instead.
       this._fetchEditGeometry();
     } catch (err) {
       this._setStatus(`Could not save: ${(err && err.message) || err}`, true);
     } finally {
       this._dispatching = false;
+      this._inFlight = null;
+      this._renderOverlay();
       this._syncControls();
     }
   }
 
   async _cleanZones() {
     if (!this._hass || this._frameUngrounded || this._zones.length === 0) return;
+    const sent = new Set(this._zones);
     const zones = this._zones.map((z) => this._shapeParam(z));
     const n = zones.length;
     this._dispatching = true;
-    this._syncControls();
+    this._inFlight = { shapes: sent, geometry: false };
     try {
+      this._renderOverlay();
+      this._syncControls();
       await this._hass.callService("vacuum", "send_command", {
         entity_id: this._config.vacuum,
         command: "zone_clean",
         params: { zones, clean_times: this._cleanTimes },
       });
-      this._pending.zones = [];
-      this._renderOverlay();
+      this._pending.zones = this._pending.zones.filter((z) => !sent.has(z));
       this._setStatus(`Sent ${n} zone${n > 1 ? "s" : ""} • passes ${this._cleanTimes}`);
     } catch (err) {
       this._setStatus(`Failed: ${err && err.message ? err.message : err}`);
     } finally {
       this._dispatching = false;
+      this._inFlight = null;
+      this._renderOverlay();
       this._syncControls();
     }
   }
@@ -3211,16 +3264,18 @@ class EufyCleanCard extends HTMLElement {
     // Per-room customization sends the rich payload (CUSTOMIZE); a plain room_ids list is GENERAL.
     const hasCustom = rooms.some((r) => Object.keys(r).length > 1);
     const params = hasCustom ? { rooms } : { room_ids: this._sel.map(Number) };
+    const sent = this._sel.slice();
     this._dispatching = true;
-    this._syncControls();
     try {
+      this._syncControls();
       await this._hass.callService("vacuum", "send_command", {
         entity_id: this._config.vacuum,
         command: "room_clean",
         params,
       });
-      this._sel = [];
-      this._roomPins = {};
+      // A room tapped meanwhile stays selected for the next run.
+      this._sel = this._sel.filter((id) => !sent.includes(id));
+      for (const id of sent) delete this._roomPins[id];
       this._renderSelection();
       this._renderOverlay();
       this._setStatus(`Sent ${n} room${n > 1 ? "s" : ""}${hasCustom ? " • custom settings" : ""}`);

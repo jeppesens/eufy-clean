@@ -891,6 +891,245 @@ console.log("[modes] unsaved shapes stay with the mode that drew them");
   c.remove();
 }
 
+// ---- input while a send is out ---------------------------------------------
+// A legacy write over MQTT takes seconds. What the user adds meanwhile was never sent and
+// stays pending; what the send carries, and the stored geometry a save rewrites, hold still.
+console.log("[inflight] a send clears only what it carried");
+{
+  const h = makeHass();
+  const c = document.createElement("eufy-clean-card");
+  c.setConfig({ vacuum: "vacuum.robot", camera: "camera.robot_map" });
+  document.body.appendChild(c);
+  c.hass = h;
+  let settle;
+  h.callService = function (domain, service, data) {
+    this._calls.push({ domain, service, data });
+    if (service !== "send_command") return Promise.resolve({});
+    return new Promise((res, rej) => (settle = { res, rej }));
+  };
+  const draw = (x0, y0, x1, y1) => {
+    c._drag = { x0, y0, x1, y1 };
+    c._finishZone();
+  };
+  const handles = () =>
+    [...c._els.overlay.querySelectorAll("[data-del], [data-rot], [data-mov]")].map(
+      (g) => g.getAttribute("data-del") || g.getAttribute("data-rot") || g.getAttribute("data-mov")
+    );
+
+  c._setMode("nogo");
+  c._setEditGeometry(geometrySnapshot(7));
+  draw(0.1, 0.2, 0.4, 0.5);
+  const first = c._zones[0];
+  c._toggleDelete("forbidden:1");
+  let out = c._saveNogoZones();
+  ok(handles().length === 0, `the grips go as the save leaves (got ${JSON.stringify(handles())})`);
+  draw(0.6, 0.6, 0.8, 0.8);
+  const second = c._zones[1];
+  ok(c._zones.length === 2, "a shape can be drawn while the save is out");
+  ok(handles().length === 3 && handles().every((t) => t === "new:1"),
+    `only the new shape offers grips meanwhile (got ${JSON.stringify(handles())})`);
+  c._toggleDelete("new:0");
+  c._toggleDelete("forbidden:0");
+  c._startShapeDrag("move", "new:0", { clientX: 5, clientY: 5, pointerId: 1 });
+  ok(c._zones[0] === first && c._shapeDrag === null && c._deletionCount() === 1,
+    "the sent shape and the stored geometry ignore edits");
+  settle.res({});
+  await out;
+  ok(c._zones.length === 1 && c._zones[0] === second,
+    "the save drops the shape it sent and keeps the one drawn meanwhile");
+  ok(c._els.status.textContent === "Saved 1 no-go zone, deleted 1",
+    `the status counts what was sent (got "${c._els.status.textContent}")`);
+  ok(c._deletionCount() === 0, "the sent deletion is cleared");
+  ok(/Save 1 no-go zone/.test(c._els.clean.textContent) && c._els.clean.disabled === false,
+    `the new shape is still to save (got "${c._els.clean.textContent}")`);
+  ok(handles().includes("new:0") && handles().includes("forbidden:0"),
+    "and every grip is back");
+
+  // A failed save keeps both.
+  out = c._saveNogoZones();
+  draw(0.1, 0.1, 0.3, 0.3);
+  settle.rej(new Error("timeout"));
+  await out;
+  ok(c._zones.length === 2 && c._zones[0] === second,
+    "a failed save keeps the sent shape and the one drawn meanwhile");
+
+  c._setMode("wall");
+  draw(0.1, 0.1, 0.5, 0.1);
+  out = c._saveNogoZones();
+  draw(0.1, 0.6, 0.5, 0.6);
+  ok(handles().length === 3 && handles().every((t) => t === "new:1"),
+    `a wall being saved offers no grips, one drawn meanwhile does (got ${JSON.stringify(handles())})`);
+  settle.res({});
+  await out;
+  ok(c._zones.length === 1 && c._zones[0].y0 === 0.6, "the save keeps the wall drawn meanwhile");
+
+  c._setMode("zones");
+  draw(0.3, 0.3, 0.5, 0.5);
+  out = c._cleanZones();
+  draw(0.6, 0.1, 0.9, 0.3);
+  settle.res({});
+  await out;
+  ok(c._zones.length === 1 && c._zones[0].x0 === 0.6,
+    "a zone clean keeps the zone drawn meanwhile");
+  ok(c._els.status.textContent === "Sent 1 zone • passes 1",
+    `and counts only the zone it sent (got "${c._els.status.textContent}")`);
+  out = c._cleanZones();
+  settle.rej(new Error("timeout"));
+  await out;
+  ok(handles().includes("new:0"), "a failed zone clean gives the zone its grips back");
+  c._toggleDelete("new:0");
+  ok(c._zones.length === 0, "and lets it be edited again");
+  // A zone clean does not rewrite the stored geometry: it stays editable meanwhile.
+  draw(0.3, 0.3, 0.5, 0.5);
+  out = c._cleanZones();
+  c._setMode("nogo");
+  c._setEditGeometry(geometrySnapshot(8));
+  c._toggleDelete("forbidden:0");
+  ok(c._deletionCount() === 1, "stored geometry can be marked while a zone clean is out");
+  settle.res({});
+  await out;
+
+  c._setMode("rooms");
+  c._applyRoomTap(0, 0.2, 0.2);
+  out = c._cleanRooms();
+  c._applyRoomTap(2, 0.7, 0.7);
+  settle.res({});
+  await out;
+  ok(JSON.stringify(c._sel) === "[2]", `a room tapped meanwhile stays selected (got ${JSON.stringify(c._sel)})`);
+  ok(JSON.stringify(Object.keys(c._roomPins)) === '["2"]',
+    `only the sent room loses its pin (got ${JSON.stringify(Object.keys(c._roomPins))})`);
+  ok(c._els.status.textContent === "Sent 1 room", `the count is the sent room (got "${c._els.status.textContent}")`);
+  c.remove();
+}
+
+console.log("[inflight] a running grip drag, Clear and the header hold still too");
+{
+  const h = makeHass();
+  h.states["vacuum.robot"].state = "paused"; // Start, Stop and Home all offered
+  const c = document.createElement("eufy-clean-card");
+  c.setConfig({ vacuum: "vacuum.robot", camera: "camera.robot_map" });
+  document.body.appendChild(c);
+  c.hass = h;
+  let settle;
+  h.callService = function (domain, service, data) {
+    this._calls.push({ domain, service, data });
+    if (service !== "send_command") return Promise.resolve({});
+    return new Promise((res, rej) => (settle = { res, rej }));
+  };
+  const draw = (x0, y0, x1, y1) => {
+    c._drag = { x0, y0, x1, y1 };
+    c._finishZone();
+  };
+  // No layout in jsdom: pin the projection a grip drag reads.
+  let at = { x: 0.5, y: 0.5 };
+  c._mapNormFromClient = () => at;
+  const step = (x, y) => {
+    at = { x, y };
+    c._onOverlayMove({ clientX: 2, clientY: 2, pointerId: 4 });
+  };
+
+  c._setMode("nogo");
+  c._setEditGeometry(geometrySnapshot(7));
+  draw(0.4, 0.4, 0.6, 0.6);
+  const sent = c._zones[0];
+  c._toggleDelete("forbidden:1");
+  c._startShapeDrag("move", "new:0", { clientX: 1, clientY: 1, pointerId: 4 });
+  const header = () => [c._els.rsStart, c._els.rsStop, c._els.rsHome].map((b) => b.disabled);
+  ok(JSON.stringify(header()) === "[false,false,false]", "the header is live before the save");
+  let out = c._saveNogoZones();
+  step(0.6, 0.6);
+  ok(sent.x0 === 0.4 && sent.y0 === 0.4 && c._shapeDrag === null,
+    `a grip drag running when Save fires stops and leaves the sent shape as sent (got ${sent.x0}, ${sent.y0})`);
+  ok(c._els.rsStart.disabled && c._els.rsStop.disabled && c._els.rsHome.disabled,
+    "Start, Stop and Home are disabled while the save is out");
+  draw(0.1, 0.1, 0.2, 0.2);
+  c._els.rsStart.dispatchEvent(new window.Event("click"));
+  ok(!h._calls.some((x) => x.service === "start"), "a Start click meanwhile sends nothing");
+  ok(c._zones.length === 2 && c._deletionCount() === 1, "and wipes nothing, not even a shape drawn meanwhile");
+  c._clearAll();
+  ok(c._zones.length === 1 && c._zones[0] === sent && c._deletionCount() === 1,
+    "Clear meanwhile drops only what the save does not carry");
+  settle.res({});
+  await out;
+  ok(JSON.stringify(header()) === "[false,false,false]", "and live again once it is done");
+
+  c._startShapeDrag("move", "forbidden:0", { clientX: 1, clientY: 1, pointerId: 4 });
+  draw(0.1, 0.1, 0.2, 0.2);
+  out = c._saveNogoZones();
+  step(0.7, 0.7);
+  ok(c._moveCount() === 0 && c._shapeDrag === null,
+    "a drag on stored geometry stages no move once a save rewrites it");
+  settle.res({});
+  await out;
+
+  // The send's success drops the sent shape from under a drag on one drawn meanwhile.
+  const at3 = (z) => JSON.stringify([z.x0, z.x1].map((v) => +v.toFixed(3)));
+  for (const mode of ["nogo", "zones"]) {
+    c._setMode(mode);
+    c._clearAll();
+    draw(0.1, 0.1, 0.2, 0.2);
+    out = mode === "nogo" ? c._saveNogoZones() : c._cleanZones();
+    draw(0.4, 0.4, 0.5, 0.5);
+    draw(0.7, 0.7, 0.8, 0.8);
+    const [, held, other] = c._zones;
+    at = { x: 0.45, y: 0.45 };
+    c._startShapeDrag("move", "new:1", { clientX: 1, clientY: 1, pointerId: 4 });
+    settle.res({});
+    await out;
+    step(0.55, 0.45);
+    ok(at3(held) === "[0.5,0.6]" && at3(other) === "[0.7,0.8]",
+      `${mode}: the drag keeps moving its shape once the send lands (got ${at3(held)}, ${at3(other)})`);
+    c._zones.splice(c._zones.indexOf(held), 1);
+    step(0.65, 0.45);
+    ok(at3(other) === "[0.7,0.8]" && c._shapeDrag === null, `${mode}: and ends when its shape is gone`);
+  }
+  c.remove();
+}
+
+console.log("[inflight] an error while a send starts leaves nothing disabled");
+{
+  const h = makeHass();
+  h.states["vacuum.robot"].state = "paused";
+  const c = document.createElement("eufy-clean-card");
+  c.setConfig({ vacuum: "vacuum.robot", camera: "camera.robot_map" });
+  document.body.appendChild(c);
+  c.hass = h;
+  const header = () => [c._els.rsStart, c._els.rsStop, c._els.rsHome].map((b) => b.disabled);
+  const cases = [
+    ["a no-go save", "nogo", "_renderOverlay", () => c._saveNogoZones()],
+    ["a no-go save", "nogo", "_syncControls", () => c._saveNogoZones()],
+    ["a zone clean", "zones", "_renderOverlay", () => c._cleanZones()],
+    ["a zone clean", "zones", "_syncControls", () => c._cleanZones()],
+    ["a room clean", "rooms", "_syncControls", () => c._cleanRooms()],
+    ["a header call", "rooms", "_syncControls", () => c._callVacuum("start", "Starting")],
+  ];
+  for (const [what, mode, method, send] of cases) {
+    c._dispatching = false; // each case on its own
+    c._inFlight = null;
+    c._setMode(mode);
+    if (mode === "rooms") c._sel = ["0"];
+    else c._zones = [{ x0: 0.1, y0: 0.1, x1: 0.2, y1: 0.2 }];
+    let armed = true;
+    c[method] = function () {
+      if (armed) {
+        armed = false;
+        throw new Error("render bug");
+      }
+      return Object.getPrototypeOf(this)[method].call(this);
+    };
+    try {
+      await send();
+    } catch (_) {
+      /* the throw may escape: what counts is the state it leaves */
+    }
+    delete c[method];
+    c._syncControls();
+    ok(c._dispatching === false && c._inFlight === null && JSON.stringify(header()) === "[false,false,false]",
+      `${what} whose first ${method} throws ends the send (got ${c._dispatching}, ${JSON.stringify(header())})`);
+  }
+  c.remove();
+}
+
 // ---- deleting geometry: pending shapes and the device's own ----------------
 // A snapshot in the shape `robovac_mqtt/map/geometry` serves: world-cm points, plus the
 // revision every delete index is relative to. 150x215 cells at 5 cm, origin (520, 1350).
@@ -1040,6 +1279,33 @@ console.log("[del] deleting alone is a valid write, and stale marks are dropped"
     "carrying only the removal");
 }
 
+console.log("[del] a new vacuum starts without the old one's geometry and marks");
+{
+  const h = makeHass();
+  h.states["vacuum.other"] = h.states["vacuum.robot"];
+  const asked = []; // geometry requests: {entity_id, reply}
+  h.connection = {
+    sendMessagePromise: (m) => new Promise((reply) => asked.push({ entity_id: m.entity_id, reply })),
+  };
+  const c = document.createElement("eufy-clean-card");
+  c.setConfig({ vacuum: "vacuum.robot", camera: "camera.robot_map", mode: "nogo" });
+  document.body.appendChild(c);
+  c.hass = h;
+  c._setMode("nogo"); // the snapshot request for vacuum.robot goes out
+  c._setEditGeometry(geometrySnapshot(4));
+  c._toggleDelete("forbidden:0");
+  c._stageMove("forbidden", 1, 10, 0, 0);
+  delete h.connection; // no read for the new vacuum, whose reply would supersede the old one
+  c.setConfig({ vacuum: "vacuum.other", camera: "camera.robot_map", mode: "nogo" });
+  ok(c._editGeo === null && c._deletionCount() === 0 && c._moveCount() === 0,
+    "setConfig drops the previous vacuum's snapshot, delete and move marks");
+  ok(c._els.clean.textContent === "Save" && c._els.clean.disabled,
+    `and Save has nothing to send (got "${c._els.clean.textContent}")`);
+  asked.filter((r) => r.entity_id === "vacuum.robot").forEach((r) => r.reply(geometrySnapshot(4)));
+  await new Promise((r) => setTimeout(r, 0));
+  ok(c._editGeo === null, "a late snapshot of the previous vacuum does not land");
+  c.remove();
+}
 
 // ---- rotating a pending shape ---------------------------------------------
 console.log("[rot] a zone can be turned, and a turned zone travels as four corners");
