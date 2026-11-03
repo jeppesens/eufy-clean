@@ -512,10 +512,10 @@ class EufyLogin:
 
     @property
     def reauth_needed(self) -> bool:
-        """The replacement login was refused or set the kick-out latch: only
-        re-authentication brings new MQTT credentials."""
-        refused = self._mqtt_relogin_refused
-        return refused is not None and refused is self.mqtt_credentials
+        """A replacement login was refused or set the kick-out latch: only
+        re-authentication brings new MQTT credentials (no login follows
+        either in this run)."""
+        return self._mqtt_relogin_refused is not None
 
     def mqtt_reload_wait(self, rejected: dict[str, Any]) -> float | None:
         """Seconds until an entry reload may log in to replace ``rejected``,
