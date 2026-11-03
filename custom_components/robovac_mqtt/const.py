@@ -783,7 +783,10 @@ TUYA_REGIONS = {
 
 # Monday first: scalar DPS 151 keys days "1".."7" (Mon..Sun) and indexes this
 # tuple; legacy Tuya `loops` is a Sunday-first bitmask (legacy_parser._LOOPS_DAYS).
-WEEKDAY_ABBREVIATIONS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+WEEKDAY_NAMES = (
+    "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"
+)
+WEEKDAY_ABBREVIATIONS = tuple(name[:3] for name in WEEKDAY_NAMES)
 
 # Tuya Thing SDK credentials (et=3 transport)
 TUYA_THING_CLIENT_ID = "w8x4ppqkdxvqnd73ahj9"
