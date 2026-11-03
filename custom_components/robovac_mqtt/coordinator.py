@@ -1533,6 +1533,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         _LOGGER.debug("legacy meta: live dock placed for %s", self.device_name)
         md.dock_pixel = cell
         self._dock_pixel = cell
+        if self._robot_trail_raw:
+            # trail points are dock-relative
+            self._rebuild_trail_from_raw()
+            self._notify_map_trail_reset()
         self._notify_map_pose()
         self._rerender_map()
         return True

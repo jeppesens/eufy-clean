@@ -2112,6 +2112,64 @@ def test_a_grown_map_re_places_the_trail_rather_than_shifting_it(
     assert coordinator._robot_trail_types == [1, 0]
 
 
+def test_a_live_dock_after_trail_points_re_places_the_trail(mock_hass, mock_login):
+    """The trail hangs off the dock: the first 0x75 moves both."""
+    md = _blob_map_data()
+    md.dock_pixel = (10, 10)  # the blob's stale copy
+    coordinator = _cleaning_coordinator(md)
+    coordinator._on_legacy_trail(1, [(0, 0, 1), (50, 50, 0)])
+    coordinator._legacy_dock_pose = {"x": 472, "y": 1358, "theta": 0, "type": 1}
+    coordinator._notify_map_trail_reset = MagicMock()
+
+    assert coordinator._apply_legacy_dock_pose() is True
+
+    assert coordinator._robot_trail == [
+        coordinator._legacy_pose_to_pixel(0, 0),
+        coordinator._legacy_pose_to_pixel(50, 50),
+    ]
+    assert coordinator._robot_trail_types == [1, 0]
+    # subscribers hold the old placement
+    coordinator._notify_map_trail_reset.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_a_refetch_after_growth_places_the_trail_against_the_live_dock(
+    mock_hass, mock_login
+):
+    """The grown blob's dock copy is as stale as the first one; the trail follows
+    the live dock, not the blob's."""
+    md = _blob_map_data()
+    coordinator = _legacy_map_coordinator(mock_hass, mock_login, md)
+    coordinator._legacy_map_param = {
+        "width": 150, "height": 215, "origin_x": 520, "origin_y": 1350,
+    }
+    coordinator._legacy_dock_pose = {"x": 472, "y": 1358, "theta": 0, "type": 1}
+    coordinator._apply_legacy_dock_pose()
+    coordinator.data = replace(coordinator.data, activity="cleaning")
+    coordinator._on_legacy_trail(1, [(0, 0, 0), (10, 0, 0)])
+    # The device's map grew 57 columns to the left; 0x64/0x75 quote the new frame.
+    coordinator._legacy_map_param = {
+        "width": 207, "height": 215, "origin_x": 1090, "origin_y": 1350,
+    }
+    coordinator._legacy_dock_pose = {"x": 1042, "y": 1358, "theta": 0, "type": 1}
+    grown = MapData(
+        raw_pixels=b"", width=207, height=215, origin_x=1090, origin_y=1350,
+        resolution=5, dock_pixel=(60, 60),  # stale
+    )
+    tuya_map = MagicMock()
+    tuya_map.as_entity_rooms.return_value = []
+    coordinator._map_storage.async_fetch_map.return_value = tuya_map
+    mock_hass.async_add_executor_job = AsyncMock(return_value=grown)
+
+    assert await coordinator.async_refresh_legacy_map() is True
+
+    assert grown.dock_pixel == (104, 78)
+    assert coordinator._robot_trail == [
+        coordinator._legacy_pose_to_pixel(0, 0),
+        coordinator._legacy_pose_to_pixel(10, 0),
+    ]
+
+
 def test_a_new_session_drops_the_raw_points_too(mock_hass, mock_login):
     """Otherwise the next clean re-places the previous one's whole path."""
     md = _blob_map_data()
