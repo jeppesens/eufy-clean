@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 import random
 import string
@@ -16,7 +17,6 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
-from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_when_setup
 
 from .api.cloud import EufyLogin, EufyLoginError
@@ -62,9 +62,11 @@ async def _async_register_frontend_card(hass: HomeAssistant) -> None:
     if domain_data.get("card_registered"):
         return
 
-    integration = await async_get_integration(hass, DOMAIN)
-    # ?v=<version> busts the browser cache whenever the integration updates.
-    card_url = f"{_CARD_URL_PATH}?v={integration.version}"
+    # ?v=<content hash> busts the browser cache whenever the card changes. The
+    # integration version is not enough: it only moves on releases, so a browser
+    # keeps running a stale card across installs of the same version.
+    card = await hass.async_add_executor_job((_FRONTEND_DIR / _CARD_FILENAME).read_bytes)
+    card_url = f"{_CARD_URL_PATH}?v={hashlib.sha256(card).hexdigest()[:12]}"
 
     # Runs from async_when_setup(hass, "frontend", ...), so frontend is set up and
     # add_extra_js_url's hass.data is in place. We still don't declare a hard
@@ -301,6 +303,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         if data and "coordinators" in data:
             for coordinator in data["coordinators"]:
                 coordinator.async_shutdown_timers()
+                await coordinator.async_stop_p2p()
                 if coordinator.client:
                     await coordinator.client.disconnect()
 

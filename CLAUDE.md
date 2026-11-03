@@ -209,6 +209,29 @@ Full model mapping in `const.py:EUFY_CLEAN_DEVICES`.
 
 **`EUFY_CLEAN_APP_TRIGGER_MODES`** - Mode IDs (1-9) that imply app as trigger source when `WorkStatus.trigger` is missing.
 
+## Tuya transport and P2P map/camera constraints
+
+Local Tuya robots (for example the S1 Pro, T2080A) get their live map, room
+list and camera over a P2P channel. Details are in `docs/P2P_MAP_CHANNEL.md`.
+
+- Code lives in `api/p2p/`; `p2p_map.py` supervises map sessions and
+  `video_stream.py` runs on-demand camera sessions (ffmpeg JPEG pipeline).
+- DPS numbers do not guarantee the same wire type across transports. Tuya
+  protobuf robots use a suction enum string and a separate BoostIQ boolean.
+- S1 Pro manual direction uses the V2 normal envelope; other models keep their
+  format. Enter manual mode explicitly; drive calls are bounded, finite,
+  mutually exclusive and always end with a brake.
+- Map and camera sessions share one exclusive slot. Cancel and await transport
+  and decoder tasks before releasing it, and stop video before stopping the feed.
+- Fetch an RTC config immediately before each session, keep its credentials in
+  memory only, and never reuse or persist it. Unused reservations make the robot
+  refuse every session.
+- Respect refusal and quick-failure cooldowns even when activity changes.
+- Map coordinates are centimetres (grid normally 5 cm) and rendered PNGs are
+  Y-flipped. Room id 0 is valid.
+- Never log credentials, RTC keys or complete signalling offers. Test with
+  synthetic data only; never commit real camera frames.
+
 ## Code Quality Rules
 
 ### No duplication
