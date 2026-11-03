@@ -49,6 +49,7 @@ def test_unknown_pattern_has_no_number(value):
         (["Weekends"], "67"),
         ("Every day", "1234567"),
         ("531", "135"),
+        (["531"], "135"),
         (None, ""),
     ],
 )
