@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import time
 import unittest.mock
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -594,15 +595,21 @@ async def test_credentials_a_login_just_produced_get_no_replacement_login():
 
 @pytest.mark.asyncio
 async def test_a_rejected_replacement_holds_off_logins_after_a_restart_too():
-    """The hold-off is persisted and renewed while the rejections go on, so
-    setups after a restart do not log in each time."""
+    """The hold-off is persisted and renewed once it lapsed while the rejections
+    go on, so setups after a restart do not log in each time."""
     login, rejected, save = _login_with_rejected_credentials()
     assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
     replacement = login.mqtt_credentials
     assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
     assert login.auth_cache.login_hold_off_left() is not None
-    login.auth_cache.login_hold_until = 0.0
+    running = login.auth_cache.login_hold_until = time.time() + 60
     save.reset_mock()
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    assert login.auth_cache.login_hold_until == running
+    save.assert_not_awaited()
+    login.auth_cache.login_hold_until = 0.0
 
     assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
 
