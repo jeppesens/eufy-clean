@@ -857,10 +857,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             await self._async_drop_client()
             raise
 
-    async def _async_connect_mqtt(self, creds: dict[str, Any]) -> None:
-        """Create the MQTT client for ``creds`` and connect it."""
+    async def _async_connect_mqtt(self, creds: dict[str, Any]) -> EufyCleanClient:
+        """Create the MQTT client for ``creds``, connect it and return it."""
         self._mqtt_credentials = creds
-        self.client = EufyCleanClient(
+        client = self.client = EufyCleanClient(
             device_id=self.device_id,
             user_id=creds["user_id"],
             app_name=creds["app_name"],
@@ -874,11 +874,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             endpoint=creds["endpoint_addr"],
         )
 
-        self.client.set_on_message(self._handle_mqtt_message)
-        self.client.set_on_biz_message(self._handle_biz_message)
-        if hasattr(self.client, "set_connection_listener"):
-            self.client.set_connection_listener(self._on_connection_change)
-        await self.client.connect()
+        client.set_on_message(self._handle_mqtt_message)
+        client.set_on_biz_message(self._handle_biz_message)
+        if hasattr(client, "set_connection_listener"):
+            client.set_connection_listener(self._on_connection_change)
+        await client.connect()
+        return client
 
     async def _async_replace_rejected_credentials(self) -> None:
         """Reconnect with new MQTT credentials when the broker keeps rejecting ours."""
@@ -914,19 +915,28 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             await self._async_drop_client()
             self._auth_failures = 0
             try:
-                await self._async_connect_mqtt(creds)
+                client = await self._async_connect_mqtt(creds)
             except Exception as err:  # noqa: BLE001 - setup retries the transport
+                await self._async_drop_client()
+                if self._is_closing():
+                    return
                 _LOGGER.warning(
                     "%s: reconnecting with new MQTT credentials failed (%s); "
                     "reloading the entry",
                     self.device_name, err,
                 )
-                await self._async_drop_client()
                 if self.config_entry is not None:
                     self.hass.config_entries.async_schedule_reload(self.entry_id)
                 return
             if self._is_closing():
-                await self._async_drop_client()
+                # teardown may have run while connect() did; the client's
+                # disconnect() does nothing until connect() has returned
+                if self.client is client:
+                    self.client = None
+                try:
+                    await client.disconnect()
+                except Exception as err:  # noqa: BLE001 - cleanup must not raise
+                    _LOGGER.debug("Error disconnecting %s: %s", self.device_name, err)
         finally:
             self._mqtt_credentials_replacing = False
 

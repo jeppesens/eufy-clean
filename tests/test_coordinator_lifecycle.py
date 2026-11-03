@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -934,9 +935,8 @@ async def test_a_refused_replacement_login_starts_reauth(hass, login):
     assert client_cls.call_count == 1
 
 
-@pytest.mark.parametrize("during", ["login", "connect"])
-async def test_a_teardown_during_a_replacement_leaves_no_client(hass, login, during):
-    """Unload while the login or the reconnect runs: nothing outlives it."""
+async def test_a_teardown_during_the_replacement_login_connects_nothing(hass, login):
+    """Unload while the replacement login runs: no new client is created."""
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
         f"{_MOD}.async_call_later", return_value=MagicMock()
     ):
@@ -946,19 +946,90 @@ async def test_a_teardown_during_a_replacement_leaves_no_client(hass, login, dur
             coordinator._closing = True
             return True
 
-        if during == "login":
-            login.replace_rejected_mqtt_credentials = AsyncMock(side_effect=_close)
-        else:
-            login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
-            client_cls.side_effect = lambda **_kw: MagicMock(
-                connect=AsyncMock(side_effect=_close), disconnect=AsyncMock()
-            )
+        login.replace_rejected_mqtt_credentials = AsyncMock(side_effect=_close)
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()
 
-    assert client_cls.call_count == (1 if during == "login" else 2)
-    if during == "connect":
-        assert coordinator.client is None
+    assert client_cls.call_count == 1
+
+
+async def _teardown_during_the_replacement_connect(hass, login, connect_error=None):
+    """Run a replacement whose paho connect blocks until teardown has finished.
+
+    The real EufyCleanClient runs against a faked paho client; its disconnect()
+    does nothing until connect() returns. Returns (coordinator, paho client).
+    """
+    entered, gate = threading.Event(), threading.Event()
+    paho = MagicMock()
+
+    def _blocking_connect(*_args):
+        entered.set()
+        gate.wait(5)
+        if connect_error is not None:
+            raise connect_error
+
+    paho.connect.side_effect = _blocking_connect
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
+    coordinator = _coordinator(hass, login)
+    coordinator.config_entry = _entry()
+    coordinator._mqtt_credentials = {**login.mqtt_credentials, "certificate_pem": "old"}
+    coordinator.client = MagicMock(disconnect=AsyncMock())
+    with patch(
+        "custom_components.robovac_mqtt.api.client.get_blocking_mqtt_client",
+        return_value=paho,
+    ), patch(f"{_MOD}.async_call_later", return_value=MagicMock()):
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        async with asyncio.timeout(5):
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+            await coordinator.async_teardown()
+            gate.set()
+            while coordinator._mqtt_credentials_replacing:
+                await asyncio.sleep(0.01)
+    return coordinator, paho
+
+
+async def test_a_teardown_during_the_replacement_connect_stops_the_new_client(
+    hass, login
+):
+    """Unload while the new client connects: its network thread is stopped too."""
+    coordinator, paho = await _teardown_during_the_replacement_connect(hass, login)
+
+    paho.loop_start.assert_called_once()
+    paho.loop_stop.assert_called_once()
+    assert coordinator.client is None
+
+
+async def test_a_teardown_during_a_failing_replacement_connect_reloads_nothing(
+    hass, login
+):
+    """Unload while the new client fails to connect: no reload of the entry."""
+    coordinator, _paho = await _teardown_during_the_replacement_connect(
+        hass, login, OSError("no route")
+    )
+
+    hass.config_entries.async_schedule_reload.assert_not_called()
+    assert coordinator.client is None
+
+
+async def test_a_teardown_while_the_old_client_stops_disconnects_the_new_one(
+    hass, login
+):
+    """Unload while the rejected client disconnects: the new one is not kept."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, login, 1, client_cls)
+        coordinator.client.disconnect.side_effect = coordinator.async_teardown
+        new_client = MagicMock(connect=AsyncMock(), disconnect=AsyncMock())
+        client_cls.side_effect = lambda **_kw: new_client
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+
+    new_client.connect.assert_awaited_once()
+    new_client.disconnect.assert_awaited_once()
+    assert coordinator.client is None
 
 
 async def test_a_failed_reconnect_reloads_the_entry(hass, login):
