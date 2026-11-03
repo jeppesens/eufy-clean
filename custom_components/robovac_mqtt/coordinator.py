@@ -557,6 +557,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._last_notified_error_code: int = 0
         self._sched_refresh_in_progress: bool = False
         self._sched_attempt_ts: float = -_SCHEDULE_REFRESH_RETRY_COOLDOWN
+        # DPS 151 is written whole: one read-modify-write at a time.
+        self._scalar_schedule_lock = asyncio.Lock()
         # Set first in teardown; every await that can start something checks it.
         self._closing: bool = False
         # Bumped per novel map frame sent to the executor; stale results drop.
@@ -1997,18 +1999,19 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return True
 
         if self.api_type == "scalar":
-            schedules = list(self.data.schedules or [])
             sid_int = int(actual_id) if str(actual_id).isdigit() else actual_id
-            if not any(s.get("id") == sid_int for s in schedules):
-                raise HomeAssistantError(
-                    f"Schedule ID {actual_id} not found on {self.device_name}"
+            async with self._scalar_schedule_lock:
+                schedules = list(self.data.schedules or [])
+                if not any(s.get("id") == sid_int for s in schedules):
+                    raise HomeAssistantError(
+                        f"Schedule ID {actual_id} not found on {self.device_name}"
+                    )
+                await self._async_write_scalar_schedules(
+                    [
+                        {**s, "enabled": bool(enabled)} if s.get("id") == sid_int else s
+                        for s in schedules
+                    ]
                 )
-            await self._async_write_scalar_schedules(
-                [
-                    {**s, "enabled": bool(enabled)} if s.get("id") == sid_int else s
-                    for s in schedules
-                ]
-            )
             return True
 
         raise HomeAssistantError(
@@ -2047,14 +2050,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return True
 
         if self.api_type == "scalar":
-            schedules = list(self.data.schedules or [])
             sid_int = int(actual_id) if str(actual_id).isdigit() else actual_id
-            kept = [s for s in schedules if s.get("id") != sid_int]
-            if len(kept) == len(schedules):
-                raise HomeAssistantError(
-                    f"Schedule ID {actual_id} not found on {self.device_name}"
-                )
-            await self._async_write_scalar_schedules(kept)
+            async with self._scalar_schedule_lock:
+                schedules = list(self.data.schedules or [])
+                kept = [s for s in schedules if s.get("id") != sid_int]
+                if len(kept) == len(schedules):
+                    raise HomeAssistantError(
+                        f"Schedule ID {actual_id} not found on {self.device_name}"
+                    )
+                await self._async_write_scalar_schedules(kept)
             if str(self.selected_schedule_id) == str(actual_id):
                 self.selected_schedule_id = None
             return True
@@ -2205,35 +2209,38 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 raise ServiceValidationError(
                     f"Unknown suction {suction!r} for a schedule on {self.device_name}"
                 )
-            schedules = list(self.data.schedules or [])
-            existing = None
-            if actual_id is not None:
-                existing = self._schedule_entry(actual_id)
+            async with self._scalar_schedule_lock:
+                schedules = list(self.data.schedules or [])
+                existing = None
+                if actual_id is not None:
+                    existing = self._schedule_entry(actual_id)
+                    if existing is None:
+                        raise HomeAssistantError(
+                            f"Schedule ID {actual_id} not found on {self.device_name}"
+                        )
+                    entry = dict(existing)
+                else:
+                    existing_ids = [
+                        s["id"] for s in schedules if isinstance(s.get("id"), int)
+                    ]
+                    entry = {
+                        "id": max(existing_ids + [0]) + 1,
+                        "days": _NEW_SCHEDULE_DAYS,
+                        "enabled": True,
+                    }
+                entry["time"] = self._schedule_time(time, existing)
+                for key, value in (
+                    ("days", days),
+                    ("enabled", enabled),
+                    ("suction", suction),
+                    ("pattern", mode),
+                ):
+                    if value is not None:
+                        entry[key] = value
+                updated = [entry if s is existing else s for s in schedules]
                 if existing is None:
-                    raise HomeAssistantError(
-                        f"Schedule ID {actual_id} not found on {self.device_name}"
-                    )
-                entry = dict(existing)
-            else:
-                existing_ids = [s["id"] for s in schedules if isinstance(s.get("id"), int)]
-                entry = {
-                    "id": max(existing_ids + [0]) + 1,
-                    "days": _NEW_SCHEDULE_DAYS,
-                    "enabled": True,
-                }
-            entry["time"] = self._schedule_time(time, existing)
-            for key, value in (
-                ("days", days),
-                ("enabled", enabled),
-                ("suction", suction),
-                ("pattern", mode),
-            ):
-                if value is not None:
-                    entry[key] = value
-            updated = [entry if s is existing else s for s in schedules]
-            if existing is None:
-                updated.append(entry)
-            await self._async_write_scalar_schedules(updated)
+                    updated.append(entry)
+                await self._async_write_scalar_schedules(updated)
             return True
 
         raise HomeAssistantError(

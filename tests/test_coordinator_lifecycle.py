@@ -685,6 +685,47 @@ async def test_scalar_schedules_are_encoded_when_the_last_report_is_unreadable(
     assert _sent_scalar_entries(coordinator) == [{**_SUNDAY_SCALAR, "e": False}]
 
 
+async def _yielding_send(coordinator):
+    """Make the DPS write yield to the loop; return the list of commands sent."""
+    sent = []
+
+    async def _send(command):
+        sent.append(command)
+        await asyncio.sleep(0.01)
+
+    coordinator.async_send_command = _send
+    return sent
+
+
+async def test_overlapping_scalar_schedule_adds_keep_both(hass, login):
+    """The second add builds on the first, so neither is lost nor shares its id."""
+    coordinator = _scalar_schedule_coordinator(hass, login, [_SUNDAY_SCALAR])
+    sent = await _yielding_send(coordinator)
+
+    await asyncio.gather(
+        coordinator.async_set_schedule(time="09:00"),
+        coordinator.async_set_schedule(time="10:00"),
+    )
+
+    last = json.loads(sent[-1]["151"])["l"]
+    assert [(e["id"], e["t"]) for e in last] == [(2, "0800"), (3, "0900"), (4, "1000")]
+
+
+async def test_overlapping_scalar_switch_and_delete_keep_both(hass, login):
+    coordinator = _scalar_schedule_coordinator(
+        hass, login, [{**_SUNDAY_SCALAR, "id": 1}, _SUNDAY_SCALAR]
+    )
+    sent = await _yielding_send(coordinator)
+
+    await asyncio.gather(
+        coordinator.async_set_schedule_status(1, False),
+        coordinator.async_delete_schedule(2),
+    )
+
+    assert json.loads(sent[-1]["151"])["l"] == [{**_SUNDAY_SCALAR, "id": 1, "e": False}]
+    assert [s["id"] for s in coordinator.data.schedules] == [1]
+
+
 @pytest.mark.parametrize("kwargs", [{"suction": "Boost_IQ"}, {"days": "Mondy"}])
 async def test_scalar_schedules_reject_unknown_values(hass, login, kwargs):
     """An unknown suction or day is an error, not a silent default."""
