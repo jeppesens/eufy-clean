@@ -138,6 +138,9 @@ class AuthCache:
     # When the session-replaced latch was set; set, no automatic login. Only
     # its presence is read, so a time recorded with the clock ahead is harmless.
     session_replaced_at: float | None = None
+    # logins in a row whose MQTT credentials the broker rejected (sets the
+    # length of the hold-off that follows); 0 once it accepts credentials
+    rejected_logins: int = 0
 
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> AuthCache:
@@ -165,6 +168,9 @@ class AuthCache:
         cache.user_info = trim_user_info(cache.user_info)
         if isinstance(data.get("mqtt_credentials_unaccepted"), bool):
             cache.mqtt_credentials_unaccepted = data["mqtt_credentials_unaccepted"]
+        rejected_logins = data.get("rejected_logins")
+        if isinstance(rejected_logins, int) and not isinstance(rejected_logins, bool):
+            cache.rejected_logins = rejected_logins
         for name in ("session_expires_at", "replaced_relogin_at", "session_replaced_at"):
             value = data.get(name)
             if isinstance(value, (int, float)) and not isinstance(value, bool):

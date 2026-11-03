@@ -10,6 +10,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from enum import StrEnum
 from functools import partial
 from typing import Any
 
@@ -25,8 +26,7 @@ _LOGGER = logging.getLogger(__name__)
 _AUTH_REJECTED_REASONS = frozenset({"Bad user name or password", "Not authorized"})
 
 # TLS alerts (OpenSSL reason names) by which the broker rejects the client
-# certificate: the same verdict as a refused CONNACK. Any other TLS or socket
-# error says nothing about the certificate and is not counted.
+# certificate: the same verdict as a refused CONNACK.
 _CERT_REJECTED_ALERTS = frozenset({
     "SSLV3_ALERT_BAD_CERTIFICATE",
     "SSLV3_ALERT_CERTIFICATE_REVOKED",
@@ -36,18 +36,40 @@ _CERT_REJECTED_ALERTS = frozenset({
     "TLSV13_ALERT_CERTIFICATE_REQUIRED",
 })
 
+# The handshake errors of a broker that closes the connection without an
+# alert. Any other TLS or socket error (refused, unreachable, timeout, DNS)
+# says nothing about the certificate and is not counted.
+_HANDSHAKE_CLOSED = (ssl.SSLEOFError, ConnectionResetError)
+
+# paho's disconnect reason for a connection the peer closed.
+_CONNECTION_LOST = "Unspecified error"
+
 # The reason in str(ssl.SSLError), e.g. "[SSL: SSLV3_ALERT_BAD_CERTIFICATE] ...".
 _SSL_REASON = re.compile(r"\[SSL: (\w+)\]")
 
-ConnectionListener = Callable[[bool, bool], None]
+
+class Rejection(StrEnum):
+    """How the broker turned a connection attempt away."""
+
+    # a refused CONNACK or a TLS certificate alert
+    EXPLICIT = "explicit"
+    # closed in the TLS handshake, or after the CONNECT without a CONNACK
+    SILENT = "silent"
 
 
-def is_certificate_rejection(err: BaseException | None) -> bool:
-    """Is ``err`` a TLS alert by which the broker rejects the client certificate?"""
-    return (
+ConnectionListener = Callable[[bool, Rejection | None], None]
+
+
+def handshake_rejection(err: BaseException | None) -> Rejection | None:
+    """How a failed TLS connect's ``err`` turned the client away, if it did."""
+    if (
         isinstance(err, ssl.SSLError)
         and getattr(err, "reason", None) in _CERT_REJECTED_ALERTS
-    )
+    ):
+        return Rejection.EXPLICIT
+    if isinstance(err, _HANDSHAKE_CLOSED):
+        return Rejection.SILENT
+    return None
 
 
 def _build_tls_context(certificate_pem: str, private_key: str) -> ssl.SSLContext:
@@ -131,13 +153,15 @@ class EufyCleanClient:
         # A failed read carried a certificate alert; reported with the
         # disconnect that follows it.
         self._cert_rejected = False
+        # TLS is up and the CONNECT sent; no CONNACK has answered it yet.
+        self._awaiting_connack = False
 
     def set_connection_listener(self, callback: ConnectionListener | None) -> None:
-        """Call ``callback(connected, auth_failed)`` on the event loop on every
+        """Call ``callback(connected, rejection)`` on the event loop on every
         broker connect, refused connect and disconnect.
 
-        ``auth_failed`` is True when the broker rejected the client identity
-        (bad credentials or not authorised).
+        ``rejection`` says how the broker turned the attempt away, or is None
+        when it did not.
         """
         self._connection_listener = callback
 
@@ -146,7 +170,7 @@ class EufyCleanClient:
         """True while the broker session is up."""
         return bool(self._mqtt_client and self._mqtt_client.is_connected())
 
-    def _notify_connection(self, connected: bool, auth_failed: bool) -> None:
+    def _notify_connection(self, connected: bool, rejection: Rejection | None) -> None:
         """Hand a connection change to the event loop (called from paho's thread)."""
         if self._loop is None:
             return
@@ -156,7 +180,7 @@ class EufyCleanClient:
             self._loop.call_soon_threadsafe(self._connected_event.clear)
         if self._connection_listener is not None:
             self._loop.call_soon_threadsafe(
-                self._connection_listener, connected, auth_failed
+                self._connection_listener, connected, rejection
             )
 
     def set_on_message(self, callback: Callable[[bytes], None]):
@@ -239,6 +263,7 @@ class EufyCleanClient:
                 private_key=self.private_key,
             ),
         )
+        mqtt_client.on_socket_open = self._on_socket_open
         mqtt_client.on_connect = self._on_connect
         mqtt_client.on_subscribe = self._on_subscribe
         mqtt_client.on_message = self._on_message
@@ -275,14 +300,18 @@ class EufyCleanClient:
         reason_code: ReasonCode,
         properties: Any = None,
     ) -> None:
+        self._awaiting_connack = False
         if reason_code.is_failure:
             _LOGGER.error("MQTT broker refused the connection: %s", reason_code)
             self._notify_connection(
-                False, str(reason_code) in _AUTH_REJECTED_REASONS
+                False,
+                Rejection.EXPLICIT
+                if str(reason_code) in _AUTH_REJECTED_REASONS
+                else None,
             )
             return
         _LOGGER.info("Connected to MQTT Broker!")
-        self._notify_connection(True, False)
+        self._notify_connection(True, None)
         if self.device_id:
             # A SUBSCRIBE left unanswered by an earlier connection never
             # gets its SUBACK, so start each connection with an empty map.
@@ -336,14 +365,34 @@ class EufyCleanClient:
             _LOGGER.debug("Disconnected from MQTT broker (clean)")
         # paho also reports a refused CONNACK here; on_connect counted it
         cert_rejected, self._cert_rejected = self._cert_rejected, False
-        self._notify_connection(False, cert_rejected)
+        unanswered, self._awaiting_connack = self._awaiting_connack, False
+        rejection: Rejection | None = None
+        if cert_rejected:
+            rejection = Rejection.EXPLICIT
+        elif unanswered and str(reason_code) == _CONNECTION_LOST:
+            _LOGGER.debug(
+                "MQTT broker closed the connection before answering the connect"
+            )
+            rejection = Rejection.SILENT
+        self._notify_connection(False, rejection)
+
+    def _on_socket_open(self, client: mqtt.Client, userdata: Any, sock: Any) -> None:
+        """TLS is up; paho sends the CONNECT next."""
+        self._awaiting_connack = True
 
     def _on_connect_fail(self, client: mqtt.Client, userdata: Any) -> None:
         """A reconnect raised; paho calls this inside its ``except OSError``."""
         err = sys.exception()
-        if is_certificate_rejection(err):
+        rejection = handshake_rejection(err)
+        if rejection is Rejection.EXPLICIT:
             _LOGGER.error("MQTT broker rejected the client certificate: %s", err)
-            self._notify_connection(False, True)
+        elif rejection is Rejection.SILENT:
+            _LOGGER.debug(
+                "MQTT broker closed the connection in the TLS handshake: %r", err
+            )
+        else:
+            return
+        self._notify_connection(False, rejection)
 
     def _on_log(
         self, client: mqtt.Client, userdata: Any, level: int, buf: str

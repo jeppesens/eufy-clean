@@ -10,6 +10,7 @@ import aiohttp
 import pytest
 
 from custom_components.robovac_mqtt.api import cloud as cloud_mod
+from custom_components.robovac_mqtt.api.client import Rejection
 from custom_components.robovac_mqtt.api.cloud import (
     EufyLogin,
     EufyLoginChallengeError,
@@ -559,6 +560,8 @@ async def test_rejected_credentials_send_no_login_while_the_throttle_refuses(ref
     assert login.auth_cache.throttle["logins"] == logins
     assert login.auth_cache.mqtt_credentials is None
     save.assert_awaited_once()
+    # a rejection once a login is allowed logs in by itself: no reload needed
+    assert login.mqtt_reload_wait(rejected) is None
 
 
 @pytest.mark.asyncio
@@ -582,6 +585,9 @@ async def test_rejected_credentials_after_a_refused_login_send_no_second_login(
     assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
 
     assert len(login.auth_cache.throttle["logins"]) == 1
+    # re-authentication follows, not a reload that would log in again
+    assert login.throttle.login_wait() is not None
+    assert login.mqtt_reload_wait(rejected) is None
 
 
 @pytest.mark.asyncio
@@ -628,6 +634,12 @@ async def test_credentials_from_a_login_rejected_before_an_accept_hold_off_login
     assert login.throttle.held_off(KIND_AUTO_LOGIN) == pytest.approx(
         MQTT_CREDENTIALS_HOLD_OFF, abs=10
     )
+    # nothing in this run logs in for them: a reload once a replacement login
+    # may run (after a replacement, at the end of its window)
+    assert login.mqtt_reload_wait(fresh) == pytest.approx(
+        MQTT_CREDENTIALS_HOLD_OFF if producer == "setup-login" else SESSION_REPLACED_WINDOW,
+        abs=10,
+    )
     hold_off = login.auth_cache.throttle["hold_off"]
     running = dict(hold_off)
     # while it runs: neither extended nor saved again
@@ -643,6 +655,36 @@ async def test_credentials_from_a_login_rejected_before_an_accept_hold_off_login
     assert len(login.auth_cache.throttle["logins"]) == 1
     assert login.auth_cache.session_replaced_at is None
     assert save.await_count == 2
+
+
+async def _hold_off_after_a_rejected_login(login, save) -> float:
+    """Log in once logins are allowed again; the broker rejects what it
+    produced. Returns the hold-off that starts."""
+    login.throttle.state["hold_off"].clear()
+    login.throttle.state["logins"].clear()
+    await login.login({"mqtt": True})
+    assert await login.replace_rejected_mqtt_credentials(
+        login.mqtt_credentials, save
+    ) is False
+    return login.throttle.held_off(KIND_AUTO_LOGIN)
+
+
+@pytest.mark.asyncio
+async def test_consecutive_rejected_logins_hold_off_logins_longer_up_to_an_hour():
+    """15, 30, then 60 min after each login whose credentials the broker
+    turns away; the count outlives a restart and ends with an accept."""
+    login, _rejected, save = _login_with_rejected_credentials()
+    holds = [await _hold_off_after_a_rejected_login(login, save) for _ in range(4)]
+
+    assert [round(h / 60) for h in holds] == [15, 30, 60, 60]
+    stored = AuthCache.from_dict(json.loads(json.dumps(login.auth_cache.to_dict())))
+    login, _rejected, _save = _login_with_rejected_credentials(stored)
+    # counted only while the hold-off still grows
+    assert stored.rejected_logins == 2
+    assert round(await _hold_off_after_a_rejected_login(login, save) / 60) == 60
+
+    assert login.mqtt_credentials_accepted({"certificate_pem": "other"}) is True
+    assert round(await _hold_off_after_a_rejected_login(login, save) / 60) == 15
 
 
 @pytest.mark.asyncio
@@ -711,6 +753,53 @@ async def test_a_replacement_login_without_mqtt_credentials_holds_off_logins():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
+    ("replacement", "hold_off", "expected"),
+    [
+        (None, None, None),
+        (None, 600.0, 600.0),
+        ("failed", None, cloud_mod._MQTT_RELOGIN_RETRY_DELAY),
+        ("failed", 600.0, 600.0),
+        ("accepted", None, SESSION_REPLACED_WINDOW),
+        ("accepted", 7200.0, 7200.0),
+    ],
+    ids=[
+        "free", "hold-off", "retry-delay", "hold-off-past-retry-delay",
+        "window", "hold-off-past-window",
+    ],
+)
+async def test_the_wait_for_a_replacement_login_is_the_longest_bound(
+    replacement, hold_off, expected
+):
+    """The throttle's wait, the retry delay after a failed replacement login
+    and the window after a successful one: a replacement login waits for all;
+    the silent rejections in between send none."""
+    login, rejected, save = _login_with_rejected_credentials()
+    if replacement == "failed":
+        login.eufyApi._attempt_login.side_effect = EufyLoginTransientError("HTTP 503")
+        assert not await login.replace_rejected_mqtt_credentials(rejected, save)
+        login.eufyApi._attempt_login.side_effect = None
+    elif replacement == "accepted":
+        assert await login.replace_rejected_mqtt_credentials(rejected, save)
+        rejected = login.mqtt_credentials
+        login.mqtt_credentials_accepted(rejected)
+    if hold_off is not None:
+        login.throttle.hold_off(KIND_AUTO_LOGIN, hold_off)
+
+    wait = login.replacement_login_wait()
+
+    if expected is None:
+        assert wait is None
+        return
+    assert wait == pytest.approx(expected, abs=5)
+    logins = len(login.auth_cache.throttle["logins"])
+    assert await login.replace_rejected_mqtt_credentials(
+        rejected, save, Rejection.SILENT
+    ) is False
+    assert len(login.auth_cache.throttle["logins"]) == logins
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
     ("since_last", "latches"),
     [(SESSION_REPLACED_WINDOW - 60, True), (SESSION_REPLACED_WINDOW + 60, False)],
     ids=["inside-window", "after-window"],
@@ -739,6 +828,36 @@ async def test_a_second_replacement_soon_after_the_last_latches_the_kick_out(
     # the other coordinators of the account wait, without a login
     assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
     assert len(login.auth_cache.throttle["logins"]) == 1
+    # re-authentication follows, not a reload
+    assert login.mqtt_reload_wait(replacement) is None
+
+
+@pytest.mark.asyncio
+async def test_a_silent_rejection_soon_after_a_replacement_waits_out_the_window():
+    """A broker that closes the connection without an answer is no proof that
+    another client took the account: inside the window no login and no
+    kick-out latch; after it, one login."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(
+        rejected, save, Rejection.SILENT
+    )
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+    login._replacement_login_at -= SESSION_REPLACED_WINDOW - 60
+
+    for _ in range(2):
+        assert not await login.replace_rejected_mqtt_credentials(
+            replacement, save, Rejection.SILENT
+        )
+    assert len(login.auth_cache.throttle["logins"]) == 1
+    assert login.auth_cache.session_replaced_at is None
+    assert login.mqtt_reload_wait(replacement) is None
+
+    login._replacement_login_at -= 120
+    assert await login.replace_rejected_mqtt_credentials(
+        replacement, save, Rejection.SILENT
+    )
+    assert len(login.auth_cache.throttle["logins"]) == 2
 
 
 # ── Cloud device discovery ──────────────────────────────────────────

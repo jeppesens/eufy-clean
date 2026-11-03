@@ -17,7 +17,7 @@ from homeassistant.const import (
     EVENT_HOMEASSISTANT_STOP,
     Platform,
 )
-from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
@@ -245,7 +245,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         await auth_store.async_save(auth_cache)
     ir.async_delete_issue(hass, DOMAIN, session_replaced_issue_id(entry.entry_id))
 
-    coordinators = []
+    coordinators: list[EufyCleanCoordinator] = []
+    reload = _HoldOffReload(hass, entry, eufy_login, coordinators)
 
     all_devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
     is_multi_device = len(all_devices) > 1
@@ -320,7 +321,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             device_id,
         )
 
-        coordinator = EufyCleanCoordinator(hass, eufy_login, device_info, config_entry=entry)
+        coordinator = EufyCleanCoordinator(
+            hass,
+            eufy_login,
+            device_info,
+            config_entry=entry,
+            reload_when_logins_resume=reload.schedule,
+        )
         try:
             await coordinator.initialize()
 
@@ -357,7 +364,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if not coordinators:
         raise ConfigEntryNotReady("No Eufy Clean devices could be initialized")
 
-    _schedule_reload_for_mqtt_credentials(hass, entry, eufy_login, coordinators)
+    _schedule_reload_for_mqtt_credentials(eufy_login, coordinators, reload)
 
     current_device_ids = {c.device_id for c in coordinators}
     device_registry = dr.async_get(hass)
@@ -409,38 +416,90 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     return True
 
 
-def _schedule_reload_for_mqtt_credentials(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    eufy_login: EufyLogin,
-    coordinators: list[EufyCleanCoordinator],
-) -> None:
-    """Reload the entry once a login is allowed when MQTT robots were left out
-    of this setup while logins are refused (no MQTT credentials, or the broker
-    rejected the ones a login produced).
+class _HoldOffReload:
+    """The entry's one reload for when a login is allowed again.
 
-    A fallback-session account never gets MQTT credentials: no reload.
+    Shared by setup and every robot of the entry; cancelled on unload, and
+    skipped when it fires while no MQTT robot is out.
     """
-    started = {c.device_id for c in coordinators}
-    left_out = [d for d in eufy_login.mqtt_devices if d.get("deviceId") not in started]
-    if not left_out or not eufy_login.has_user_center:
-        return
-    wait = eufy_login.throttle.login_wait()
-    if wait is None:
-        return
-    _LOGGER.info(
-        "%d MQTT device(s) left out while Eufy logins are refused; reloading "
-        "when a login is allowed, in %.0f min",
-        len(left_out),
-        wait / 60,
-    )
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        eufy_login: EufyLogin,
+        coordinators: list[EufyCleanCoordinator],
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._eufy_login = eufy_login
+        # setup's list, filled as the robots come up
+        self._coordinators = coordinators
+        self._cancel: CALLBACK_TYPE | None = None
+        entry.async_on_unload(self._async_cancel)
 
     @callback
-    def _reload(_now: datetime) -> None:
-        hass.config_entries.async_schedule_reload(entry.entry_id)
+    def schedule(self, wait: float) -> bool:
+        """Reload in ``wait`` s plus slack; False when a reload is armed already."""
+        if self._cancel is not None:
+            return False
+        self._cancel = async_call_later(
+            self._hass, wait + _LOGIN_WAIT_SLACK, self._reload
+        )
+        return True
 
-    entry.async_on_unload(
-        async_call_later(hass, wait + _LOGIN_WAIT_SLACK, _reload)
+    @callback
+    def _reload(self, _now: datetime) -> None:
+        self._cancel = None
+        coordinators = self._coordinators
+        if not _mqtt_robots_left_out(self._eufy_login, coordinators) and not any(
+            c.mqtt_session_down for c in coordinators
+        ):
+            _LOGGER.debug(
+                "No reload when a login is allowed again: every MQTT robot "
+                "is connected"
+            )
+            return
+        self._hass.config_entries.async_schedule_reload(self._entry.entry_id)
+
+    @callback
+    def _async_cancel(self) -> None:
+        if self._cancel is not None:
+            self._cancel()
+            self._cancel = None
+
+
+def _mqtt_robots_left_out(
+    eufy_login: EufyLogin, coordinators: list[EufyCleanCoordinator]
+) -> list[dict[str, Any]]:
+    """The discovered MQTT robots that have no coordinator in this setup."""
+    started = {c.device_id for c in coordinators}
+    return [d for d in eufy_login.mqtt_devices if d.get("deviceId") not in started]
+
+
+def _schedule_reload_for_mqtt_credentials(
+    eufy_login: EufyLogin,
+    coordinators: list[EufyCleanCoordinator],
+    reload: _HoldOffReload,
+) -> None:
+    """Reload the entry once a replacement login may run when MQTT robots
+    were left out of this setup while none may (no MQTT credentials, or the
+    broker rejected the ones it got).
+
+    A fallback-session account never gets MQTT credentials, and a refused
+    login or the kick-out latch waits for re-authentication: no reload.
+    """
+    left_out = _mqtt_robots_left_out(eufy_login, coordinators)
+    if not left_out or not eufy_login.has_user_center or eufy_login.reauth_needed:
+        return
+    wait = eufy_login.replacement_login_wait()
+    if wait is None or not reload.schedule(wait):
+        return
+    _LOGGER.info(
+        "%d MQTT device(s) left out while no Eufy login may run; reloading "
+        "the entry when one may, in %.0f min",
+        len(left_out),
+        wait / 60,
     )
 
 

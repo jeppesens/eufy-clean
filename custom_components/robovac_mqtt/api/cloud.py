@@ -18,6 +18,7 @@ from ..auth_store import (
 )
 from ..const import DPS_MAP, EUFY_CLEAN_DEVICES, SCALAR_DPS, TUYA_PRODUCT_MODELS
 from ..utils import is_protobuf_dps_value
+from .client import Rejection
 from .errors import (
     EufyLoginChallengeError,
     EufyLoginError,
@@ -53,6 +54,10 @@ _SESSION_REPLACED_MESSAGE = (
 
 # Seconds without a replacement MQTT login after one failed (Eufy unreachable).
 _MQTT_RELOGIN_RETRY_DELAY = 5 * 60.0
+# Cap of the KIND_AUTO_LOGIN hold-off after logins in a row whose MQTT
+# credentials the broker rejected: MQTT_CREDENTIALS_HOLD_OFF, doubled per such
+# login up to this.
+_REJECTED_LOGIN_HOLD_OFF_MAX = 3600.0
 
 # Failures of one region probe that must not stop the next region.
 _TUYA_PROBE_ERRORS = (
@@ -127,6 +132,9 @@ class EufyLogin:
         # produced that the broker has not accepted yet, or ones the account
         # login refused.
         self._mqtt_relogin_spent: dict[str, Any] | None = None
+        # MQTT credentials whose replacement login was refused, or which set
+        # the kick-out latch: re-authentication, not a reload, brings new ones.
+        self._mqtt_relogin_refused: dict[str, Any] | None = None
         # time.monotonic() of the last replacement login that brought credentials
         self._replacement_login_at: float | None = None
         # time.monotonic() before which no replacement login is retried
@@ -370,6 +378,7 @@ class EufyLogin:
         self,
         rejected: dict[str, Any],
         save: Callable[[], Awaitable[None]],
+        rejection: Rejection = Rejection.EXPLICIT,
     ) -> bool:
         """Replace MQTT credentials the broker rejects, with one login for all callers.
 
@@ -378,7 +387,8 @@ class EufyLogin:
         is sent while the throttle refuses one, within the retry delay of a
         failed one, nor for credentials a login produced that the broker has not
         accepted yet (the auth cache keeps that mark across a restart) or the
-        login refused: those start the login hold-off, which outlives a restart.
+        login refused: those start the login hold-off, which outlives a restart
+        and grows with each such login in a row.
         ``save`` persists the cache, with the throttle state, after a change.
         Returns True when the caller should reconnect with ``mqtt_credentials``,
         False when it should wait, including after a throttle answer. Raises
@@ -386,7 +396,8 @@ class EufyLogin:
         verification code or captcha), and
         EufySessionReplacedError instead of a second replacement login within
         SESSION_REPLACED_WINDOW of the last one: another client keeps taking
-        the account, and the kick-out latch is set as setup sets it.
+        the account, and the kick-out latch is set as setup sets it. Only an
+        explicit ``rejection`` latches; a silent one waits out the window.
         """
         async with self._check_login_lock:
             current = self.mqtt_credentials
@@ -401,7 +412,7 @@ class EufyLogin:
                 if rejected is self._mqtt_relogin_spent:
                     _LOGGER.debug("MQTT credentials from a login rejected; no login")
                     if self.throttle.held_off(KIND_AUTO_LOGIN) is None:
-                        self.throttle.hold_off(KIND_AUTO_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
+                        self._hold_off_after_a_rejected_login()
                         changed = True
                     return False
                 if not self.throttle.login_allowed():
@@ -409,18 +420,24 @@ class EufyLogin:
                         "New MQTT credentials wait for the login hold-off or budget"
                     )
                     return False
-                last = self._replacement_login_at
-                if last is not None and time.monotonic() - last < SESSION_REPLACED_WINDOW:
+                if self._replacement_window_left() is not None:
+                    if rejection is not Rejection.EXPLICIT:
+                        # a closed connection is no proof of another client
+                        _LOGGER.debug(
+                            "Replacement MQTT login held back within %.0f min of "
+                            "the last one; no login",
+                            SESSION_REPLACED_WINDOW / 60,
+                        )
+                        return False
                     _LOGGER.warning(
                         "New MQTT credentials were rejected again soon after the "
                         "last replacement; another client is using this account. "
                         "Not logging in again until the entry is reauthenticated"
                     )
-                    self._mqtt_relogin_spent = rejected
+                    self._mqtt_relogin_spent = self._mqtt_relogin_refused = rejected
                     changed = True  # the latch clears the stored tokens
                     raise self._latch_session_replaced()
-                not_before = self._mqtt_relogin_not_before
-                if not_before is not None and time.monotonic() < not_before:
+                if self._retry_delay_left() is not None:
                     _LOGGER.debug("Replacement MQTT login held back; no login")
                     return False
                 changed = True
@@ -428,6 +445,7 @@ class EufyLogin:
                     await self.login({"mqtt": True})
                 except EufyLoginError:
                     self._mqtt_relogin_spent = rejected
+                    self._mqtt_relogin_refused = rejected
                     raise
                 except (
                     EufyLoginTransientError, aiohttp.ClientError, TimeoutError
@@ -448,17 +466,89 @@ class EufyLogin:
                 if changed:
                     await save()
 
+    def _hold_off_after_a_rejected_login(self) -> None:
+        """Hold off logins after the broker rejected a login's credentials,
+        twice as long as after the previous one in a row, up to
+        _REJECTED_LOGIN_HOLD_OFF_MAX."""
+        cache = self.auth_cache
+        seconds = MQTT_CREDENTIALS_HOLD_OFF * 2 ** (cache.rejected_logins if cache else 0)
+        if cache is not None and seconds < _REJECTED_LOGIN_HOLD_OFF_MAX:
+            cache.rejected_logins += 1
+        self.throttle.hold_off(
+            KIND_AUTO_LOGIN, min(seconds, _REJECTED_LOGIN_HOLD_OFF_MAX)
+        )
+
+    def _replacement_window_left(self) -> float | None:
+        """Seconds left of SESSION_REPLACED_WINDOW after the last replacement
+        login, or None outside it."""
+        if self._replacement_login_at is None:
+            return None
+        left = self._replacement_login_at + SESSION_REPLACED_WINDOW - time.monotonic()
+        return left if left > 0 else None
+
+    def _retry_delay_left(self) -> float | None:
+        """Seconds left of the retry delay after a failed replacement login."""
+        if self._mqtt_relogin_not_before is None:
+            return None
+        left = self._mqtt_relogin_not_before - time.monotonic()
+        return left if left > 0 else None
+
+    def replacement_login_wait(self) -> float | None:
+        """Seconds until a replacement MQTT login may run: the longest of the
+        throttle's wait (budget and hold-offs), the rest of
+        SESSION_REPLACED_WINDOW after the last replacement login and the retry
+        delay after a failed one. None when one may now.
+        """
+        left = [
+            wait
+            for wait in (
+                self.throttle.login_wait(),
+                self._replacement_window_left(),
+                self._retry_delay_left(),
+            )
+            if wait is not None
+        ]
+        return max(left) if left else None
+
+    @property
+    def reauth_needed(self) -> bool:
+        """The replacement login was refused or set the kick-out latch: only
+        re-authentication brings new MQTT credentials."""
+        refused = self._mqtt_relogin_refused
+        return refused is not None and refused is self.mqtt_credentials
+
+    def mqtt_reload_wait(self, rejected: dict[str, Any]) -> float | None:
+        """Seconds until an entry reload may log in to replace ``rejected``,
+        when no login in this run will: they came from a login (the hold-off
+        stands in for the replacement). None otherwise, also after a refused
+        account login or the kick-out latch, where re-authentication brings
+        new credentials.
+        """
+        if (
+            rejected is not self._mqtt_relogin_spent
+            or rejected is self._mqtt_relogin_refused
+        ):
+            return None
+        return self.replacement_login_wait()
+
     def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> bool:
         """The broker accepted ``credentials``: a later rejection may log in again.
 
-        Returns True when the auth cache changed and should be saved.
+        Also ends the run of rejected logins. Returns True when the auth cache
+        changed and should be saved.
         """
-        if credentials is None or credentials is not self._mqtt_relogin_spent:
+        if credentials is None:
             return False
-        self._mqtt_relogin_spent = None
         cache = self.auth_cache
+        changed = False
+        if cache is not None and cache.rejected_logins:
+            cache.rejected_logins = 0
+            changed = True
+        if credentials is not self._mqtt_relogin_spent:
+            return changed
+        self._mqtt_relogin_spent = None
         if cache is None or not cache.mqtt_credentials_unaccepted:
-            return False
+            return changed
         cache.mqtt_credentials_unaccepted = False
         return True
 

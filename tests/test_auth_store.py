@@ -197,6 +197,11 @@ def test_cache_from_dict_drops_a_bad_login_hold_until(value):
     assert not AuthCache.from_dict({"login_hold_until": value}).throttle
 
 
+@pytest.mark.parametrize("value", ["2", True, None, 2.0])
+def test_cache_from_dict_drops_a_bad_rejected_login_count(value):
+    assert AuthCache.from_dict({"rejected_logins": value}).rejected_logins == 0
+
+
 # ---------------------------------------------------------------------------
 # EufyLogin.init() fast path
 # ---------------------------------------------------------------------------
