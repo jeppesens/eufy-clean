@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import logging
+import math
 import re
 from typing import Any
 
@@ -11,6 +12,7 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.config_entries import ConfigFlowResult
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from voluptuous import In
@@ -24,7 +26,7 @@ from .api.cloud import (
     EufyLoginRateLimitedError,
     EufyLoginTransientError,
 )
-from .auth_store import AuthCache, AuthStore
+from .auth_store import AuthCache, AuthStore, session_replaced_issue_id
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
@@ -83,7 +85,9 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         await self.async_set_unique_id(username)
         self._abort_if_unique_id_configured()
 
-        title, errors = await self._login_and_get_title(username, user_input[CONF_PASSWORD])
+        title, errors, placeholders = await self._login_and_get_title(
+            username, user_input[CONF_PASSWORD]
+        )
 
         if not errors:
             data = user_input.copy()
@@ -91,7 +95,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             return self.async_create_entry(title=title, data=data)
 
         return self.async_show_form(
-            step_id="user", data_schema=USER_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=USER_SCHEMA,
+            errors=errors,
+            description_placeholders=placeholders,
         )
 
     async def async_step_reconfigure(
@@ -114,13 +121,14 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             )
 
         errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
         title = current_username
         username = user_input[CONF_USERNAME]
 
         if username != current_username:
             errors[CONF_USERNAME] = "username_mismatch"
         else:
-            title, errors = await self._login_existing_entry(
+            title, errors, placeholders = await self._login_existing_entry(
                 entry, username, user_input[CONF_PASSWORD]
             )
 
@@ -138,7 +146,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             }
         )
         return self.async_show_form(
-            step_id="reconfigure", data_schema=schema, errors=errors
+            step_id="reconfigure",
+            data_schema=schema,
+            errors=errors,
+            description_placeholders=placeholders,
         )
 
     async def async_step_reauth(
@@ -162,7 +173,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
                 description_placeholders={"username": username},
             )
 
-        _title, errors = await self._login_existing_entry(
+        _title, errors, placeholders = await self._login_existing_entry(
             entry, username, user_input[CONF_PASSWORD]
         )
 
@@ -177,12 +188,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             step_id="reauth_confirm",
             data_schema=schema,
             errors=errors,
-            description_placeholders={"username": username},
+            description_placeholders={"username": username, **placeholders},
         )
 
     async def _login_existing_entry(
         self, entry: config_entries.ConfigEntry, username: str, password: str
-    ) -> tuple[str, dict[str, str]]:
+    ) -> tuple[str, dict[str, str], dict[str, str]]:
         """Log in with the entry's stored openudid and keep the fresh tokens.
 
         Rotating the openudid invalidates the account's tokens (auth_store.py);
@@ -192,32 +203,38 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         cached = await store.async_load()
         # Identity, probe memos and the login budget: the old tokens are what
         # failed, and a successful login here clears the session-replaced latch.
+        # The throttle dict is shared, so ``cached`` sees the attempt too.
         cache = AuthCache(
             openudid=cached.openudid,
             login_label=cached.login_label,
             tuya_region=cached.tuya_region,
             throttle=cached.throttle,
         )
-        title, errors = await self._login_and_get_title(username, password, cache)
+        title, errors, placeholders = await self._login_and_get_title(
+            username, password, cache
+        )
         if not errors:
             await store.async_save(cache)
+            ir.async_delete_issue(
+                self.hass, DOMAIN, session_replaced_issue_id(entry.entry_id)
+            )
         else:
             # Keep the stored tokens, but count the attempt and any hold-off.
-            cached.throttle = cache.throttle
             await store.async_save(cached)
-        return title, errors
+        return title, errors, placeholders
 
     async def _login_and_get_title(
         self,
         username: str,
         password: str,
         auth_cache: AuthCache | None = None,
-    ) -> tuple[str, dict[str, str]]:
-        """Login and return (discovered device names or username, errors).
+    ) -> tuple[str, dict[str, str], dict[str, str]]:
+        """Login and return (device names or username, errors, form placeholders).
 
         ``auth_cache`` supplies the openudid and receives the fresh tokens.
         """
         errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
         title = username
         cache = auth_cache or AuthCache()
         try:
@@ -247,6 +264,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         except EufyLoginRateLimitedError as e:
             _LOGGER.debug("Eufy login held off: %s", e)
             errors["base"] = "rate_limited"
+            placeholders["minutes"] = str(max(1, math.ceil((e.retry_after or 0) / 60)))
         except (EufyLoginTransientError, aiohttp.ClientError, TimeoutError) as e:
             _LOGGER.debug("Eufy login unavailable: %s", e)
             errors["base"] = "cannot_connect"
@@ -254,7 +272,7 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             _LOGGER.exception("Unexpected error during Eufy login")
             errors["base"] = "unknown"
 
-        return title, errors
+        return title, errors, placeholders
 
 
 class OptionsFlowHandler(config_entries.OptionsFlow):

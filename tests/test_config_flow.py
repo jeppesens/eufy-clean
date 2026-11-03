@@ -1,4 +1,5 @@
 # pylint: disable=redefined-outer-name
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -8,6 +9,7 @@ import voluptuous_serialize
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.robovac_mqtt.api.cloud import (
@@ -16,7 +18,12 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufyLoginRateLimitedError,
     EufyLoginTransientError,
 )
-from custom_components.robovac_mqtt.auth_store import AuthCache, AuthStore
+from custom_components.robovac_mqtt.auth_store import (
+    AuthCache,
+    AuthStore,
+    async_create_session_replaced_issue,
+    session_replaced_issue_id,
+)
 from custom_components.robovac_mqtt.config_flow import (
     _format_map_ids_text,
     _parse_map_ids_text,
@@ -664,14 +671,18 @@ async def test_reauth_failure_keeps_the_stored_cache(hass: HomeAssistant):
 
 
 @pytest.mark.parametrize(
-    "error, expected",
+    "error, expected, minutes",
     [
-        (EufyLoginRateLimitedError("100028", retry_after=7200, code=100028), "rate_limited"),
-        (EufyLoginChallengeError("captcha", code=100032), "login_challenge"),
+        (
+            EufyLoginRateLimitedError("100028", retry_after=7170, code=100028),
+            "rate_limited",
+            "120",
+        ),
+        (EufyLoginChallengeError("captcha", code=100032), "login_challenge", None),
     ],
 )
 async def test_login_throttle_and_challenge_map_to_form_errors(
-    hass: HomeAssistant, error, expected
+    hass: HomeAssistant, error, expected, minutes
 ):
     result = await hass.config_entries.flow.async_init(
         DOMAIN, context={"source": config_entries.SOURCE_USER}
@@ -683,6 +694,79 @@ async def test_login_throttle_and_challenge_map_to_form_errors(
             {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
         )
     assert result2["errors"]["base"] == expected
+    assert (result2["description_placeholders"] or {}).get("minutes") == minutes
+
+
+@pytest.mark.parametrize("step", ["reauth", "reconfigure"])
+async def test_a_stored_login_hold_off_refuses_the_flow_login(hass: HomeAssistant, step):
+    """The entry's hold-off applies to a reauth or reconfigure login: nothing
+    is sent, and the form names the time left."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef",
+            throttle={"hold_off": {"login": time.time() + 3600}},
+        )
+    )
+    if step == "reauth":
+        result = await entry.start_reauth_flow(hass)
+        user_input = {CONF_PASSWORD: "new_pass"}
+    else:
+        result = await entry.start_reconfigure_flow(hass)
+        user_input = {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "new_pass"}
+    websession = MagicMock()
+
+    with patch(
+        "custom_components.robovac_mqtt.config_flow.async_get_clientsession",
+        return_value=websession,
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input
+        )
+
+    assert result2["errors"]["base"] == "rate_limited"
+    assert result2["description_placeholders"]["minutes"] == "60"
+    websession.post.assert_not_called()
+
+
+async def test_a_successful_reauth_keeps_the_stored_logins(
+    hass: HomeAssistant, mock_login_fixture
+):
+    """The reauth login counts against the entry's budget, with the earlier ones."""
+    entry = _reauth_entry(hass)
+    earlier = time.time() - 60
+    await AuthStore(hass, entry.entry_id).async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef", throttle={"logins": [earlier]}
+        )
+    )
+
+    def _factory(*args, **kwargs):
+        cache = kwargs["auth_cache"]
+        instance = MagicMock()
+
+        async def _init():
+            cache.throttle["logins"].append(earlier + 30)
+            cache.session = {"access_token": "fresh", "user_id": "u1"}
+
+        instance.init = AsyncMock(side_effect=_init)
+        instance.mqtt_devices = [{"deviceName": "Test Vac", "deviceId": "test123"}]
+        instance.cloud_devices = []
+        return instance
+
+    mock_login_fixture.side_effect = _factory
+    result = await entry.start_reauth_flow(hass)
+
+    with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "new_pass"}
+        )
+        await hass.async_block_till_done()
+
+    assert result2["reason"] == "reauth_successful"
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.throttle["logins"] == [earlier, earlier + 30]
 
 
 async def test_failed_reauth_persists_the_spent_login(hass: HomeAssistant):
@@ -721,11 +805,14 @@ async def test_failed_reauth_persists_the_spent_login(hass: HomeAssistant):
 async def test_successful_reauth_clears_the_session_replaced_latch(
     hass: HomeAssistant, mock_login_fixture
 ):
+    """The latch and its repair issue go, before the reload sets the entry up."""
     entry = _reauth_entry(hass)
     store = AuthStore(hass, entry.entry_id)
     await store.async_save(
         AuthCache(openudid="0123456789abcdef0123456789abcdef", session_replaced_at=1.0)
     )
+    async_create_session_replaced_issue(hass, entry.entry_id, "user@example.com")
+    issue_id = session_replaced_issue_id(entry.entry_id)
     result = await entry.start_reauth_flow(hass)
 
     with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
@@ -737,3 +824,4 @@ async def test_successful_reauth_clears_the_session_replaced_latch(
     assert result2["reason"] == "reauth_successful"
     saved = await AuthStore(hass, entry.entry_id).async_load()
     assert saved.session_replaced_at is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None

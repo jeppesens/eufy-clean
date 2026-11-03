@@ -29,7 +29,7 @@
       "unknown": "Unexpected error",
       "username_mismatch": "Username cannot be changed",
       "cannot_connect": "Failed to connect",
-      "rate_limited": "Eufy is limiting logins for this account. Wait an hour or two, then try again.",
+      "rate_limited": "Logins for this account are paused to avoid an Eufy account lock-out. Try again in {minutes} min.",
       "login_challenge": "Eufy asks for a verification code or captcha. Sign in once in the Eufy app, then try again."
     },
     "abort": {
