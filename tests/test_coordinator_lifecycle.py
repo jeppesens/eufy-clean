@@ -922,6 +922,28 @@ async def test_a_new_schedule_needs_a_time(hass, login, api_type):
 
 
 @pytest.mark.parametrize("api_type", ["legacy", "scalar"])
+async def test_deleting_the_selected_schedule_clears_the_selection(hass, login, api_type):
+    if api_type == "legacy":
+        other = {**_KITCHEN_HALL_WEEKDAYS, "timerId": 6}
+        coordinator = _legacy_schedule_coordinator(
+            hass, login, [_KITCHEN_HALL_WEEKDAYS, other]
+        )
+        selected, unselected = 5, 6
+    else:
+        coordinator = _scalar_schedule_coordinator(
+            hass, login, [{**_SUNDAY_SCALAR, "id": 1}, _SUNDAY_SCALAR]
+        )
+        selected, unselected = 1, 2
+    coordinator.selected_schedule_id = selected
+
+    await coordinator.async_delete_schedule(unselected)
+    assert coordinator.selected_schedule_id == selected
+
+    await coordinator.async_delete_schedule()
+    assert coordinator.selected_schedule_id is None
+
+
+@pytest.mark.parametrize("api_type", ["legacy", "scalar"])
 @pytest.mark.parametrize("bad", ["25:00", "07:60", "7h", ""])
 async def test_an_invalid_schedule_time_is_a_validation_error(hass, login, api_type, bad):
     coordinator = _legacy_schedule_coordinator(hass, login, [])
