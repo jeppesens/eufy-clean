@@ -1,11 +1,12 @@
-"""Generate the golden per-cell raster fixture shared by the Python and JS suites.
+"""Generate the golden per-cell raster fixture of the server's map grid.
 
 WHAT THIS PROVES, AND WHAT IT DOES NOT
 --------------------------------------
-``render_map_png`` (Pillow, server) and ``buildGridImageData`` (browser) rasterise
-the *same* grid. Neither test suite can run the other's language, so a divergence
-between them passes both suites green while the map visibly differs in a browser.
-This fixture pins **RGB and class per cell over several realistic maps**, including
+``render_map_png`` (Pillow, server) and a client-side grid renderer (browser)
+rasterise the *same* grid. Neither one's tests can run the other's language, so a
+divergence between them passes both green while the map visibly differs in a
+browser. This fixture pins **RGB and class per cell over several realistic maps**,
+including
 every ``(sub_type, pv, stored id)`` combination and the two registration details a
 flat grid cannot reach (the room mask's ``_ro_dx``/``_ro_dy`` offset, and
 ``room_id_offset``).
@@ -15,32 +16,30 @@ the whole of what is comparable without a canvas:
 
 * ``render_map_png`` builds its colour list at cell resolution (``map_stream.py``
   step 1), and only then applies ``FLIP_TOP_BOTTOM`` and a NEAREST resize to
-  ``max_px``. The client does the same two operations as a single
+  ``max_px``. A canvas client does the same two operations as a single
   ``ctx.setTransform`` with a negative vertical scale plus
   ``imageSmoothingEnabled=false``. Both post-processing steps are exact and
   parameter-free given the pre-flip raster, so proving the raster equal proves the
   grid layer equal.
 * Everything drawn *on top* of the grid — dock, trail, robot, zones, room labels —
-  is drawn at output resolution by both ends and is **not** covered here. jsdom
-  ships no 2d context, so nothing in the JS suite can render those at all.
+  is drawn at output resolution by both ends and is **not** covered here: comparing
+  it needs a real 2d canvas.
 
 So: this is a golden-image check of the **grid layer**, pre-flip and pre-resize.
 It is not a full-frame image diff and must not be described as one.
 
-WHERE THE TWO PALETTES DELIBERATELY DIFFER
-------------------------------------------
-They are not the same palette and are not meant to be:
+WHERE A CLIENT PALETTE MAY DIFFER
+---------------------------------
+A client need not share the server palette:
 
 * ``_ROOM_PALETTE`` (server) is 9 entries with index 0 reserved, so rooms cycle
-  through **8** hues. ``ROOM_PALETTE`` (client) is Paul Tol's colour-blind-safe
-  "muted" scheme, **10** hues, none reserved. Room fills therefore never match by
-  RGB, and this fixture does not ask them to — the JS side asserts the *structure*
-  (identical set of room-filled cells, one client colour per room id).
-* The unknown/void cell is ``(30, 30, 30)`` opaque on the server and fully
-  transparent on the client, on purpose: the card's own background shows through
-  the void, which a flat PNG could not do.
-* Wall, free floor and cleaned floor **do** match exactly in the light theme, and
-  the JS side asserts that as a hard RGB equality.
+  through **8** hues. A client palette may have another size and other hues, so
+  room fills are compared by *structure* (identical set of room-filled cells, one
+  client colour per room id), not by RGB.
+* The unknown/void cell is ``(30, 30, 30)`` opaque on the server; a client may draw
+  it transparent so the card's own background shows through, which a flat PNG
+  could not do.
+* Wall, free floor and cleaned floor are exported for a hard RGB equality.
 
 Fixture written to ``tests/frontend/fixtures/golden_render.json``;
 ``tests/test_golden_fixture.py`` regenerates it and fails if it is stale, and also
@@ -230,12 +229,11 @@ def _all_combinations() -> MapData:
 def _palette_cycle() -> MapData:
     """12 rooms in one row-block each — more rooms than either palette has hues.
 
-    The server cycles 8 hues (``_ROOM_PALETTE`` reserves index 0), the client 10.
-    So the two ends collide *different pairs* of rooms, and a naive "one colour per
-    room, one room per colour" assertion is wrong on both. The JS side allows a
-    collision only where the client's own index arithmetic says two rooms share a
-    slot — which is the honest invariant, and it still catches a room being drawn
-    with the wrong hue.
+    The server cycles 8 hues (``_ROOM_PALETTE`` reserves index 0); a client palette
+    of another size collides *different pairs* of rooms, so a naive "one colour per
+    room, one room per colour" assertion is wrong on both. A consumer may allow a
+    collision only where its own index arithmetic puts two rooms on one slot, which
+    still catches a room drawn with the wrong hue.
     """
     width = 12
     height = 12
@@ -448,9 +446,8 @@ def build() -> dict:
     return {
         "v": 1,
         "room_class_base": _ROOM_CLASS_BASE,
-        # Imported from map_stream, never retyped: the JS side asserts its own
-        # wall/floor/cleaned colours equal these, and reports the room hues and the
-        # void as the two places the palettes deliberately part company.
+        # Imported from map_stream, never retyped: a consumer compares its own
+        # wall/floor/cleaned colours with these; room hues and the void may differ.
         "server_pixel_colors": {str(k): list(v) for k, v in sorted(_PIXEL_COLORS.items())},
         "server_room_palette": [list(c) for c in _ROOM_PALETTE],
         "cases": cases,
