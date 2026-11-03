@@ -1491,38 +1491,71 @@ def _clients_connecting(client_cls, *outcomes) -> list[MagicMock]:
     return clients
 
 
+_EOF = ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
+_RESET = ConnectionResetError(104, "Connection reset by peer")
+_REVOKED = _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED")
+
+
 @pytest.mark.parametrize(
-    ("error", "wording"),
+    ("error", "tries", "wording"),
     [
-        (_ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"), "rejected the client certificate"),
-        (
-            ssl.SSLEOFError(8, "EOF occurred in violation of protocol"),
-            "closed the connection in the TLS handshake",
-        ),
-        (
-            ConnectionResetError(104, "Connection reset by peer"),
-            "closed the connection in the TLS handshake",
-        ),
+        (_REVOKED, 1, "rejected the client certificate"),
+        (_EOF, 2, "closed the connection in the TLS handshake"),
+        (_RESET, 2, "closed the connection in the TLS handshake"),
     ],
     ids=["certificate-alert", "eof-in-handshake", "reset-in-handshake"],
 )
 async def test_a_certificate_rejected_at_setup_is_replaced_and_connects(
-    hass, login, caplog, error, wording
+    hass, login, caplog, error, tries, wording
 ):
-    """TLS alert, or the broker cutting the handshake off, on the first
-    connect: one login, then the new cert connects."""
+    """TLS alert on the first connect, or the broker cutting the handshake
+    off on the first two: one login, then the new cert connects."""
     account = _account_login(login.mqtt_credentials)
     coordinator = _coordinator(hass, account)
-    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
-        old, new = _clients_connecting(client_cls, error, None)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}._SETUP_HANDSHAKE_RETRY_DELAY", 0.0
+    ):
+        *old, new = _clients_connecting(client_cls, *[error] * tries, None)
         await coordinator.initialize()
 
     account.login.assert_awaited_once()
-    old.disconnect.assert_awaited_once()
+    for client in old:
+        client.disconnect.assert_awaited_once()
     assert client_cls.call_args.kwargs["certificate_pem"] == "new1"
     assert coordinator.client is new
     assert account.auth_cache.mqtt_credentials["certificate_pem"] == "new1"
     assert f"the MQTT broker {wording}" in caplog.text
+
+
+@pytest.mark.parametrize(
+    ("before", "logins"),
+    [([], 0), ([_REVOKED], 1)],
+    ids=["cached-cert", "replacement-cert"],
+)
+@pytest.mark.parametrize("error", [_EOF, _RESET], ids=["eof", "reset"])
+async def test_a_handshake_cut_off_once_at_setup_retries_the_same_certificate(
+    hass, login, before, logins, error
+):
+    """One closed handshake may be the network: the same cert, cached or
+    just fetched, is tried again after a short delay instead of replaced."""
+    account = _account_login(login.mqtt_credentials)
+    coordinator = _coordinator(hass, account)
+    delay = 0.05
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}._SETUP_HANDSHAKE_RETRY_DELAY", delay
+    ):
+        *_, closed, connected = _clients_connecting(client_cls, *before, error, None)
+        started = asyncio.get_running_loop().time()
+        await coordinator.initialize()
+        waited = asyncio.get_running_loop().time() - started
+
+    assert account.login.await_count == logins
+    closed.disconnect.assert_awaited_once()
+    assert coordinator.client is connected
+    certs = [c.kwargs["certificate_pem"] for c in client_cls.call_args_list]
+    assert certs[-1] == certs[-2]
+    assert account.auth_cache.mqtt_credentials["certificate_pem"] == certs[-1]
+    assert waited >= delay
 
 
 async def test_a_replacement_rejected_at_setup_too_fails_and_holds_off_logins(

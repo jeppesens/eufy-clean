@@ -184,6 +184,9 @@ _CONNECTION_LOSS_GRACE = 60.0
 # warning is logged; each multiple of it asks EufyLogin for replacement
 # credentials.
 _AUTH_FAILURE_WARN_AFTER = 3
+# Seconds before setup tries the same MQTT credentials once more after the
+# broker closed the TLS handshake (one close may be the network).
+_SETUP_HANDSHAKE_RETRY_DELAY = 2.0
 
 
 # Days of a schedule created without any.
@@ -899,13 +902,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
     async def _async_connect_mqtt_at_setup(self, creds: dict[str, Any]) -> None:
         """Connect; a certificate the broker rejects in the TLS handshake, by
-        an alert or by closing it, is replaced once (EufyLogin bounds the
-        logins) and the connect retried.
+        an alert or by closing it twice in a row, is replaced once (EufyLogin
+        bounds the logins) and the connect retried.
 
         With TLS 1.3 the verdict comes after connect() and is counted like a
         refused CONNACK instead.
         """
-        for attempt in range(2):
+        replaced = closed_once = False
+        while True:
             try:
                 await self._async_connect_mqtt(creds)
                 return
@@ -922,11 +926,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     err,
                 )
                 await self._async_drop_client()
+                if rejection is Rejection.SILENT and not closed_once:
+                    closed_once = True
+                    await asyncio.sleep(_SETUP_HANDSHAKE_RETRY_DELAY)
+                    continue
                 # also drops the rejected ones from the cache
                 fresh = await self._async_new_mqtt_credentials(creds)
-                if fresh is None or attempt:
+                if fresh is None or replaced:
                     raise
-                creds = fresh
+                creds, replaced, closed_once = fresh, True, False
 
     async def _async_save_auth_cache(self) -> None:
         """Persist the account's auth cache (no-op without a config entry)."""
