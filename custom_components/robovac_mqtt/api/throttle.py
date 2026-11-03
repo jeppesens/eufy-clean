@@ -50,9 +50,10 @@ SESSION_REPLACED_CODE: Final = 26084
 # 30-day lifetime.
 SESSION_REPLACED_WINDOW: Final = 3600.0
 
-# After a login that brought no MQTT credentials (e.g. a user-center outage):
-# later setups reuse its session instead of logging in again this soon.
-MISSING_CREDENTIALS_HOLD_OFF: Final = 15 * 60.0
+# Login hold-off after a login that brought no MQTT credentials (e.g. a
+# user-center outage) or ones the broker rejected: later setups reuse the
+# session instead of logging in again this soon.
+MQTT_CREDENTIALS_HOLD_OFF: Final = 15 * 60.0
 
 # Body codes of an expired or unknown token.
 TOKEN_INVALID_CODES: Final = frozenset({401, -401})

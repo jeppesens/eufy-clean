@@ -1,5 +1,7 @@
 # pylint: disable=redefined-outer-name
+import json
 import time
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -49,6 +51,18 @@ def mock_login_fixture():
         mock_instance.init = AsyncMock()
         mock_instance.mqtt_devices = [{"deviceName": "Test Vac", "deviceId": "test123"}]
         yield mock_cls
+
+
+@pytest.fixture
+def mock_reload_fixture(hass: HomeAssistant):
+    """Record entry reloads instead of running them.
+
+    Request this in every test that saves changed options or completes a
+    reauth or reconfigure: the reload would otherwise set the entry up and
+    attempt a real Eufy login.
+    """
+    with patch.object(hass.config_entries, "async_schedule_reload") as mock_reload:
+        yield mock_reload
 
 
 async def test_duplicate_entry(hass: HomeAssistant, mock_login_fixture):
@@ -102,10 +116,13 @@ async def test_config_flow_entry_data_contains_vacs(
     assert "vacs" in entry_data
 
 
-async def test_options_settings_independent_edit(hass: HomeAssistant):
+async def test_options_settings_independent_edit(
+    hass: HomeAssistant, mock_reload_fixture
+):
     """The options menu's Settings step is independently editable: changing only
     the map size (and leaving the mobile-notify dropdown blank, which submits
-    None) saves without requiring the other fields to be filled."""
+    None) saves without requiring the other fields to be filled. The changed
+    options reload the entry once."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="Test Vac",
@@ -139,6 +156,7 @@ async def test_options_settings_independent_edit(hass: HomeAssistant):
     assert result2["type"] == data_entry_flow.FlowResultType.CREATE_ENTRY
     assert result2["data"][CONF_NOTIFY_MOBILE_SERVICE] == ""
     assert result2["data"][CONF_MAP_MAX_PX] == "1024"
+    mock_reload_fixture.assert_called_once_with(entry.entry_id)
 
 
 async def test_options_map_size_default_label_matches_the_preselected_size(
@@ -198,10 +216,11 @@ async def _open_device_step(hass, entry, device_id):
 
 
 async def test_options_device_preserves_override_for_unloaded_device(
-    hass: HomeAssistant,
+    hass: HomeAssistant, mock_reload_fixture
 ):
     """B2: editing one device's override must not wipe a stored override for a
-    device that isn't currently loaded."""
+    device that isn't currently loaded. Saving unchanged options must not
+    reload the entry."""
     stored = {
         # Currently loaded and editable.
         "loaded_dev": {
@@ -247,6 +266,8 @@ async def test_options_device_preserves_override_for_unloaded_device(
     # The loaded device kept its host/rooms.
     assert saved["loaded_dev"][CONF_LOCAL_HOST] == "192.168.1.50"
     assert saved["loaded_dev"][CONF_ROOM_NAMES] == {1: "Lounge"}
+    # The options are unchanged, so nothing reloads.
+    mock_reload_fixture.assert_not_called()
 
 
 async def test_options_device_invalid_host_shows_error(hass: HomeAssistant):
@@ -298,8 +319,11 @@ async def test_reauth_shows_password_form(hass: HomeAssistant):
     assert result["step_id"] == "reauth_confirm"
 
 
-async def test_reauth_success_updates_entry(hass: HomeAssistant, mock_login_fixture):
-    """Successful reauth should update the entry password and abort."""
+async def test_reauth_success_updates_entry(
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
+):
+    """Successful reauth should update the entry password, reload it once and
+    abort."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -314,16 +338,15 @@ async def test_reauth_success_updates_entry(hass: HomeAssistant, mock_login_fixt
     result = await entry.start_reauth_flow(hass)
     assert result["step_id"] == "reauth_confirm"
 
-    with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_PASSWORD: "new_pass"},
-        )
-        await hass.async_block_till_done()
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_PASSWORD: "new_pass"},
+    )
 
     assert result2["type"] == data_entry_flow.FlowResultType.ABORT
     assert result2["reason"] == "reauth_successful"
     assert entry.data[CONF_PASSWORD] == "new_pass"
+    mock_reload_fixture.assert_called_once_with(entry.entry_id)
 
 
 async def test_reauth_invalid_credentials_shows_error(hass: HomeAssistant):
@@ -372,8 +395,10 @@ async def test_reconfigure_shows_form(hass: HomeAssistant):
     assert result["step_id"] == "reconfigure"
 
 
-async def test_reconfigure_success(hass: HomeAssistant, mock_login_fixture):
-    """Successful reconfigure updates the password."""
+async def test_reconfigure_success(
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
+):
+    """Successful reconfigure updates the password and reloads the entry once."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -387,15 +412,15 @@ async def test_reconfigure_success(hass: HomeAssistant, mock_login_fixture):
 
     result = await entry.start_reconfigure_flow(hass)
 
-    with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"],
-            {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "new_pass"},
-        )
-        await hass.async_block_till_done()
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"],
+        {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "new_pass"},
+    )
 
     assert result2["type"] == data_entry_flow.FlowResultType.ABORT
+    assert result2["reason"] == "reconfigure_successful"
     assert entry.data[CONF_PASSWORD] == "new_pass"
+    mock_reload_fixture.assert_called_once_with(entry.entry_id)
 
 
 async def test_reconfigure_username_mismatch(hass: HomeAssistant):
@@ -422,7 +447,9 @@ async def test_reconfigure_username_mismatch(hass: HomeAssistant):
     assert result2["errors"][CONF_USERNAME] == "username_mismatch"
 
 
-async def test_options_device_map_id_override_saved(hass: HomeAssistant):
+async def test_options_device_map_id_override_saved(
+    hass: HomeAssistant, mock_reload_fixture
+):
     """Map-id overrides entered in the device step are persisted as ints
     alongside the other per-device overrides: a bare line for all maps and
     'reported: local' lines per map."""
@@ -488,7 +515,9 @@ async def test_options_device_invalid_map_id_shows_error(hass: HomeAssistant):
     assert entry.options.get(CONF_LOCAL_DEVICES, {}) == {}
 
 
-async def test_options_device_cleared_override_is_removed(hass: HomeAssistant):
+async def test_options_device_cleared_override_is_removed(
+    hass: HomeAssistant, mock_reload_fixture
+):
     """Emptying an optional field must drop its stored override. The frontend
     leaves cleared optional fields out of the submission, so the form must not
     re-insert the stored value (it pre-fills with suggested_value, not default)."""
@@ -609,7 +638,7 @@ async def test_login_errors_map_to_form_errors(hass: HomeAssistant, error, expec
 
 
 async def test_reauth_reuses_the_stored_openudid_and_saves_tokens(
-    hass: HomeAssistant, mock_login_fixture
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
 ):
     """Reauth logs in as the entry's device identity and keeps the new tokens."""
     entry = _reauth_entry(hass)
@@ -633,11 +662,9 @@ async def test_reauth_reuses_the_stored_openudid_and_saves_tokens(
     mock_login_fixture.side_effect = _fake_init_factory
     result = await entry.start_reauth_flow(hass)
 
-    with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_PASSWORD: "new_pass"}
-        )
-        await hass.async_block_till_done()
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "new_pass"}
+    )
 
     assert result2["reason"] == "reauth_successful"
     args = mock_login_fixture.call_args
@@ -731,7 +758,7 @@ async def test_a_stored_login_hold_off_refuses_the_flow_login(hass: HomeAssistan
 
 
 async def test_a_successful_reauth_keeps_the_stored_logins(
-    hass: HomeAssistant, mock_login_fixture
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
 ):
     """The reauth login counts against the entry's budget, with the earlier ones."""
     entry = _reauth_entry(hass)
@@ -758,11 +785,9 @@ async def test_a_successful_reauth_keeps_the_stored_logins(
     mock_login_fixture.side_effect = _factory
     result = await entry.start_reauth_flow(hass)
 
-    with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_PASSWORD: "new_pass"}
-        )
-        await hass.async_block_till_done()
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "new_pass"}
+    )
 
     assert result2["reason"] == "reauth_successful"
     saved = await AuthStore(hass, entry.entry_id).async_load()
@@ -803,7 +828,7 @@ async def test_failed_reauth_persists_the_spent_login(hass: HomeAssistant):
 
 
 async def test_successful_reauth_clears_the_session_replaced_latch(
-    hass: HomeAssistant, mock_login_fixture
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
 ):
     """The latch and its repair issue go, before the reload sets the entry up."""
     entry = _reauth_entry(hass)
@@ -815,13 +840,25 @@ async def test_successful_reauth_clears_the_session_replaced_latch(
     issue_id = session_replaced_issue_id(entry.entry_id)
     result = await entry.start_reauth_flow(hass)
 
-    with patch("custom_components.robovac_mqtt.async_setup_entry", return_value=True):
-        result2 = await hass.config_entries.flow.async_configure(
-            result["flow_id"], {CONF_PASSWORD: "new_pass"}
-        )
-        await hass.async_block_till_done()
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "new_pass"}
+    )
 
     assert result2["reason"] == "reauth_successful"
     saved = await AuthStore(hass, entry.entry_id).async_load()
     assert saved.session_replaced_at is None
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+# ── Translations ──────────────────────────────────────────────────
+
+
+def test_en_translations_match_strings():
+    """HA loads a custom integration's strings only from translations/en.json,
+    never from strings.json, so the two must stay identical (#172)."""
+    component_dir = Path(__file__).parents[1] / "custom_components" / DOMAIN
+    strings = json.loads((component_dir / "strings.json").read_text(encoding="utf-8"))
+    en = json.loads(
+        (component_dir / "translations" / "en.json").read_text(encoding="utf-8")
+    )
+    assert en == strings

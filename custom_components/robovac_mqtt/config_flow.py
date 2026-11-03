@@ -275,8 +275,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         return title, errors, placeholders
 
 
-class OptionsFlowHandler(config_entries.OptionsFlow):
-    """Eufy Robovac options: global settings + per-device local-Tuya overrides."""
+class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
+    """Eufy Robovac options: global settings + per-device local-Tuya overrides.
+
+    Saving changed options reloads the entry (OptionsFlowWithReload), so the
+    entry must not register an update listener: HA raises if it does.
+    """
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         # HA 2025+ deprecates assigning to self.config_entry; use a private ref.

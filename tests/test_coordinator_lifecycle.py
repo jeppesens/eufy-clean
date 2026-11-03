@@ -9,12 +9,16 @@ import asyncio
 import base64
 import json
 import logging
+import ssl
+import threading
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.const import CONF_USERNAME
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from paho.mqtt.packettypes import PacketTypes
+from paho.mqtt.reasoncodes import ReasonCode
 
 from custom_components.robovac_mqtt.api.cloud import (
     EufyLogin,
@@ -24,12 +28,16 @@ from custom_components.robovac_mqtt.api.cloud import (
 from custom_components.robovac_mqtt.api.legacy_parser import parse_legacy_schedules
 from custom_components.robovac_mqtt.api.map_stream import MapData
 from custom_components.robovac_mqtt.api.parser import update_state
-from custom_components.robovac_mqtt.api.throttle import SESSION_REPLACED_WINDOW
+from custom_components.robovac_mqtt.api.throttle import (
+    KIND_LOGIN,
+    SESSION_REPLACED_WINDOW,
+)
 from custom_components.robovac_mqtt.api.tuya_thing import TuyaThingClient
 from custom_components.robovac_mqtt.auth_store import AuthCache
 from custom_components.robovac_mqtt.coordinator import (
     _AUTH_FAILURE_WARN_AFTER,
     _CONNECTION_LOSS_GRACE,
+    _SCHEDULE_REFRESH_INTERVAL,
     _TUYA_SESSION_REFRESH_INTERVAL,
     EufyCleanCoordinator,
     _move_shapes,
@@ -348,6 +356,49 @@ def test_schedule_fetch_retries_at_most_every_cooldown(login):
     assert hass.async_create_task.call_count == 2
 
 
+def test_loaded_schedules_are_fetched_again_every_refresh_interval(login):
+    """Schedules changed in the app show up without a restart."""
+    hass = MagicMock()
+    coordinator = _coordinator(hass, login, apiType="legacy")
+    login.tuya_thing_client = MagicMock()
+    coordinator.data = VacuumState(api_type="legacy", received_fields={"schedules"})
+
+    coordinator._maybe_refresh_legacy_schedules()
+    coordinator._sched_attempt_ts -= _SCHEDULE_REFRESH_INTERVAL - 1
+    coordinator._maybe_refresh_legacy_schedules()
+    assert hass.async_create_task.call_count == 1
+
+    coordinator._sched_attempt_ts -= 1
+    coordinator._maybe_refresh_legacy_schedules()
+    assert hass.async_create_task.call_count == 2
+
+
+async def test_no_background_schedule_fetch_starts_while_one_runs(login):
+    hass = MagicMock()
+    coordinator = _coordinator(hass, login, apiType="legacy")
+    login.tuya_thing_client = MagicMock()
+
+    async with coordinator._sched_refresh_lock:
+        coordinator._maybe_refresh_legacy_schedules()
+
+    hass.async_create_task.assert_not_called()
+
+
+async def test_a_direct_schedule_fetch_counts_as_the_last_attempt(login):
+    """The startup fetch is not repeated by the first DPS message after it."""
+    hass = MagicMock()
+    coordinator = _coordinator(hass, login, apiType="legacy")
+    login.tuya_thing_client = MagicMock()
+    coordinator.async_update_listeners = MagicMock()
+    coordinator._tuya_timer_call = AsyncMock(return_value=([], None))
+    coordinator._sched_attempt_ts = time.monotonic() - _SCHEDULE_REFRESH_INTERVAL
+
+    assert await coordinator.async_refresh_legacy_schedules()
+    coordinator._maybe_refresh_legacy_schedules()
+
+    hass.async_create_task.assert_not_called()
+
+
 async def test_concurrent_first_saves_share_one_document(hass, login):
     """Two first writers must not each load a dict and drop the other's keys."""
     coordinator = _coordinator(hass, login)
@@ -609,6 +660,125 @@ async def test_enabling_a_scalar_schedule_writes_json_bools(hass, login):
     assert '"e":1' not in payload
 
 
+def _scalar_schedule_coordinator(hass, login, entries):
+    """A scalar coordinator whose last DPS 151 report held ``entries``."""
+    coordinator = _coordinator(hass, login, apiType="scalar")
+    coordinator.async_send_command = AsyncMock()
+    coordinator.data, _ = update_state(
+        VacuumState(api_type="scalar", device_model="T2210"), {"151": {"l": entries}}
+    )
+    return coordinator
+
+
+def _sent_scalar_entries(coordinator):
+    (payload,) = coordinator.async_send_command.await_args.args[0].values()
+    return json.loads(payload)["l"]
+
+
+# An entry the client has no names for: days "0"/"8", suction 4, pattern 3, extra key.
+_UNNAMED_SCALAR = {"id": 1, "e": True, "t": "0700", "r": "08", "s": 4, "f": 3, "x": 1}
+_SUNDAY_SCALAR = {"id": 2, "e": True, "t": "0800", "r": "7", "s": 0, "f": 1}
+
+
+@pytest.mark.parametrize(
+    ("call", "rest"),
+    [
+        (lambda c: c.async_set_schedule_status(2, False), [{**_SUNDAY_SCALAR, "e": False}]),
+        (lambda c: c.async_delete_schedule(2), []),
+        (
+            lambda c: c.async_set_schedule(schedule_id=2, time="09:00"),
+            [{**_SUNDAY_SCALAR, "t": "0900"}],
+        ),
+        (
+            lambda c: c.async_set_schedule(time="09:00"),
+            [_SUNDAY_SCALAR, {"id": 3, "e": True, "t": "0900", "r": "1234567", "s": 1, "f": 1}],
+        ),
+    ],
+)
+async def test_editing_a_scalar_schedule_resends_the_others_as_reported(
+    hass, login, call, rest
+):
+    """An entry the client cannot re-encode neither blocks nor changes with the others."""
+    coordinator = _scalar_schedule_coordinator(
+        hass, login, [_UNNAMED_SCALAR, _SUNDAY_SCALAR]
+    )
+
+    await call(coordinator)
+
+    assert _sent_scalar_entries(coordinator) == [_UNNAMED_SCALAR, *rest]
+
+
+async def test_a_scalar_schedule_the_client_cannot_name_can_be_switched(hass, login):
+    """Only its ``e`` changes, also on a later write before the robot reports back."""
+    coordinator = _scalar_schedule_coordinator(
+        hass, login, [_UNNAMED_SCALAR, _SUNDAY_SCALAR]
+    )
+
+    await coordinator.async_set_schedule_status(1, False)
+    assert _sent_scalar_entries(coordinator) == [
+        {**_UNNAMED_SCALAR, "e": False}, _SUNDAY_SCALAR,
+    ]
+    assert [s["enabled"] for s in coordinator.data.schedules] == [False, True]
+
+    await coordinator.async_set_schedule_status(2, False)
+    assert _sent_scalar_entries(coordinator) == [
+        {**_UNNAMED_SCALAR, "e": False}, {**_SUNDAY_SCALAR, "e": False},
+    ]
+
+
+@pytest.mark.parametrize("reported", ["{", '{"l": [7]}', 5])
+async def test_scalar_schedules_are_encoded_when_the_last_report_is_unreadable(
+    hass, login, reported
+):
+    coordinator = _scalar_schedule_coordinator(hass, login, [_SUNDAY_SCALAR])
+    coordinator.data.raw_dps["151"] = reported
+
+    await coordinator.async_set_schedule_status(2, False)
+
+    assert _sent_scalar_entries(coordinator) == [{**_SUNDAY_SCALAR, "e": False}]
+
+
+async def _yielding_send(coordinator):
+    """Make the DPS write yield to the loop; return the list of commands sent."""
+    sent = []
+
+    async def _send(command):
+        sent.append(command)
+        await asyncio.sleep(0.01)
+
+    coordinator.async_send_command = _send
+    return sent
+
+
+async def test_overlapping_scalar_schedule_adds_keep_both(hass, login):
+    """The second add builds on the first, so neither is lost nor shares its id."""
+    coordinator = _scalar_schedule_coordinator(hass, login, [_SUNDAY_SCALAR])
+    sent = await _yielding_send(coordinator)
+
+    await asyncio.gather(
+        coordinator.async_set_schedule(time="09:00"),
+        coordinator.async_set_schedule(time="10:00"),
+    )
+
+    last = json.loads(sent[-1]["151"])["l"]
+    assert [(e["id"], e["t"]) for e in last] == [(2, "0800"), (3, "0900"), (4, "1000")]
+
+
+async def test_overlapping_scalar_switch_and_delete_keep_both(hass, login):
+    coordinator = _scalar_schedule_coordinator(
+        hass, login, [{**_SUNDAY_SCALAR, "id": 1}, _SUNDAY_SCALAR]
+    )
+    sent = await _yielding_send(coordinator)
+
+    await asyncio.gather(
+        coordinator.async_set_schedule_status(1, False),
+        coordinator.async_delete_schedule(2),
+    )
+
+    assert json.loads(sent[-1]["151"])["l"] == [{**_SUNDAY_SCALAR, "id": 1, "e": False}]
+    assert [s["id"] for s in coordinator.data.schedules] == [1]
+
+
 @pytest.mark.parametrize("kwargs", [{"suction": "Boost_IQ"}, {"days": "Mondy"}])
 async def test_scalar_schedules_reject_unknown_values(hass, login, kwargs):
     """An unknown suction or day is an error, not a silent default."""
@@ -710,6 +880,42 @@ async def test_an_unknown_legacy_schedule_is_looked_up_once_then_refused(hass, l
     coordinator._tuya_timer_call.assert_not_awaited()
 
 
+def _held_timer_list(coordinator, timers):
+    """Answer timer calls; a list call waits for the returned event. Returns (event, keys)."""
+    release = asyncio.Event()
+    keys = []
+
+    async def _call(key, _methods, **_fields):
+        keys.append(key)
+        if key == "timer.list":
+            await release.wait()
+            return timers, None
+        return {"success": True}, None
+
+    coordinator._tuya_timer_call = _call
+    return release, keys
+
+
+@pytest.mark.parametrize("loaded", [[], [_KITCHEN_HALL_WEEKDAYS]])
+async def test_a_legacy_schedule_edit_waits_for_a_running_fetch(hass, login, loaded):
+    """The lookup of an unknown id and the read-back after the write both see a
+    fetch that starts after the one already running."""
+    login.tuya_thing_client = MagicMock()
+    coordinator = _coordinator(hass, login, apiType="legacy")
+    coordinator.data = VacuumState(api_type="legacy", schedules=parse_legacy_schedules(loaded))
+    release, keys = _held_timer_list(coordinator, [_KITCHEN_HALL_WEEKDAYS])
+    running = asyncio.ensure_future(coordinator.async_refresh_legacy_schedules())
+    await asyncio.sleep(0)
+
+    edit = asyncio.ensure_future(coordinator.async_set_schedule(schedule_id=5, time="10:00"))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(running, edit)
+
+    lookup = [] if loaded else ["timer.list"]
+    assert keys == ["timer.list", *lookup, "timer.modify", "timer.list"]
+
+
 async def test_changing_a_scalar_schedule_time_keeps_everything_else(hass, login):
     coordinator = _coordinator(hass, login, apiType="scalar")
     coordinator.async_send_command = AsyncMock()
@@ -739,12 +945,82 @@ async def test_a_new_schedule_needs_a_time(hass, login, api_type):
     coordinator.async_send_command.assert_not_awaited()
 
 
+@pytest.mark.parametrize("api_type", ["legacy", "scalar"])
+async def test_deleting_the_selected_schedule_clears_the_selection(hass, login, api_type):
+    if api_type == "legacy":
+        other = {**_KITCHEN_HALL_WEEKDAYS, "timerId": 6}
+        coordinator = _legacy_schedule_coordinator(
+            hass, login, [_KITCHEN_HALL_WEEKDAYS, other]
+        )
+        selected, unselected = 5, 6
+    else:
+        coordinator = _scalar_schedule_coordinator(
+            hass, login, [{**_SUNDAY_SCALAR, "id": 1}, _SUNDAY_SCALAR]
+        )
+        selected, unselected = 1, 2
+    coordinator.selected_schedule_id = selected
+
+    await coordinator.async_delete_schedule(unselected)
+    assert coordinator.selected_schedule_id == selected
+
+    await coordinator.async_delete_schedule()
+    assert coordinator.selected_schedule_id is None
+
+
+@pytest.mark.parametrize("api_type", ["legacy", "scalar"])
+async def test_a_failed_schedule_delete_keeps_the_selection(hass, login, api_type):
+    if api_type == "legacy":
+        coordinator = _legacy_schedule_coordinator(hass, login, [_KITCHEN_HALL_WEEKDAYS])
+        coordinator._tuya_timer_call.return_value = (None, "timeout")
+        selected = 5
+    else:
+        coordinator = _scalar_schedule_coordinator(hass, login, [_SUNDAY_SCALAR])
+        coordinator.async_send_command.side_effect = HomeAssistantError("offline")
+        selected = _SUNDAY_SCALAR["id"]
+    coordinator.selected_schedule_id = selected
+
+    with pytest.raises(HomeAssistantError):
+        await coordinator.async_delete_schedule()
+
+    assert coordinator.selected_schedule_id == selected
+
+
+@pytest.mark.parametrize("api_type", ["legacy", "scalar"])
+@pytest.mark.parametrize("bad", ["25:00", "07:60", "7h", ""])
+async def test_an_invalid_schedule_time_is_a_validation_error(hass, login, api_type, bad):
+    coordinator = _legacy_schedule_coordinator(hass, login, [])
+    coordinator.api_type = api_type
+    coordinator.async_send_command = AsyncMock()
+
+    with pytest.raises(ServiceValidationError, match="Invalid time"):
+        await coordinator.async_set_schedule(time=bad)
+
+    coordinator._tuya_timer_call.assert_not_awaited()
+    coordinator.async_send_command.assert_not_awaited()
+
+
 # --- transport availability ----------------------------------------------------------
 
 
 def _armed(later: MagicMock):
     """The callback the last async_call_later was given."""
     return later.call_args.args[2]
+
+
+@pytest.mark.parametrize("changed", [True, False])
+async def test_credentials_accepted_after_a_login_are_saved_as_accepted(
+    hass, login, changed
+):
+    """The stored cache stops marking them unaccepted, so a later rejection
+    after a restart may log in again."""
+    coordinator = _coordinator(hass, login)
+    login.mqtt_credentials_accepted = MagicMock(return_value=changed)
+    coordinator._async_save_auth_cache = AsyncMock()
+
+    coordinator._on_connection_change(True, False)
+    await asyncio.sleep(0)
+
+    assert coordinator._async_save_auth_cache.await_count == changed
 
 
 def test_a_short_disconnect_keeps_entities_available(login):
@@ -790,6 +1066,28 @@ def test_repeated_auth_refusals_warn_once(login, caplog):
     login.checkLogin.assert_not_called()
 
 
+async def test_refused_connects_count_once_each(hass, login):
+    """paho reports a refused CONNACK to on_connect, then to on_disconnect:
+    the third refused attempt, not the second, asks for new credentials."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=False)
+    paho = MagicMock()
+    coordinator = _coordinator(hass, login)
+    with patch(
+        "custom_components.robovac_mqtt.api.client.get_blocking_mqtt_client",
+        return_value=paho,
+    ), patch(f"{_MOD}.async_call_later", return_value=MagicMock()):
+        client = await coordinator._async_connect_mqtt(login.mqtt_credentials)
+        refused = ReasonCode(PacketTypes.CONNACK, "Not authorized")
+        dropped = ReasonCode(PacketTypes.DISCONNECT, "Unspecified error")
+        for attempt in range(1, _AUTH_FAILURE_WARN_AFTER + 1):
+            assert login.replace_rejected_mqtt_credentials.await_count == 0, attempt
+            client._on_connect(paho, None, MagicMock(), refused, None)
+            client._on_disconnect(paho, None, MagicMock(), dropped, None)
+            await _settle()
+
+    login.replace_rejected_mqtt_credentials.assert_awaited_once()
+
+
 def _account_login(credentials):
     """A real EufyLogin holding cached MQTT credentials; logins yield new ones."""
     login = EufyLogin(
@@ -798,10 +1096,11 @@ def _account_login(credentials):
     )
     issued = iter(range(1, 100))
 
-    async def _login(_config):
-        login.mqtt_credentials = {**credentials, "certificate_pem": f"new{next(issued)}"}
+    async def _http_login():
+        return {"mqtt": {**credentials, "certificate_pem": f"new{next(issued)}"}}
 
-    login.login = AsyncMock(side_effect=_login)
+    login.eufyApi.login = AsyncMock(side_effect=_http_login)
+    login.login = AsyncMock(wraps=login.login)
     return login
 
 
@@ -956,9 +1255,8 @@ async def test_a_refused_replacement_login_starts_reauth(hass, login, error, kic
         create_issue.assert_not_called()
 
 
-@pytest.mark.parametrize("during", ["login", "connect"])
-async def test_a_teardown_during_a_replacement_leaves_no_client(hass, login, during):
-    """Unload while the login or the reconnect runs: nothing outlives it."""
+async def test_a_teardown_during_the_replacement_login_connects_nothing(hass, login):
+    """Unload while the replacement login runs: no new client is created."""
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
         f"{_MOD}.async_call_later", return_value=MagicMock()
     ):
@@ -968,19 +1266,90 @@ async def test_a_teardown_during_a_replacement_leaves_no_client(hass, login, dur
             coordinator._closing = True
             return True
 
-        if during == "login":
-            login.replace_rejected_mqtt_credentials = AsyncMock(side_effect=_close)
-        else:
-            login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
-            client_cls.side_effect = lambda **_kw: MagicMock(
-                connect=AsyncMock(side_effect=_close), disconnect=AsyncMock()
-            )
+        login.replace_rejected_mqtt_credentials = AsyncMock(side_effect=_close)
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()
 
-    assert client_cls.call_count == (1 if during == "login" else 2)
-    if during == "connect":
-        assert coordinator.client is None
+    assert client_cls.call_count == 1
+
+
+async def _teardown_during_the_replacement_connect(hass, login, connect_error=None):
+    """Run a replacement whose paho connect blocks until teardown has finished.
+
+    The real EufyCleanClient runs against a faked paho client; its disconnect()
+    does nothing until connect() returns. Returns (coordinator, paho client).
+    """
+    entered, gate = threading.Event(), threading.Event()
+    paho = MagicMock()
+
+    def _blocking_connect(*_args):
+        entered.set()
+        gate.wait(5)
+        if connect_error is not None:
+            raise connect_error
+
+    paho.connect.side_effect = _blocking_connect
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
+    coordinator = _coordinator(hass, login)
+    coordinator.config_entry = _entry()
+    coordinator._mqtt_credentials = {**login.mqtt_credentials, "certificate_pem": "old"}
+    coordinator.client = MagicMock(disconnect=AsyncMock())
+    with patch(
+        "custom_components.robovac_mqtt.api.client.get_blocking_mqtt_client",
+        return_value=paho,
+    ), patch(f"{_MOD}.async_call_later", return_value=MagicMock()):
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        async with asyncio.timeout(5):
+            while not entered.is_set():
+                await asyncio.sleep(0.01)
+            await coordinator.async_teardown()
+            gate.set()
+            while coordinator._mqtt_credentials_replacing:
+                await asyncio.sleep(0.01)
+    return coordinator, paho
+
+
+async def test_a_teardown_during_the_replacement_connect_stops_the_new_client(
+    hass, login
+):
+    """Unload while the new client connects: its network thread is stopped too."""
+    coordinator, paho = await _teardown_during_the_replacement_connect(hass, login)
+
+    paho.loop_start.assert_called_once()
+    paho.loop_stop.assert_called_once()
+    assert coordinator.client is None
+
+
+async def test_a_teardown_during_a_failing_replacement_connect_reloads_nothing(
+    hass, login
+):
+    """Unload while the new client fails to connect: no reload of the entry."""
+    coordinator, _paho = await _teardown_during_the_replacement_connect(
+        hass, login, OSError("no route")
+    )
+
+    hass.config_entries.async_schedule_reload.assert_not_called()
+    assert coordinator.client is None
+
+
+async def test_a_teardown_while_the_old_client_stops_disconnects_the_new_one(
+    hass, login
+):
+    """Unload while the rejected client disconnects: the new one is not kept."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
+        f"{_MOD}.async_call_later", return_value=MagicMock()
+    ):
+        (coordinator,) = await _connected_coordinators(hass, login, 1, client_cls)
+        coordinator.client.disconnect.side_effect = coordinator.async_teardown
+        new_client = MagicMock(connect=AsyncMock(), disconnect=AsyncMock())
+        client_cls.side_effect = lambda **_kw: new_client
+        _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
+        await _settle()
+
+    new_client.connect.assert_awaited_once()
+    new_client.disconnect.assert_awaited_once()
+    assert coordinator.client is None
 
 
 async def test_a_failed_reconnect_reloads_the_entry(hass, login):
@@ -1003,6 +1372,87 @@ async def test_a_failed_reconnect_reloads_the_entry(hass, login):
     hass.config_entries.async_schedule_reload.assert_called_once_with("entry")
     assert coordinator.client is None
     store_cls.return_value.async_save.assert_awaited_with(account.auth_cache)
+
+
+def _ssl_error(reason: str) -> ssl.SSLError:
+    err = ssl.SSLError(1, f"[SSL: {reason}] alert (_ssl.c:1081)")
+    err.reason = reason
+    return err
+
+
+def _clients_connecting(client_cls, *outcomes) -> list[MagicMock]:
+    """Clients whose connect() raises the next outcome (None: connects)."""
+    clients = [
+        MagicMock(connect=AsyncMock(side_effect=outcome), disconnect=AsyncMock())
+        for outcome in outcomes
+    ]
+    client_cls.side_effect = clients
+    return clients
+
+
+async def test_a_certificate_rejected_at_setup_is_replaced_and_connects(hass, login):
+    """TLS alert on the first connect: one login, then the new cert connects."""
+    account = _account_login(login.mqtt_credentials)
+    coordinator = _coordinator(hass, account)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
+        old, new = _clients_connecting(
+            client_cls, _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"), None
+        )
+        await coordinator.initialize()
+
+    account.login.assert_awaited_once()
+    old.disconnect.assert_awaited_once()
+    assert client_cls.call_args.kwargs["certificate_pem"] == "new1"
+    assert coordinator.client is new
+    assert account.auth_cache.mqtt_credentials["certificate_pem"] == "new1"
+
+
+async def test_a_replacement_rejected_at_setup_too_fails_and_holds_off_logins(
+    hass, login
+):
+    """Both certs refused: setup fails, no cert stays cached, logins wait."""
+    account = _account_login(login.mqtt_credentials)
+    coordinator = _coordinator(hass, account)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
+        _clients_connecting(
+            client_cls,
+            _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"),
+            _ssl_error("SSLV3_ALERT_BAD_CERTIFICATE"),
+        )
+        with pytest.raises(ssl.SSLError):
+            await coordinator.initialize()
+
+    account.login.assert_awaited_once()
+    assert account.auth_cache.mqtt_credentials is None
+    assert account.throttle.held_off(KIND_LOGIN) is not None
+    assert coordinator.client is None
+
+
+async def test_setup_tries_one_replacement_certificate_at_most(hass, login):
+    """Replacements keep coming and keep being rejected: setup still fails."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
+    coordinator = _coordinator(hass, login)
+    rejected = _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED")
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
+        _clients_connecting(client_cls, rejected, rejected, None)
+        with pytest.raises(ssl.SSLError):
+            await coordinator.initialize()
+
+    assert client_cls.call_count == 2
+
+
+async def test_another_tls_failure_at_setup_keeps_the_cached_certificate(hass, login):
+    """A handshake failure that is no verdict on the cert: no login, cert kept."""
+    account = _account_login(login.mqtt_credentials)
+    cached = account.auth_cache.mqtt_credentials
+    coordinator = _coordinator(hass, account)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
+        _clients_connecting(client_cls, _ssl_error("SSLV3_ALERT_HANDSHAKE_FAILURE"))
+        with pytest.raises(ssl.SSLError):
+            await coordinator.initialize()
+
+    account.login.assert_not_awaited()
+    assert account.auth_cache.mqtt_credentials is cached
 
 
 def test_teardown_cancels_the_pending_unavailable_timer(login):

@@ -28,7 +28,7 @@ from .errors import (
 from .http import EufyHTTPClient
 from .throttle import (
     KIND_LOGIN,
-    MISSING_CREDENTIALS_HOLD_OFF,
+    MQTT_CREDENTIALS_HOLD_OFF,
     SESSION_REPLACED_WINDOW,
     CloudThrottle,
 )
@@ -50,6 +50,9 @@ _SESSION_REPLACED_MESSAGE = (
     "another client keeps logging in with this Eufy account and ending the "
     "session; not logging in again until reauthenticated"
 )
+
+# Seconds without a replacement MQTT login after one failed (Eufy unreachable).
+_MQTT_RELOGIN_RETRY_DELAY = 5 * 60.0
 
 # Failures of one region probe that must not stop the next region.
 _TUYA_PROBE_ERRORS = (
@@ -117,11 +120,14 @@ class EufyLogin:
         self._tuya_login_lock = asyncio.Lock()
         # One MQTT-credential login for all coordinators that find none.
         self._check_login_lock = asyncio.Lock()
-        # MQTT credentials whose rejection gets no further login: a replacement
-        # the broker has not accepted yet, or ones the account login refused.
+        # MQTT credentials whose rejection gets no further login: ones a login
+        # produced that the broker has not accepted yet, or ones the account
+        # login refused.
         self._mqtt_relogin_spent: dict[str, Any] | None = None
         # time.monotonic() of the last replacement login that brought credentials
         self._replacement_login_at: float | None = None
+        # time.monotonic() before which no replacement login is retried
+        self._mqtt_relogin_not_before: float | None = None
         # Persisted handshake reused across restarts; None disables caching.
         self.auth_cache = auth_cache
         if auth_cache is not None:
@@ -129,6 +135,8 @@ class EufyLogin:
                 auth_cache.session, auth_cache.user_info, auth_cache.login_label
             )
             self.mqtt_credentials = auth_cache.mqtt_credentials
+            if auth_cache.mqtt_credentials_unaccepted and self.mqtt_credentials:
+                self._mqtt_relogin_spent = self.mqtt_credentials
             if auth_cache.session:
                 self._eufy_user_id = auth_cache.session.get("user_id")
 
@@ -144,7 +152,7 @@ class EufyLogin:
 
         While the throttle refuses a login, a stored session that has not
         expired is tried even when ``can_skip_login`` is False (expiry margins,
-        missing MQTT credentials): it may still serve the Tuya robots.
+        an expired MQTT certificate): it may still serve the Tuya robots.
 
         A session ended with body code 26084 gets one login, like an expired
         token. A rejection within SESSION_REPLACED_WINDOW of that login latches
@@ -154,6 +162,7 @@ class EufyLogin:
         if cache is not None and cache.session_replaced_at:
             raise EufySessionReplacedError(_SESSION_REPLACED_MESSAGE)
         relogin_for_replaced = False
+        discover = True
         cached = cache is not None and cache.can_skip_login
         if (
             cache is not None
@@ -191,26 +200,28 @@ class EufyLogin:
             self._latch_if_rejected_again()
             relogin_for_replaced = self.eufyApi.session_replaced
             if proved:
+                # the session just served discovery and stays stored (it serves
+                # the Tuya robots if the login fails); only the login is missing
                 _LOGGER.info(
                     "Cached Eufy session has no MQTT credentials for %d MQTT "
                     "device(s); logging in again",
                     len(self.mqtt_devices),
                 )
+                discover = False
             else:
                 _LOGGER.info(
                     "Cached Eufy credentials were rejected or found nothing; "
                     "re-authenticating"
                 )
-            # A proved session stays stored until a login replaces it: it still
-            # serves the Tuya devices while logins are refused.
-            self._reset_after_stale_cache(keep_cached_tokens=proved)
+                self._reset_after_stale_cache()
 
-        _LOGGER.debug("EufyLogin.init() starting: HTTP login + device discovery")
+        _LOGGER.debug("EufyLogin.init() starting: HTTP login")
         await self.login({"mqtt": True})
         if relogin_for_replaced and self.auth_cache is not None:
             self.auth_cache.replaced_relogin_at = time.time()
         try:
-            await self._discover()
+            if discover:
+                await self._discover()
         finally:
             # the login succeeded: keep its tokens even if discovery failed
             self._capture_auth_cache()
@@ -218,7 +229,7 @@ class EufyLogin:
         if self._mqtt_devices_without_credentials():
             # e.g. a user-center outage: the next setups reuse this session
             # instead of logging in again until the hold-off ends
-            self.throttle.hold_off(KIND_LOGIN, MISSING_CREDENTIALS_HOLD_OFF)
+            self.throttle.hold_off(KIND_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
 
     def _mqtt_devices_without_credentials(self) -> bool:
         """MQTT robots found, but the session holds no MQTT credentials for them."""
@@ -276,9 +287,9 @@ class EufyLogin:
                 "Tuya Cloud login failed; legacy cloud devices will be unavailable: %s", e
             )
 
-    def _reset_after_stale_cache(self, keep_cached_tokens: bool = False) -> None:
+    def _reset_after_stale_cache(self) -> None:
         """Drop everything derived from a cache that turned out to be stale."""
-        if self.auth_cache is not None and not keep_cached_tokens:
+        if self.auth_cache is not None:
             self.auth_cache.clear_tokens()
         self.eufyApi.restore(None, None, self.eufyApi.login_label)
         self.mqtt_credentials = None
@@ -304,6 +315,10 @@ class EufyLogin:
             cache.session_expires_at = expiry
         cache.user_info = trim_user_info(self.eufyApi.user_info)
         cache.mqtt_credentials = self.mqtt_credentials
+        cache.mqtt_credentials_unaccepted = (
+            self.mqtt_credentials is not None
+            and self.mqtt_credentials is self._mqtt_relogin_spent
+        )
         # The fallback-session path never sets a label; writing None would
         # erase a previously good memo.
         if self.eufyApi.login_label:
@@ -323,6 +338,7 @@ class EufyLogin:
             raise EufyLoginError("Login failed")
 
         self.mqtt_credentials = eufyLogin["mqtt"]
+        self._mqtt_relogin_spent = self.mqtt_credentials
         _LOGGER.debug("HTTP login successful, MQTT credentials obtained")
 
         session = eufyLogin.get("session", {})
@@ -354,12 +370,15 @@ class EufyLogin:
 
         The rejected credentials leave the auth cache, so the next setup logs in
         instead of reusing them. The login counts against the login budget; none
-        is sent while the throttle refuses one, nor for credentials a replacement
-        already produced or the login refused. ``save`` persists the cache, with
-        the throttle state, after a change. Returns True when the caller should
-        reconnect with ``mqtt_credentials``, False when it should wait, including
-        after a throttle answer. Raises EufyLoginError when the account login is
-        refused (credentials, or a verification code or captcha), and
+        is sent while the throttle refuses one, within the retry delay of a
+        failed one, nor for credentials a login produced that the broker has not
+        accepted yet (the auth cache keeps that mark across a restart) or the
+        login refused: those start the login hold-off, which outlives a restart.
+        ``save`` persists the cache, with the throttle state, after a change.
+        Returns True when the caller should reconnect with ``mqtt_credentials``,
+        False when it should wait, including after a throttle answer. Raises
+        EufyLoginError when the account login is refused (credentials, or a
+        verification code or captcha), and
         EufySessionReplacedError instead of a second replacement login within
         SESSION_REPLACED_WINDOW of the last one: another client keeps taking
         the account, and the kick-out latch is set as setup sets it.
@@ -375,14 +394,16 @@ class EufyLogin:
                 changed = True
             try:
                 if rejected is self._mqtt_relogin_spent:
-                    _LOGGER.debug("Replacement MQTT credentials rejected too; no login")
+                    _LOGGER.debug("MQTT credentials from a login rejected; no login")
+                    if self.throttle.held_off(KIND_LOGIN) is None:
+                        self.throttle.hold_off(KIND_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
+                        changed = True
                     return False
                 if not self.throttle.login_allowed():
                     _LOGGER.debug(
                         "New MQTT credentials wait for the login hold-off or budget"
                     )
                     return False
-                changed = True
                 last = self._replacement_login_at
                 if last is not None and time.monotonic() - last < SESSION_REPLACED_WINDOW:
                     _LOGGER.warning(
@@ -391,7 +412,13 @@ class EufyLogin:
                         "Not logging in again until the entry is reauthenticated"
                     )
                     self._mqtt_relogin_spent = rejected
+                    changed = True
                     raise self._latch_session_replaced()
+                not_before = self._mqtt_relogin_not_before
+                if not_before is not None and time.monotonic() < not_before:
+                    _LOGGER.debug("Replacement MQTT login held back; no login")
+                    return False
+                changed = True
                 try:
                     await self.login({"mqtt": True})
                 except EufyLoginError:
@@ -401,12 +428,14 @@ class EufyLogin:
                     EufyLoginTransientError, aiohttp.ClientError, TimeoutError
                 ) as err:
                     _LOGGER.warning("Could not fetch new MQTT credentials: %s", err)
+                    self._mqtt_relogin_not_before = (
+                        time.monotonic() + _MQTT_RELOGIN_RETRY_DELAY
+                    )
                     return False
                 self._capture_auth_cache()
                 if not self.mqtt_credentials:
-                    self.throttle.hold_off(KIND_LOGIN, MISSING_CREDENTIALS_HOLD_OFF)
+                    self.throttle.hold_off(KIND_LOGIN, MQTT_CREDENTIALS_HOLD_OFF)
                     return False
-                self._mqtt_relogin_spent = self.mqtt_credentials
                 self._replacement_login_at = time.monotonic()
                 _LOGGER.info("Fetched new MQTT credentials after a broker rejection")
                 return True
@@ -414,10 +443,19 @@ class EufyLogin:
                 if changed:
                     await save()
 
-    def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> None:
-        """The broker accepted ``credentials``: a later rejection may log in again."""
-        if credentials is not None and credentials is self._mqtt_relogin_spent:
-            self._mqtt_relogin_spent = None
+    def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> bool:
+        """The broker accepted ``credentials``: a later rejection may log in again.
+
+        Returns True when the auth cache changed and should be saved.
+        """
+        if credentials is None or credentials is not self._mqtt_relogin_spent:
+            return False
+        self._mqtt_relogin_spent = None
+        cache = self.auth_cache
+        if cache is None or not cache.mqtt_credentials_unaccepted:
+            return False
+        cache.mqtt_credentials_unaccepted = False
+        return True
 
     async def tuya_login(self) -> None:
         """Log in to the Tuya cloud with the Eufy user_id, probing EU then US."""
@@ -771,6 +809,17 @@ class EufyLogin:
         tuya_device: dict | None = None,
     ):
         device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
+        # MQTT topics use the model resolved below ("Subscribing to ..." logs
+        # it); log the raw codes so a collapsed variant (e.g. a suffixed
+        # product code) is visible (#107).
+        _LOGGER.debug(
+            "Device %s: raw model codes: V2 product_code=%r, V2 device_model=%r, "
+            "AIOT device_model=%r",
+            deviceId,
+            ((device or {}).get("product") or {}).get("product_code"),
+            (device or {}).get("device_model"),
+            (aiot_device or {}).get("device_model"),
+        )
 
         if device:
             raw_code = (

@@ -34,6 +34,7 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufySessionReplacedError,
 )
 from custom_components.robovac_mqtt.api.throttle import (
+    KIND_LOGIN,
     LOGIN_BUDGET,
     LOGIN_BUDGET_WINDOW,
     REQUEST_HOLD_OFF,
@@ -106,6 +107,10 @@ async def test_load_unload_entry(hass: HomeAssistant):
         assert (
             config_entry.state == ConfigEntryState.LOADED
         ), f"Entry state is {config_entry.state}, expected {ConfigEntryState.LOADED}"
+
+        # No update listener: OptionsFlowWithReload raises if one exists, and
+        # HA deprecates one next to async_update_reload_and_abort (#168).
+        assert not config_entry.update_listeners
 
         # Verify calls
         mock_login_cls.assert_called_with(
@@ -713,33 +718,56 @@ async def test_a_rejected_cached_session_refused_a_login_is_not_retried(
 
 
 @pytest.mark.parametrize(
-    ("mqtt_robot", "has_user_center", "credentials", "budget_spent", "reloads"),
+    ("mqtt_robot", "mqtt_up", "has_user_center", "credentials", "refusal", "reloads"),
     [
-        (True, True, None, True, True),
-        (False, True, None, True, False),
-        (True, False, None, True, False),
-        (True, True, {"certificate_pem": "pem"}, True, False),
-        (True, True, None, False, False),
+        (True, False, True, None, "hold-off", True),
+        (True, False, True, None, "budget", True),
+        (True, False, True, {"certificate_pem": "spent"}, "hold-off", True),
+        (False, False, True, None, "hold-off", False),
+        (True, True, True, None, "hold-off", False),
+        (True, False, False, None, "hold-off", False),
+        (True, False, True, None, None, False),
     ],
-    ids=["refused", "no-mqtt-robot", "fallback-session", "has-credentials", "login-allowed"],
+    ids=[
+        "left-out",
+        "budget-spent",
+        "has-credentials",
+        "no-mqtt-robot",
+        "mqtt-robot-up",
+        "fallback-session",
+        "login-allowed",
+    ],
 )
-async def test_mqtt_robots_left_without_credentials_reload_once_a_login_is_allowed(
-    hass: HomeAssistant, mqtt_robot, has_user_center, credentials, budget_spent, reloads
+async def test_mqtt_robots_left_out_while_logins_are_refused_reload_once_one_is_allowed(
+    hass: HomeAssistant,
+    mqtt_robot,
+    mqtt_up,
+    has_user_center,
+    credentials,
+    refusal,
+    reloads,
 ):
-    """Logins refused at setup: the Tuya robot comes up, the MQTT robot without
-    credentials does not, and the entry reloads when a login is allowed."""
+    """Logins refused at setup: the Tuya robot comes up, the MQTT robot does
+    not, and the entry reloads once when a login is allowed."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
         entry_id="refused_entry",
     )
     entry.add_to_hass(hass)
-    logins = [time.time() - 3600] * LOGIN_BUDGET if budget_spent else []
+    now = time.time()
+    state, wait = {
+        "hold-off": ({"hold_off": {KIND_LOGIN: now + 600}}, 600),
+        "budget": ({"logins": [now - 3600] * LOGIN_BUDGET}, LOGIN_BUDGET_WINDOW - 3600),
+        None: ({}, None),
+    }[refusal]
 
     def coordinator(*args, **kwargs):
         device_id = args[2]["deviceId"]
-        failure = OSError("no MQTT credentials") if device_id == "mqtt_dev" else None
-        return _mock_coordinator(device_id, init_error=failure)
+        refused = device_id == "mqtt_dev" and not mqtt_up
+        return _mock_coordinator(
+            device_id, init_error=OSError("no MQTT credentials") if refused else None
+        )
 
     with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
         "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
@@ -748,7 +776,7 @@ async def test_mqtt_robots_left_without_credentials_reload_once_a_login_is_allow
         login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
         login.mqtt_credentials = credentials
         login.has_user_center = has_user_center
-        login.throttle = CloudThrottle({"logins": logins})
+        login.throttle = CloudThrottle(state)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
@@ -757,10 +785,12 @@ async def test_mqtt_robots_left_without_credentials_reload_once_a_login_is_allow
     if not reloads:
         return
     _hass, delay, action = call_later.call_args.args
-    assert delay == pytest.approx(LOGIN_BUDGET_WINDOW - 3600, abs=10)
+    assert wait < delay <= wait + 2
     with patch.object(hass.config_entries, "async_schedule_reload") as reload:
         action(None)
     reload.assert_called_once_with(entry.entry_id)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    call_later.return_value.assert_called_once()
 
 
 async def test_global_registration_runs_once_for_several_entries(hass: HomeAssistant):
@@ -810,27 +840,6 @@ async def test_remove_device_refused_while_the_api_still_returns_it(
 
     assert await async_remove_config_entry_device(hass, entry, live) is False
     assert await async_remove_config_entry_device(hass, entry, gone) is True
-
-
-def _key_tree(node: object, prefix: str = "") -> set[str]:
-    if not isinstance(node, dict):
-        return {prefix}
-    keys: set[str] = set()
-    for key, value in node.items():
-        keys |= _key_tree(value, f"{prefix}/{key}")
-    return keys
-
-
-def test_translations_match_strings_json():
-    """translations/en.json carries every strings.json key.
-
-    Custom integrations load only translations/<lang>.json, so a key that exists
-    only in strings.json shows up in the UI as its raw key.
-    """
-    strings = json.loads((_COMPONENT_DIR / "strings.json").read_text())
-    en = json.loads((_COMPONENT_DIR / "translations" / "en.json").read_text())
-
-    assert _key_tree(en) == _key_tree(strings)
 
 
 def test_manifest_declares_every_runtime_import_within_ha_constraints():

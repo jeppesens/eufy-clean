@@ -500,12 +500,15 @@ class CurrentRoomSensorEntity(RoboVacSensor):
         )
 
     def _room_value(self) -> str | None:
-        room_id, room_name = self.coordinator.current_room()
-        return (room_name or f"Room {room_id}") if room_id else None
+        room = self.coordinator.current_room()
+        if room is None:
+            return None
+        room_id, room_name = room
+        return room_name or f"Room {room_id}"
 
     def _room_attributes(self) -> dict[str, Any]:
-        room_id, room_name = self.coordinator.current_room()
-        return {"room_id": room_id or None, "room_name": room_name}
+        room_id, room_name = self.coordinator.current_room() or (None, None)
+        return {"room_id": room_id, "room_name": room_name}
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()

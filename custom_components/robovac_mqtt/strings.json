@@ -34,6 +34,7 @@
     },
     "abort": {
       "already_configured": "Already configured",
+      "already_in_progress": "Configuration already in progress",
       "reauth_successful": "Re-authentication successful",
       "reconfigure_successful": "Re-configuration was successful"
     }

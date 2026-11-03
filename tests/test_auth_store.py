@@ -18,6 +18,7 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufySessionReplacedError,
 )
 from custom_components.robovac_mqtt.api.throttle import (
+    KIND_LOGIN,
     LOGIN_BUDGET,
     SESSION_REPLACED_WINDOW,
 )
@@ -144,10 +145,14 @@ def test_can_skip_login_requires_a_token_and_a_live_cert():
 def test_can_skip_login_allows_a_fallback_session_account():
     """Accounts with no user_center have no MQTT creds; that is still complete."""
     assert AuthCache(session={"access_token": "t"}).can_skip_login is True
-    # ...but a user_center account missing its MQTT creds is NOT complete.
+
+
+def test_can_skip_login_allows_a_session_without_mqtt_credentials():
+    """init() serves discovery with it and logs in for the MQTT credentials
+    unless the login hold-off runs."""
     assert AuthCache(
         session={"access_token": "t"}, user_info={"x": 1}
-    ).can_skip_login is False
+    ).can_skip_login is True
 
 
 def test_clear_tokens_keeps_identity_and_probe_memos():
@@ -424,12 +429,11 @@ async def test_a_fallback_session_is_reused_while_the_login_budget_is_spent():
 @pytest.mark.parametrize(
     ("session_left", "cert_left", "keeps_credentials"),
     [
-        (None, None, False),
         (None, timedelta(hours=6), True),
         (None, timedelta(hours=-1), False),
         (3600.0, timedelta(days=30), True),
     ],
-    ids=["no-cert", "cert-in-margin", "cert-expired", "session-in-margin"],
+    ids=["cert-in-margin", "cert-expired", "session-in-margin"],
 )
 async def test_a_stored_session_serves_while_logins_are_refused(
     session_left, cert_left, keeps_credentials
@@ -439,7 +443,7 @@ async def test_a_stored_session_serves_while_logins_are_refused(
     expired. No login is sent."""
     cache = _usable_cache()
     cache.throttle = {"logins": [time.time() - 60] * LOGIN_BUDGET}
-    cache.mqtt_credentials = _creds(_self_signed(cert_left)) if cert_left else None
+    cache.mqtt_credentials = _creds(_self_signed(cert_left))
     if session_left is not None:
         cache.session_expires_at = time.time() + session_left
     assert not cache.can_skip_login
@@ -1044,7 +1048,8 @@ def test_the_login_throttle_state_lives_in_the_cache():
 
 
 async def test_a_certificate_the_broker_rejected_is_not_reused_after_a_restart(hass):
-    """Rejected cached cert, replacement login fails: the next setup logs in."""
+    """Rejected cached cert, replacement login fails: the next setup logs in
+    for MQTT credentials and keeps the discovery its proved session made."""
     store = AuthStore(hass, "entry")
     await store.async_save(_usable_cache())
 
@@ -1067,3 +1072,30 @@ async def test_a_certificate_the_broker_rejected_is_not_reused_after_a_restart(h
     restarted.getDevices.side_effect = lambda: discover(restarted)
     await restarted.init()
     restarted.login.assert_awaited_once()
+    restarted.getDevices.assert_awaited_once()
+    assert restarted.mqtt_devices == [{"deviceId": "d1"}]
+    assert restarted.auth_cache.session == _usable_cache().session
+
+
+@pytest.mark.asyncio
+async def test_a_restart_during_the_hold_off_after_a_dropped_certificate_serves_discovery():
+    """The rejected cert left the cache while logins are held off: the cached
+    session still discovers the robots, without a login."""
+    cache = _usable_cache()
+    rejected = cache.mqtt_credentials
+    login = _login_with_cache(cache)
+    login.throttle.hold_off(KIND_LOGIN, 3600)
+    assert not await login.replace_rejected_mqtt_credentials(rejected, AsyncMock())
+
+    restarted = _login_with_cache(cache)
+
+    async def discover():
+        restarted.mqtt_devices = [{"deviceId": "d1"}]
+        restarted.cloud_devices = [{"deviceId": "t1"}]
+
+    restarted.getDevices.side_effect = discover
+    await restarted.init()
+
+    restarted.login.assert_not_awaited()
+    assert restarted.cloud_devices == [{"deviceId": "t1"}]
+    assert restarted.mqtt_credentials is None

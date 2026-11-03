@@ -2,6 +2,7 @@
 
 import asyncio
 import datetime
+import logging
 import ssl
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -70,6 +71,10 @@ def _connack(name: str) -> ReasonCode:
 
 def _disconnect(name: str) -> ReasonCode:
     return ReasonCode(PacketTypes.DISCONNECT, name)
+
+
+def _suback(value: int) -> ReasonCode:
+    return ReasonCode(PacketTypes.SUBACK, identifier=value)
 
 
 # --- client construction / TLS ---
@@ -166,6 +171,7 @@ def test_on_connect_success_sets_event_and_subscribes():
     client._loop = mock_loop
 
     mock_mqtt = MagicMock()
+    mock_mqtt.subscribe.return_value = (mqtt.MQTT_ERR_SUCCESS, 1)
     client._on_connect(mock_mqtt, None, MagicMock(), _connack("Success"), None)
 
     mock_loop.call_soon_threadsafe.assert_called_once_with(client._connected_event.set)
@@ -187,6 +193,27 @@ def test_on_connect_failure_does_not_subscribe():
         client._connected_event.clear
     )
     mock_mqtt.subscribe.assert_not_called()
+
+
+def test_on_subscribe_warns_only_for_refused_topic(caplog):
+    """A SUBACK of 128 logs a warning naming the refused topic; a grant doesn't."""
+    client = _make_client()
+    mids = {
+        "cmd/eufy_home/T2320/TEST123/res": 1,
+        "biz/eufy_home/T2320/TEST123/res": 2,
+    }
+    mock_mqtt = MagicMock()
+    mock_mqtt.subscribe.side_effect = lambda topic: (mqtt.MQTT_ERR_SUCCESS, mids[topic])
+    client._on_connect(mock_mqtt, None, MagicMock(), _connack("Success"), None)
+
+    with caplog.at_level(logging.DEBUG):
+        client._on_subscribe(mock_mqtt, None, 1, [_suback(128)], None)
+        client._on_subscribe(mock_mqtt, None, 2, [_suback(0)], None)
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "refused the subscription to cmd/eufy_home/T2320/TEST123/res" in warnings[0]
+    assert "Subscribed to biz/eufy_home/T2320/TEST123/res (granted QoS 0)" in caplog.text
 
 
 def test_on_disconnect_clears_event():
@@ -217,8 +244,10 @@ def test_connection_listener_reports_connect_and_disconnect():
     client._loop = mock_loop
     listener = MagicMock()
     client.set_connection_listener(listener)
+    paho = MagicMock()
+    paho.subscribe.return_value = (mqtt.MQTT_ERR_SUCCESS, 1)
 
-    client._on_connect(MagicMock(), None, MagicMock(), _connack("Success"), None)
+    client._on_connect(paho, None, MagicMock(), _connack("Success"), None)
     client._on_disconnect(
         MagicMock(), None, MagicMock(), _disconnect("Unspecified error"), None
     )
@@ -229,8 +258,8 @@ def test_connection_listener_reports_connect_and_disconnect():
 
 @pytest.mark.parametrize("reason", ["Not authorized", "Bad user name or password"])
 def test_connection_listener_flags_auth_rejection(reason):
-    """A CONNACK that rejects the identity reports auth_failed=True, also on
-    the disconnect that follows it."""
+    """A CONNACK that rejects the identity reports auth_failed=True once; the
+    disconnect paho reports after it does not count it again."""
     client = _make_client()
     mock_loop = MagicMock()
     client._loop = mock_loop
@@ -242,7 +271,7 @@ def test_connection_listener_flags_auth_rejection(reason):
         MagicMock(), None, MagicMock(), _disconnect("Unspecified error"), None
     )
 
-    assert _listener_calls(mock_loop, listener) == [(False, True), (False, True)]
+    assert _listener_calls(mock_loop, listener) == [(False, True), (False, False)]
 
 
 def test_connection_listener_other_refusal_is_not_auth():
@@ -256,6 +285,135 @@ def test_connection_listener_other_refusal_is_not_auth():
     client._on_connect(MagicMock(), None, MagicMock(), _connack("Server unavailable"), None)
 
     assert _listener_calls(mock_loop, listener) == [(False, False)]
+
+
+def _ssl_error(reason: str, cls: type[ssl.SSLError] = ssl.SSLError) -> ssl.SSLError:
+    """An SSLError as the ssl module raises it for an OpenSSL ``reason``."""
+    err = cls(1, f"[SSL: {reason}] alert (_ssl.c:1081)")
+    err.library = "SSL"
+    err.reason = reason
+    return err
+
+
+_CERT_ALERTS = [
+    "SSLV3_ALERT_BAD_CERTIFICATE",
+    "SSLV3_ALERT_CERTIFICATE_REVOKED",
+    "SSLV3_ALERT_CERTIFICATE_EXPIRED",
+    "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
+    "TLSV1_ALERT_UNKNOWN_CA",
+    "TLSV13_ALERT_CERTIFICATE_REQUIRED",
+]
+
+_NOT_CERT_REJECTIONS = [
+    _ssl_error("SSLV3_ALERT_HANDSHAKE_FAILURE"),
+    _ssl_error("WRONG_VERSION_NUMBER"),
+    # the client refusing the broker's certificate is not a verdict on ours
+    _ssl_error("CERTIFICATE_VERIFY_FAILED", ssl.SSLCertVerificationError),
+    ssl.SSLError(1, "no reason"),
+    ConnectionResetError(104, "Connection reset by peer"),
+    OSError("no route"),
+]
+
+
+@pytest.mark.parametrize("reason", _CERT_ALERTS)
+def test_a_certificate_alert_classifies_as_a_rejection(reason):
+    assert client_mod.is_certificate_rejection(_ssl_error(reason)) is True
+
+
+@pytest.mark.parametrize("err", _NOT_CERT_REJECTIONS)
+def test_network_and_other_tls_errors_are_not_rejections(err):
+    assert client_mod.is_certificate_rejection(err) is False
+
+
+def _failed_reconnect(client: EufyCleanClient, err: BaseException) -> None:
+    """What paho does when a reconnect raises: on_connect_fail inside the except."""
+    try:
+        raise err
+    except OSError:
+        client._on_connect_fail(MagicMock(), None)
+
+
+def test_a_reconnect_refused_with_a_certificate_alert_is_an_auth_failure():
+    client = _make_client()
+    mock_loop = MagicMock()
+    client._loop = mock_loop
+    listener = MagicMock()
+    client.set_connection_listener(listener)
+
+    _failed_reconnect(client, _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"))
+
+    assert _listener_calls(mock_loop, listener) == [(False, True)]
+
+
+@pytest.mark.parametrize("err", _NOT_CERT_REJECTIONS)
+def test_a_reconnect_failing_otherwise_is_not_counted(err):
+    client = _make_client()
+    mock_loop = MagicMock()
+    client._loop = mock_loop
+    listener = MagicMock()
+    client.set_connection_listener(listener)
+
+    _failed_reconnect(client, err)
+
+    assert _listener_calls(mock_loop, listener) == []
+
+
+# paho's log line for a read that failed on a TLS 1.3 alert from the broker
+_TLS13_READ_ALERT = (
+    "failed to receive on socket: [SSL: TLSV13_ALERT_CERTIFICATE_REQUIRED] "
+    "tlsv13 alert certificate required (_ssl.c:2710)"
+)
+
+
+def test_a_certificate_alert_on_a_read_counts_with_its_disconnect_once():
+    """TLS 1.3: the alert reaches only paho's log, then the disconnect."""
+    client = _make_client()
+    mock_loop = MagicMock()
+    client._loop = mock_loop
+    listener = MagicMock()
+    client.set_connection_listener(listener)
+    dropped = _disconnect("Unspecified error")
+
+    client._on_log(MagicMock(), None, mqtt.MQTT_LOG_ERR, _TLS13_READ_ALERT)
+    client._on_disconnect(MagicMock(), None, MagicMock(), dropped, None)
+    client._on_disconnect(MagicMock(), None, MagicMock(), dropped, None)
+
+    assert _listener_calls(mock_loop, listener) == [(False, True), (False, False)]
+
+
+@pytest.mark.parametrize(
+    ("level", "line"),
+    [
+        (mqtt.MQTT_LOG_ERR, "failed to receive on socket: [Errno 104] Connection reset by peer"),
+        (mqtt.MQTT_LOG_ERR, "failed to receive on socket: [SSL: WRONG_VERSION_NUMBER] wrong version"),
+        (mqtt.MQTT_LOG_DEBUG, _TLS13_READ_ALERT),
+    ],
+)
+def test_other_read_failures_are_not_counted(level, line):
+    client = _make_client()
+    mock_loop = MagicMock()
+    client._loop = mock_loop
+    listener = MagicMock()
+    client.set_connection_listener(listener)
+
+    client._on_log(MagicMock(), None, level, line)
+    client._on_disconnect(
+        MagicMock(), None, MagicMock(), _disconnect("Unspecified error"), None
+    )
+
+    assert _listener_calls(mock_loop, listener) == [(False, False)]
+
+
+@pytest.mark.asyncio
+async def test_connect_hooks_the_failed_reconnect_the_log_and_the_suback():
+    client = _make_client()
+    fake = MagicMock()
+
+    with patch.object(client_mod, "get_blocking_mqtt_client", return_value=fake):
+        await client.connect()
+
+    hooks = (fake.on_connect_fail, fake.on_log, fake.on_subscribe)
+    assert hooks == (client._on_connect_fail, client._on_log, client._on_subscribe)
 
 
 # --- sending ---

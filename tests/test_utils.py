@@ -98,6 +98,10 @@ def test_deduplicate_names():
         ("Weekdays", {0, 1, 2, 3, 4}),
         ("weekend", {5, 6}),
         ("Mon, Wed|fri", {0, 2, 4}),
+        ("Mon, weekend", {0, 5, 6}),
+        ("Mon weekend", {0, 5, 6}),
+        ("Mon, Every  day", set(range(7))),
+        (["Mon", "Every day"], set(range(7))),
         (["Tuesday", "THURSDAY", "sun"], {1, 3, 6}),
         (list(WEEKDAY_ABBREVIATIONS), set(range(7))),
     ],
@@ -107,7 +111,9 @@ def test_parse_weekdays_gives_monday_first_indices(days, expected):
     assert parse_weekdays(days) == expected
 
 
-@pytest.mark.parametrize("days", ["Mondy", "Mon, xx", "day", "Tues"])
+@pytest.mark.parametrize(
+    "days", ["Mondy", "Mon, xx", "day", "Tues", "monkeyday", "Mon every day"]
+)
 def test_parse_weekdays_rejects_unknown_words(days):
     """A typo is an error, not a silently dropped day."""
     with pytest.raises(ValueError, match="day"):
