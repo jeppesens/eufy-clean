@@ -9,7 +9,6 @@ from custom_components.robovac_mqtt.api.commands import (
     _build_off_peak_sub_bytes,
     build_command,
     build_map_load_command,
-    build_room_clean_command,
     build_set_boost_iq_command,
     build_set_child_lock_command,
     build_set_cleaning_intensity_command,
@@ -29,7 +28,10 @@ from custom_components.robovac_mqtt.const import (
     EUFY_CLEAN_CONTROL,
     SCALAR_DPS,
 )
-from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
+from custom_components.robovac_mqtt.proto.cloud.control_pb2 import (
+    ModeCtrlRequest,
+    SelectRoomsClean,
+)
 from custom_components.robovac_mqtt.proto.cloud.map_edit_pb2 import MapEditRequest
 from custom_components.robovac_mqtt.proto.cloud.multi_maps_pb2 import (
     MultiMapsManageRequest,
@@ -129,6 +131,40 @@ def test_set_child_lock_command():
     assert DPS_MAP["UNSETTING"] in result
     decoded = decode(UnisettingRequest, result[DPS_MAP["UNSETTING"]])
     assert decoded.children_lock.value is True
+
+
+# ── room (select-rooms) clean ────────────────────────────────────────
+
+
+@pytest.mark.parametrize("mode", ["GENERAL", "CUSTOMIZE"])
+@pytest.mark.parametrize(
+    "model,room_ids,expected",
+    [
+        # The T2080A (S1 Pro) reads order as a zero-based slot (#170).
+        ("T2080A", [8, 7], [(8, 0), (7, 1)]),
+        ("T2080A", [0], [(0, 0)]),
+        # Other models, or an unknown one, keep one-based order.
+        ("T2351", [6, 0, 2], [(6, 1), (0, 2), (2, 3)]),
+        ("", [6, 0, 2], [(6, 1), (0, 2), (2, 3)]),
+    ],
+)
+def test_build_command_room_clean_order(model, room_ids, expected, mode):
+    """Room clean sends each room with its order slot on DPS 152.
+
+    Room id 0 is a real id on some maps (T2080A after room merges), so it is
+    sent like any other id.
+    """
+    result = build_command(
+        "room_clean", model=model, room_ids=room_ids, map_id=7, mode=mode
+    )
+
+    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+    assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN
+    src = decoded.select_rooms_clean
+    assert src.mode == SelectRoomsClean.Mode.Value(mode)
+    assert src.map_id == 7
+    assert src.clean_times == 1
+    assert [(room.id, room.order) for room in src.rooms] == expected
 
 
 # ── zone (select-zones) clean ────────────────────────────────────────
@@ -380,18 +416,6 @@ def test_off_peak_command_dispatch():
         end_minute=30,
     )
     assert DPS_MAP["UNSETTING"] in result
-
-
-def test_build_room_clean_command_keeps_room_zero():
-    """Room id 0 is a real id on some maps (T2080A after room merges) and must
-    reach SelectRoomsClean alongside the requested map id."""
-    result = build_room_clean_command([0, 5], map_id=1)
-    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
-    assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN
-    src = decoded.select_rooms_clean
-    assert src.map_id == 1
-    assert src.clean_times == 1
-    assert [(r.id, r.order) for r in src.rooms] == [(0, 1), (5, 2)]
 
 
 def test_set_room_custom_keeps_room_zero():

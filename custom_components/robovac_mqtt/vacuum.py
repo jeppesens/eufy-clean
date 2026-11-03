@@ -372,11 +372,23 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             await self._async_send_room_clean(room_ids, map_id, mode="CUSTOMIZE")
             return
 
-        # Legacy-style: 'room_ids' list of ints + optional global params
+        # Legacy-style: 'room_ids' list of ints (or one id) + optional global params
         if "room_ids" not in params:
             return
 
-        room_ids = params["room_ids"]
+        raw_ids = params["room_ids"]
+        if isinstance(raw_ids, (int, float, str)):
+            raw_ids = [raw_ids]  # a single id, as in `room_ids: 3`
+        room_ids = []
+        for rid in raw_ids:
+            try:
+                room_ids.append(int(rid))
+            except (ValueError, TypeError):
+                _LOGGER.warning("Skipping room with invalid id: %s", rid)
+
+        if not room_ids:
+            return
+
         merged_params = self._merge_room_clean_defaults(params)
 
         fan_speed = merged_params.get("fan_speed")
@@ -681,18 +693,10 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             await self._async_handle_zone_clean(params)
             return
 
-        # Handle Apple Home app_segment_clean command
+        # Handle Apple Home app_segment_clean command: a list of room ids (int,
+        # str or float from JSON), cleaned like room_clean's room_ids.
         if command == "app_segment_clean" and isinstance(params, list):
-            # Convert to room_clean format; handle int, str, and float IDs from JSON
-            room_ids = []
-            for room_id in params:
-                try:
-                    room_ids.append(int(room_id))
-                except (ValueError, TypeError):
-                    pass
-            if room_ids:
-                await self._async_handle_room_clean({"room_ids": room_ids})
-                return
+            await self._async_handle_room_clean({"room_ids": params})
             return
 
         command_kwargs: dict[str, Any] = {}

@@ -15,6 +15,7 @@ from ..const import (
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     MOP_CORNER_MAP,
     MOP_LEVEL_MAP,
+    ROOM_ORDER_ZERO_BASED_MODELS,
     SCALAR_CLEAN_PATTERN_NAMES,
     SCALAR_DPS,
     SCALAR_WORK_MODE_GO_HOME,
@@ -142,17 +143,23 @@ def build_scene_clean_command(scene_id: int) -> dict[str, str]:
 
 
 def build_room_clean_command(
-    room_ids: list[int], map_id: int = 3, mode: str = "GENERAL"
+    room_ids: list[int], map_id: int = 3, mode: str = "GENERAL", model: str = ""
 ) -> dict[str, str]:
-    """Build command to clean specific rooms."""
+    """Build command to clean specific rooms.
+
+    ``model`` selects where the room order starts: at 0 for the models in
+    ROOM_ORDER_ZERO_BASED_MODELS and at 1 for every other model.
+    """
     if mode == "CUSTOMIZE":
         proto_mode = SelectRoomsClean.CUSTOMIZE
     else:
         proto_mode = SelectRoomsClean.GENERAL
 
+    first = 0 if model in ROOM_ORDER_ZERO_BASED_MODELS else 1
     rooms_clean = SelectRoomsClean(
         rooms=[
-            SelectRoomsClean.Room(id=rid, order=i + 1) for i, rid in enumerate(room_ids)
+            SelectRoomsClean.Room(id=rid, order=order)
+            for order, rid in enumerate(room_ids, start=first)
         ],
         mode=proto_mode,
         clean_times=1,
@@ -657,6 +664,7 @@ def build_command(
             kwargs.get("room_ids", []),
             kwargs.get("map_id", 3),
             kwargs.get("mode", "GENERAL"),
+            model=kwargs.get("model", ""),
         )
     if cmd == "zone_clean":
         return build_zone_clean_command(

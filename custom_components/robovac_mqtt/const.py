@@ -564,6 +564,9 @@ MOP_LEVEL_MAP = {
     "high": MopMode.HIGH,
 }
 
+# Models whose firmware reads SelectRoomsClean.Room.order as a zero-based slot (#170).
+ROOM_ORDER_ZERO_BASED_MODELS = frozenset({"T2080A"})
+
 
 DPS_MAP = {
     "PLAY_PAUSE": "152",

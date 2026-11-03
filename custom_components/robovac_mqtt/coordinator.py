@@ -228,10 +228,13 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         """Build a DPS command dict appropriate for this device's API type.
 
         Legacy devices use the plain-value builder; novel and scalar devices
-        share build_command, which branches internally on api_type.
+        share build_command, which branches internally on api_type and is passed
+        the device model (unless the caller passes one) for per-model encodings
+        such as the room order.
         """
         if self.api_type == "legacy":
             return build_legacy_command(command, **kwargs)
+        kwargs.setdefault("model", self.device_model)
         return build_command(command, api_type=self.api_type, **kwargs)
 
     @property
