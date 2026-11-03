@@ -1,5 +1,6 @@
 """Unit tests for the cloud login module."""
 
+import logging
 import unittest.mock
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -184,8 +185,11 @@ def test_find_model_aiot_fallback_invalid_without_model():
     assert result["invalid"] is True
 
 
-def test_find_model_v2_takes_precedence_over_aiot():
-    """When V2 has the device, its richer metadata wins over the AIOT fallback."""
+def test_find_model_v2_takes_precedence_over_aiot(caplog):
+    """When V2 has the device, its richer metadata wins over the AIOT fallback.
+
+    The raw model codes are debug-logged, so a collapsed variant shows (#107).
+    """
     login = _make_login(
         eufy_api_devices=[
             {
@@ -202,11 +206,16 @@ def test_find_model_v2_takes_precedence_over_aiot():
         "device_model": "T2081",
         "device_name": "From AIOT",
     }
-    result = login.findModel("DEV005", aiot_device=aiot_device)
+    with caplog.at_level(logging.DEBUG):
+        result = login.findModel("DEV005", aiot_device=aiot_device)
 
     assert result["deviceModel"] == "T2261"
     assert result["deviceName"] == "From V2"
     assert result["deviceModelName"] == "X8 Pro"
+    assert (
+        "Device DEV005: raw model codes: V2 product_code='T2261xx', "
+        "V2 device_model='T2261', AIOT device_model='T2081'"
+    ) in caplog.text
 
 
 def test_find_model_six_char_product_code():
