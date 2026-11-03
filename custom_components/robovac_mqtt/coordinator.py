@@ -66,6 +66,7 @@ from .api.parser_scalar import (
     build_scalar_schedule_payload,
     scalar_pattern_to_int,
     scalar_raw_to_schedule_entry,
+    scalar_schedule_raw_entries,
     scalar_suction_to_int,
     schedule_entry_to_scalar_raw,
 )
@@ -1913,6 +1914,54 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return sched_str
         return schedule_id
 
+    def _scalar_raw_entries(
+        self, schedules: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        """DPS 151 entries for ``schedules``.
+
+        An entry unchanged but for ``enabled`` since the last DPS 151 report goes
+        back as reported, so values the client has no name for survive; the rest
+        are encoded. Raises ServiceValidationError on an entry that cannot be.
+        """
+        try:
+            reported = {
+                raw.get("id"): raw
+                for raw in scalar_schedule_raw_entries(self.data.raw_dps.get("151") or {})
+                if isinstance(raw, dict)
+            }
+        except (AttributeError, TypeError, ValueError):  # unreadable: encode all
+            reported = {}
+        entries = []
+        for entry in schedules:
+            enabled = bool(entry.get("enabled", True))
+            raw = reported.get(entry.get("id"))
+            if raw is not None and {
+                **scalar_raw_to_schedule_entry(raw), "enabled": enabled
+            } == {**entry, "enabled": enabled}:
+                entries.append({**raw, "e": enabled})
+                continue
+            try:
+                entries.append(schedule_entry_to_scalar_raw(entry))
+            except ValueError as err:
+                raise ServiceValidationError(
+                    f"Schedule {entry.get('id')} on {self.device_name}: {err}"
+                ) from err
+        return entries
+
+    async def _async_write_scalar_schedules(
+        self, schedules: list[dict[str, Any]]
+    ) -> None:
+        """Send ``schedules`` as DPS 151 and keep them as the parser reads them back."""
+        raw_entries = self._scalar_raw_entries(schedules)
+        await self.async_send_command(
+            {"151": build_scalar_schedule_payload(raw_entries)}
+        )
+        self.data = replace(
+            self.data,
+            schedules=[scalar_raw_to_schedule_entry(raw) for raw in raw_entries],
+        )
+        self.async_update_listeners()
+
     async def async_set_schedule_status(
         self, schedule_id: int | str | None, enabled: bool
     ) -> bool:
@@ -1949,27 +1998,17 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         if self.api_type == "scalar":
             schedules = list(self.data.schedules or [])
-            found = False
             sid_int = int(actual_id) if str(actual_id).isdigit() else actual_id
-            raw_entries = []
-            for s in schedules:
-                raw = schedule_entry_to_scalar_raw(s)
-                if s.get("id") == sid_int:
-                    raw["e"] = bool(enabled)
-                    found = True
-                raw_entries.append(raw)
-            if not found:
+            if not any(s.get("id") == sid_int for s in schedules):
                 raise HomeAssistantError(
                     f"Schedule ID {actual_id} not found on {self.device_name}"
                 )
-            payload = build_scalar_schedule_payload(raw_entries)
-            await self.async_send_command({"151": payload})
-            updated_schedules = [
-                {**s, "enabled": enabled} if s.get("id") == sid_int else s
-                for s in schedules
-            ]
-            self.data = replace(self.data, schedules=updated_schedules)
-            self.async_update_listeners()
+            await self._async_write_scalar_schedules(
+                [
+                    {**s, "enabled": bool(enabled)} if s.get("id") == sid_int else s
+                    for s in schedules
+                ]
+            )
             return True
 
         raise HomeAssistantError(
@@ -2010,24 +2049,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         if self.api_type == "scalar":
             schedules = list(self.data.schedules or [])
             sid_int = int(actual_id) if str(actual_id).isdigit() else actual_id
-            raw_entries = []
-            found = False
-            for s in schedules:
-                if s.get("id") == sid_int:
-                    found = True
-                    continue
-                raw_entries.append(schedule_entry_to_scalar_raw(s))
-            if not found:
+            kept = [s for s in schedules if s.get("id") != sid_int]
+            if len(kept) == len(schedules):
                 raise HomeAssistantError(
                     f"Schedule ID {actual_id} not found on {self.device_name}"
                 )
+            await self._async_write_scalar_schedules(kept)
             if str(self.selected_schedule_id) == str(actual_id):
                 self.selected_schedule_id = None
-            payload = build_scalar_schedule_payload(raw_entries)
-            await self.async_send_command({"151": payload})
-            updated_schedules = [s for s in schedules if s.get("id") != sid_int]
-            self.data = replace(self.data, schedules=updated_schedules)
-            self.async_update_listeners()
             return True
 
         raise HomeAssistantError(
@@ -2201,25 +2230,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             ):
                 if value is not None:
                     entry[key] = value
-            try:
-                new_raw = schedule_entry_to_scalar_raw(entry)
-                raw_entries = [
-                    new_raw if s is existing else schedule_entry_to_scalar_raw(s)
-                    for s in schedules
-                ]
-            except ValueError as err:
-                raise ServiceValidationError(str(err)) from err
+            updated = [entry if s is existing else s for s in schedules]
             if existing is None:
-                raw_entries.append(new_raw)
-
-            payload = build_scalar_schedule_payload(raw_entries)
-            await self.async_send_command({"151": payload})
-            # The entries as the parser reads them back from the DPS 151 sent.
-            self.data = replace(
-                self.data,
-                schedules=[scalar_raw_to_schedule_entry(raw) for raw in raw_entries],
-            )
-            self.async_update_listeners()
+                updated.append(entry)
+            await self._async_write_scalar_schedules(updated)
             return True
 
         raise HomeAssistantError(

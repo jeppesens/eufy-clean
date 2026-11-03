@@ -190,10 +190,15 @@ def _map_scalar_task_status(code: int) -> str:
     }.get(code, "Standby")
 
 
-def _parse_scalar_schedules(value: Any) -> list[dict[str, Any]]:
-    """Decode DPS 151 schedule JSON into read-only entries."""
+def scalar_schedule_raw_entries(value: Any) -> list[dict[str, Any]]:
+    """The raw entries of a DPS 151 value (JSON string or dict)."""
     data = value if isinstance(value, dict) else json.loads(value)
-    return [scalar_raw_to_schedule_entry(e) for e in data.get("l", [])]
+    return list(data.get("l", []))
+
+
+def _parse_scalar_schedules(value: Any) -> list[dict[str, Any]]:
+    """Decode DPS 151 schedule JSON into schedule entries."""
+    return [scalar_raw_to_schedule_entry(e) for e in scalar_schedule_raw_entries(value)]
 
 
 def scalar_raw_to_schedule_entry(raw: dict[str, Any]) -> dict[str, Any]:
@@ -255,17 +260,33 @@ def scalar_pattern_to_int(pattern: str | int | None) -> int | None:
     return _SCALAR_PATTERN_BY_NAME.get(str(pattern or "").strip().lower())
 
 
+def _scalar_level(value: Any, known: int | None, default: int) -> int:
+    """A DPS 151 ``s``/``f`` number: the known one, an unnamed int as is, else default."""
+    if known is not None:
+        return known
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return default
+
+
 def schedule_entry_to_scalar_raw(entry: dict[str, Any]) -> dict[str, Any]:
-    """Convert parsed schedule entry dict back into raw scalar DPS 151 dict."""
-    s_int = scalar_suction_to_int(entry.get("suction"))
-    f_int = scalar_pattern_to_int(entry.get("pattern"))
+    """Convert parsed schedule entry dict back into raw scalar DPS 151 dict.
+
+    Raises ValueError on a day the entry cannot be encoded with.
+    """
+    suction = entry.get("suction")
+    pattern = entry.get("pattern")
     return {
         "id": entry.get("id"),
         "e": bool(entry.get("enabled", True)),
         "t": str(entry.get("time", "")).replace(":", ""),
         "r": encode_scalar_repeat(entry.get("days", "")),
-        "s": _SCALAR_DEFAULT_SUCTION if s_int is None else s_int,
-        "f": _SCALAR_DEFAULT_PATTERN if f_int is None else f_int,
+        "s": _scalar_level(
+            suction, scalar_suction_to_int(suction), _SCALAR_DEFAULT_SUCTION
+        ),
+        "f": _scalar_level(
+            pattern, scalar_pattern_to_int(pattern), _SCALAR_DEFAULT_PATTERN
+        ),
     }
 
 

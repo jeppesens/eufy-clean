@@ -607,6 +607,84 @@ async def test_enabling_a_scalar_schedule_writes_json_bools(hass, login):
     assert '"e":1' not in payload
 
 
+def _scalar_schedule_coordinator(hass, login, entries):
+    """A scalar coordinator whose last DPS 151 report held ``entries``."""
+    coordinator = _coordinator(hass, login, apiType="scalar")
+    coordinator.async_send_command = AsyncMock()
+    coordinator.data, _ = update_state(
+        VacuumState(api_type="scalar", device_model="T2210"), {"151": {"l": entries}}
+    )
+    return coordinator
+
+
+def _sent_scalar_entries(coordinator):
+    (payload,) = coordinator.async_send_command.await_args.args[0].values()
+    return json.loads(payload)["l"]
+
+
+# An entry the client has no names for: days "0"/"8", suction 4, pattern 3, extra key.
+_UNNAMED_SCALAR = {"id": 1, "e": True, "t": "0700", "r": "08", "s": 4, "f": 3, "x": 1}
+_SUNDAY_SCALAR = {"id": 2, "e": True, "t": "0800", "r": "7", "s": 0, "f": 1}
+
+
+@pytest.mark.parametrize(
+    ("call", "rest"),
+    [
+        (lambda c: c.async_set_schedule_status(2, False), [{**_SUNDAY_SCALAR, "e": False}]),
+        (lambda c: c.async_delete_schedule(2), []),
+        (
+            lambda c: c.async_set_schedule(schedule_id=2, time="09:00"),
+            [{**_SUNDAY_SCALAR, "t": "0900"}],
+        ),
+        (
+            lambda c: c.async_set_schedule(time="09:00"),
+            [_SUNDAY_SCALAR, {"id": 3, "e": True, "t": "0900", "r": "1234567", "s": 1, "f": 1}],
+        ),
+    ],
+)
+async def test_editing_a_scalar_schedule_resends_the_others_as_reported(
+    hass, login, call, rest
+):
+    """An entry the client cannot re-encode neither blocks nor changes with the others."""
+    coordinator = _scalar_schedule_coordinator(
+        hass, login, [_UNNAMED_SCALAR, _SUNDAY_SCALAR]
+    )
+
+    await call(coordinator)
+
+    assert _sent_scalar_entries(coordinator) == [_UNNAMED_SCALAR, *rest]
+
+
+async def test_a_scalar_schedule_the_client_cannot_name_can_be_switched(hass, login):
+    """Only its ``e`` changes, also on a later write before the robot reports back."""
+    coordinator = _scalar_schedule_coordinator(
+        hass, login, [_UNNAMED_SCALAR, _SUNDAY_SCALAR]
+    )
+
+    await coordinator.async_set_schedule_status(1, False)
+    assert _sent_scalar_entries(coordinator) == [
+        {**_UNNAMED_SCALAR, "e": False}, _SUNDAY_SCALAR,
+    ]
+    assert [s["enabled"] for s in coordinator.data.schedules] == [False, True]
+
+    await coordinator.async_set_schedule_status(2, False)
+    assert _sent_scalar_entries(coordinator) == [
+        {**_UNNAMED_SCALAR, "e": False}, {**_SUNDAY_SCALAR, "e": False},
+    ]
+
+
+@pytest.mark.parametrize("reported", ["{", '{"l": [7]}', 5])
+async def test_scalar_schedules_are_encoded_when_the_last_report_is_unreadable(
+    hass, login, reported
+):
+    coordinator = _scalar_schedule_coordinator(hass, login, [_SUNDAY_SCALAR])
+    coordinator.data.raw_dps["151"] = reported
+
+    await coordinator.async_set_schedule_status(2, False)
+
+    assert _sent_scalar_entries(coordinator) == [{**_SUNDAY_SCALAR, "e": False}]
+
+
 @pytest.mark.parametrize("kwargs", [{"suction": "Boost_IQ"}, {"days": "Mondy"}])
 async def test_scalar_schedules_reject_unknown_values(hass, login, kwargs):
     """An unknown suction or day is an error, not a silent default."""
