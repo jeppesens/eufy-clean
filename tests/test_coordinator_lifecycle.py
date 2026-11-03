@@ -1294,6 +1294,7 @@ async def test_a_rejected_replacement_reloads_the_entry_when_the_hold_off_ends(
         if r.levelno == logging.WARNING and "reloading the entry" in r.getMessage()
     ]
     assert len(warnings) == 1
+    assert "turns away the credentials of the last login;" in warnings[0].getMessage()
     account.login.assert_awaited_once()
 
 

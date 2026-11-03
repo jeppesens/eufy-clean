@@ -1023,8 +1023,9 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return
         if self._reload_when_logins_resume(wait):
             _LOGGER.warning(
-                "%s: the MQTT broker turns away the credentials of a new login "
-                "too; reloading the entry when the login hold-off ends, in %.0f min",
+                "%s: the MQTT broker turns away the credentials of the last "
+                "login; reloading the entry when the login hold-off ends, in "
+                "%.0f min",
                 self.device_name, wait / 60,
             )
 
