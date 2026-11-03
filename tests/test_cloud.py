@@ -751,6 +751,53 @@ async def test_an_accepted_replacement_allows_the_next_one_after_the_interval():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("login_result", "hold_off", "expected"),
+    [
+        (None, None, None),
+        (None, 600.0, 600.0),
+        (EufyLoginTransientError("HTTP 503"), None, 300.0),
+        (EufyLoginTransientError("HTTP 503"), 600.0, 600.0),
+        ({"mqtt": {"certificate_pem": "new"}}, None, 3600.0),
+        ({"mqtt": {"certificate_pem": "new"}}, 7200.0, 7200.0),
+    ],
+    ids=[
+        "free", "hold-off", "retry-delay", "hold-off-past-retry-delay",
+        "min-interval", "hold-off-past-min-interval",
+    ],
+)
+async def test_the_wait_for_a_replacement_login_is_the_longest_bound(
+    login_result, hold_off, expected
+):
+    """The hold-off, the retry delay after a failed replacement login and
+    the interval after a successful one: a replacement login waits for all;
+    the rejections in between send none."""
+    login, rejected, save = _login_with_rejected_credentials()
+    if login_result is not None:
+        login.eufyApi.login = AsyncMock(
+            side_effect=login_result
+            if isinstance(login_result, Exception)
+            else [login_result]
+        )
+        await login.replace_rejected_mqtt_credentials(rejected, save)
+    if hold_off is not None:
+        login.auth_cache.hold_off_logins(hold_off)
+
+    wait = login.replacement_login_wait()
+
+    if expected is None:
+        assert wait is None
+        return
+    assert expected - 5 < wait <= expected
+    if isinstance(login_result, dict):
+        rejected = login.mqtt_credentials
+        login.mqtt_credentials_accepted(rejected)
+    calls = login.eufyApi.login.await_count
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert login.eufyApi.login.await_count == calls
+
+
+@pytest.mark.asyncio
 async def test_a_replacement_login_without_mqtt_credentials_holds_off_logins():
     """A login that yields no MQTT credentials must not repeat at every rejection."""
     login, rejected, save = _login_with_rejected_credentials()

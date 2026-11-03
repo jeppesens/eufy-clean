@@ -2,6 +2,7 @@
 
 import json
 import logging
+import ssl
 import unittest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -21,7 +22,9 @@ from custom_components.robovac_mqtt import (
     _int_keyed,
     async_remove_config_entry_device,
 )
+from custom_components.robovac_mqtt.api import cloud as cloud_mod
 from custom_components.robovac_mqtt.api.cloud import (
+    EufyLogin,
     EufyLoginError,
     EufyLoginTransientError,
 )
@@ -456,8 +459,8 @@ async def test_failed_coordinator_init_is_torn_down(hass: HomeAssistant):
 async def test_mqtt_robots_left_out_during_the_login_hold_off_reload_when_it_ends(
     hass: HomeAssistant, caplog, mqtt_robot, mqtt_up, has_user_center, hold_off, reloads
 ):
-    """Logins on hold at setup: the Tuya robot comes up, the MQTT robot does
-    not, and the entry reloads once when the hold-off ends."""
+    """No login may run at setup: the Tuya robot comes up, the MQTT robot
+    does not, and the entry reloads once when one may."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
@@ -478,13 +481,13 @@ async def test_mqtt_robots_left_out_during_the_login_hold_off_reload_when_it_end
         login = _mock_login(mock_login_cls, *(["mqtt_dev"] if mqtt_robot else []))
         login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
         login.has_user_center = has_user_center
-        login.login_hold_off_left = MagicMock(return_value=hold_off)
+        login.replacement_login_wait = MagicMock(return_value=hold_off)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.LOADED
     assert call_later.called is reloads
-    assert ("left out while Eufy logins are on hold" in caplog.text) is reloads
+    assert ("left out while no Eufy login may run" in caplog.text) is reloads
     if not reloads:
         return
     _hass, delay, action = call_later.call_args.args
@@ -522,13 +525,13 @@ async def test_a_reload_armed_while_setup_runs_is_not_armed_twice(
         login = _mock_login(mock_login_cls, "mqtt_dev")
         login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
         login.has_user_center = True
-        login.login_hold_off_left = MagicMock(return_value=600.0)
+        login.replacement_login_wait = MagicMock(return_value=600.0)
         await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
     assert entry.state is ConfigEntryState.LOADED
     assert call_later.call_count == 1
-    assert "left out while Eufy logins are on hold" not in caplog.text
+    assert "left out while no Eufy login may run" not in caplog.text
 
 
 async def test_robots_share_one_reload_for_the_end_of_the_login_hold_off(
@@ -572,6 +575,120 @@ async def test_robots_share_one_reload_for_the_end_of_the_login_hold_off(
 
         assert await hass.config_entries.async_unload(entry.entry_id)
     call_later.return_value.assert_called_once()
+
+
+_CACHED_MQTT = {
+    "user_id": "uid",
+    "app_name": "app",
+    "thing_name": "thing",
+    "certificate_pem": "cached",
+    "private_key": "key",
+    "endpoint_addr": "broker.example.com",
+}
+
+
+def _account(login_result):
+    """The real EufyLogin over a mocked HTTP client: discovery finds two MQTT
+    robots and the cached certificate; a login answers ``login_result``."""
+
+    def build(*args, **kwargs):
+        login = EufyLogin(*args, **kwargs)
+        login.eufyApi = MagicMock(
+            session={"access_token": "t"}, user_info={"user_center_id": "c"},
+            login_label=None,
+        )
+        login.eufyApi.login = AsyncMock(side_effect=[login_result])
+
+        async def _init():
+            login.mqtt_credentials = login.auth_cache.mqtt_credentials = _CACHED_MQTT
+            login.mqtt_devices = [
+                {"deviceId": d, "deviceModel": "T2118", "deviceName": d, "dps": {}}
+                for d in ("first", "second")
+            ]
+
+        login.init = AsyncMock(side_effect=_init)
+        return login
+
+    return build
+
+
+def _brokers(*outcomes):
+    """MQTT clients in creation order: connect() raises the outcome, or
+    reports the accepted connection (None)."""
+    pending = iter(outcomes)
+
+    def client(**_kwargs):
+        outcome = next(pending)
+        mock = MagicMock(disconnect=AsyncMock(), is_connected=outcome is None)
+
+        async def _connect():
+            if outcome is not None:
+                raise outcome
+            mock.set_connection_listener.call_args.args[0](True, None)
+
+        mock.connect = AsyncMock(side_effect=_connect)
+        return mock
+
+    return client
+
+
+_EOF = ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
+
+
+def _revoked() -> ssl.SSLError:
+    err = ssl.SSLError(1, "[SSL: SSLV3_ALERT_CERTIFICATE_REVOKED] alert")
+    err.reason = "SSLV3_ALERT_CERTIFICATE_REVOKED"
+    return err
+
+
+@pytest.mark.parametrize(
+    ("login_result", "outcomes", "wait"),
+    [
+        (
+            {"mqtt": {**_CACHED_MQTT, "certificate_pem": "new"}},
+            [_revoked(), None, _EOF, _EOF],
+            cloud_mod._MQTT_RELOGIN_MIN_INTERVAL,
+        ),
+        (
+            EufyLoginTransientError("HTTP 503"),
+            [None, _revoked()],
+            cloud_mod._MQTT_RELOGIN_RETRY_DELAY,
+        ),
+    ],
+    ids=["closed-after-a-replacement", "replacement-login-failed"],
+)
+async def test_a_robot_left_out_while_no_replacement_login_may_run_reloads_then(
+    hass: HomeAssistant, caplog, login_result, outcomes, wait
+):
+    """The second robot's handshake is closed after the first got new
+    credentials, or its replacement login failed: the entry reloads when
+    the next replacement login may run."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="left_out_entry",
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.robovac_mqtt.EufyLogin", side_effect=_account(login_result)
+    ), patch(
+        "custom_components.robovac_mqtt.coordinator.EufyCleanClient",
+        side_effect=_brokers(*outcomes),
+    ), patch(
+        "custom_components.robovac_mqtt.coordinator._SETUP_HANDSHAKE_RETRY_DELAY", 0.0
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later:
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.LOADED
+        started = {c.device_id for c in hass.data[DOMAIN][entry.entry_id]["coordinators"]}
+        assert "second" not in started
+        call_later.assert_called_once()
+        _hass, delay, _action = call_later.call_args.args
+        assert wait - 5 < delay <= wait + 2
+        assert "left out while no Eufy login may run" in caplog.text
+        assert await hass.config_entries.async_unload(entry.entry_id)
 
 
 @pytest.mark.parametrize(

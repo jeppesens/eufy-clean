@@ -412,9 +412,9 @@ def _schedule_reload_for_mqtt_credentials(
     coordinators: list[EufyCleanCoordinator],
     reload: _HoldOffReload,
 ) -> None:
-    """Reload the entry once the login hold-off ends when MQTT robots were
-    left out of this setup while it runs (no MQTT credentials, or the broker
-    rejected the ones a login produced).
+    """Reload the entry once a replacement login may run when MQTT robots
+    were left out of this setup while none may (no MQTT credentials, or the
+    broker rejected the ones it got).
 
     A fallback-session account never gets MQTT credentials: no reload.
     """
@@ -422,12 +422,12 @@ def _schedule_reload_for_mqtt_credentials(
     left_out = [d for d in eufy_login.mqtt_devices if d.get("deviceId") not in started]
     if not left_out or not eufy_login.has_user_center:
         return
-    wait = eufy_login.login_hold_off_left()
+    wait = eufy_login.replacement_login_wait()
     if wait is None or not reload.schedule(wait):
         return
     _LOGGER.info(
-        "%d MQTT device(s) left out while Eufy logins are on hold; reloading "
-        "when the hold-off ends, in %.0f min",
+        "%d MQTT device(s) left out while no Eufy login may run; reloading "
+        "the entry when one may, in %.0f min",
         len(left_out),
         wait / 60,
     )

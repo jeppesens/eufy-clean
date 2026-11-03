@@ -1262,8 +1262,9 @@ async def test_a_rejected_replacement_reloads_the_entry_when_the_hold_off_ends(
     hass, login, caplog
 ):
     """Nothing in this run logs in for credentials a login produced: every
-    robot of the account asks for the one reload at the end of the login
-    hold-off, and the warning is logged once, when the reload is armed."""
+    robot of the account asks for the one reload for when a replacement
+    login may run (here the interval after the last one, past the hold-off),
+    and the warning is logged once, when the reload is armed."""
     account = _account_login(login.mqtt_credentials)
     reload = MagicMock(side_effect=[True, False, False, False])
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
@@ -1283,9 +1284,11 @@ async def test_a_rejected_replacement_reloads_the_entry_when_the_hold_off_ends(
 
     hold_off = account.auth_cache.login_hold_off_left()
     assert hold_off is not None
+    wait = account.replacement_login_wait()
+    assert wait > hold_off
     assert reload.call_count == 3
     for call in reload.call_args_list:
-        assert hold_off <= call.args[0] <= hold_off + 5
+        assert wait <= call.args[0] <= wait + 5
     warnings = [
         r for r in caplog.records
         if r.levelno == logging.WARNING and "reloading the entry" in r.getMessage()

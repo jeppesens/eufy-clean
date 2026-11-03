@@ -353,10 +353,7 @@ class EufyLogin:
                         self._hold_off_after_a_rejected_login()
                         changed = True
                     return False
-                if self.login_hold_off_left() is not None:
-                    return False
-                not_before = self._mqtt_relogin_not_before
-                if not_before is not None and time.monotonic() < not_before:
+                if self.replacement_login_wait() is not None:
                     _LOGGER.debug("Replacement MQTT login held back; no login")
                     return False
                 changed = True
@@ -399,6 +396,17 @@ class EufyLogin:
             cache.rejected_logins += 1
         self._hold_off_logins(min(seconds, _REJECTED_LOGIN_HOLD_OFF_MAX))
 
+    def replacement_login_wait(self) -> float | None:
+        """Seconds until a replacement MQTT login may run: the longest of the
+        login hold-off, the retry delay after a failed replacement login and
+        the minimum interval after a successful one. None when one may now.
+        """
+        waits = [self.login_hold_off_left()]
+        if self._mqtt_relogin_not_before is not None:
+            waits.append(self._mqtt_relogin_not_before - time.monotonic())
+        left = [w for w in waits if w is not None and w > 0]
+        return max(left) if left else None
+
     def mqtt_reload_wait(self, rejected: dict[str, Any]) -> float | None:
         """Seconds until an entry reload may log in to replace ``rejected``,
         when no login in this run will: they came from a login (the hold-off
@@ -410,7 +418,7 @@ class EufyLogin:
             or rejected is self._mqtt_relogin_refused
         ):
             return None
-        return self.login_hold_off_left()
+        return self.replacement_login_wait()
 
     def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> bool:
         """The broker accepted ``credentials``: a later rejection may log in again.
