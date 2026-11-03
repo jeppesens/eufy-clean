@@ -62,6 +62,8 @@ Model → name and capability metadata live in `const.py:EUFY_CLEAN_DEVICES` and
 2. **`__init__.py:async_setup_entry()`**
    - builds an `EufyLogin` and calls `init()` — HTTP login, then device discovery;
    - creates one `EufyCleanCoordinator` per discovered vacuum and calls `initialize()`;
+     a vacuum whose `initialize()` fails is left out, and MQTT vacuums left out while
+     Eufy logins are on hold make the entry reload once the hold-off ends;
    - stores them in `hass.data[DOMAIN][entry.entry_id]`;
    - forwards setup to every platform in `PLATFORMS`.
    (`async_setup()` registers the frontend card once `frontend` is up.)

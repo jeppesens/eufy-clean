@@ -133,7 +133,7 @@ class EufyLogin:
             if proved and not self._mqtt_devices_without_credentials():
                 self._capture_auth_cache()
                 return
-            if proved and self._login_hold_off_left() is not None:
+            if proved and self.login_hold_off_left() is not None:
                 _LOGGER.debug(
                     "Cached session has no MQTT credentials; no login until the "
                     "login hold-off ends"
@@ -181,7 +181,7 @@ class EufyLogin:
         """MQTT robots found, but the session holds no MQTT credentials for them."""
         return bool(self.mqtt_devices) and not self.mqtt_credentials
 
-    def _login_hold_off_left(self) -> float | None:
+    def login_hold_off_left(self) -> float | None:
         if self.auth_cache is None:
             return None
         return self.auth_cache.login_hold_off_left()
@@ -269,7 +269,7 @@ class EufyLogin:
         if not config["mqtt"]:
             raise EufyLoginError("MQTT login is required")
 
-        if (left := self._login_hold_off_left()) is not None:
+        if (left := self.login_hold_off_left()) is not None:
             raise EufyLoginRateLimitedError(
                 f"Eufy logins on hold for another {left:.0f} s",
                 retry_after=left,
@@ -337,11 +337,11 @@ class EufyLogin:
             try:
                 if rejected is self._mqtt_relogin_spent:
                     _LOGGER.debug("MQTT credentials from a login rejected; no login")
-                    if self._login_hold_off_left() is None:
+                    if self.login_hold_off_left() is None:
                         self._hold_off_logins(None)
                         changed = True
                     return False
-                if self._login_hold_off_left() is not None:
+                if self.login_hold_off_left() is not None:
                     return False
                 not_before = self._mqtt_relogin_not_before
                 if not_before is not None and time.monotonic() < not_before:

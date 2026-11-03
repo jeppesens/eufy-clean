@@ -439,6 +439,59 @@ async def test_failed_coordinator_init_is_torn_down(hass: HomeAssistant):
 
 
 @pytest.mark.parametrize(
+    ("mqtt_robot", "mqtt_up", "has_user_center", "hold_off", "reloads"),
+    [
+        (True, False, True, 600.0, True),
+        (False, False, True, 600.0, False),
+        (True, True, True, 600.0, False),
+        (True, False, False, 600.0, False),
+        (True, False, True, None, False),
+    ],
+    ids=["left-out", "no-mqtt-robot", "mqtt-robot-up", "fallback-session", "no-hold-off"],
+)
+async def test_mqtt_robots_left_out_during_the_login_hold_off_reload_when_it_ends(
+    hass: HomeAssistant, mqtt_robot, mqtt_up, has_user_center, hold_off, reloads
+):
+    """Logins on hold at setup: the Tuya robot comes up, the MQTT robot does
+    not, and the entry reloads once when the hold-off ends."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="held_off_entry",
+    )
+    entry.add_to_hass(hass)
+
+    def coordinator(*args, **kwargs):
+        device_id = args[2]["deviceId"]
+        refused = device_id == "mqtt_dev" and not mqtt_up
+        return _mock_coordinator(
+            device_id, init_error=OSError("no MQTT credentials") if refused else None
+        )
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later:
+        login = _mock_login(mock_login_cls, *(["mqtt_dev"] if mqtt_robot else []))
+        login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
+        login.has_user_center = has_user_center
+        login.login_hold_off_left = MagicMock(return_value=hold_off)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert call_later.called is reloads
+    if not reloads:
+        return
+    _hass, delay, action = call_later.call_args.args
+    assert hold_off < delay <= hold_off + 2
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        action(None)
+    reload.assert_called_once_with(entry.entry_id)
+    assert await hass.config_entries.async_unload(entry.entry_id)
+    call_later.return_value.assert_called_once()
+
+
+@pytest.mark.parametrize(
     "error", [EufyLoginTransientError("HTTP 503"), aiohttp.ClientError("reset")]
 )
 async def test_transient_login_failure_retries_and_keeps_tokens(
