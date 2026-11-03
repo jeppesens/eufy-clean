@@ -9,7 +9,12 @@ from typing import Any
 
 import aiohttp
 
-from ..auth_store import session_expiry, trim_session, trim_user_info
+from ..auth_store import (
+    LOGIN_HOLD_OFF_DEFAULT,
+    session_expiry,
+    trim_session,
+    trim_user_info,
+)
 from ..const import DPS_MAP, EUFY_CLEAN_DEVICES, SCALAR_DPS, TUYA_PRODUCT_MODELS
 from ..utils import is_protobuf_dps_value
 from .http import EufyHTTPClient, EufyLoginRateLimitedError, EufyLoginTransientError
@@ -30,6 +35,9 @@ _MQTT_RELOGIN_RETRY_DELAY = 5 * 60.0
 # Seconds between successful replacement MQTT logins: a broker that accepts a
 # certificate and rejects it again soon after gets no login per cycle.
 _MQTT_RELOGIN_MIN_INTERVAL = 3600.0
+# Cap of the login hold-off after logins in a row whose MQTT credentials the
+# broker rejected: LOGIN_HOLD_OFF_DEFAULT, doubled per such login up to this.
+_REJECTED_LOGIN_HOLD_OFF_MAX = 3600.0
 
 # Failures of one region probe that must not stop the next region.
 _TUYA_PROBE_ERRORS = (
@@ -101,6 +109,9 @@ class EufyLogin:
         # produced that the broker has not accepted yet, or ones the account
         # login refused.
         self._mqtt_relogin_spent: dict[str, Any] | None = None
+        # MQTT credentials whose replacement login was refused:
+        # re-authentication, not a reload, brings new ones.
+        self._mqtt_relogin_refused: dict[str, Any] | None = None
         # time.monotonic() before which no replacement login is sent
         self._mqtt_relogin_not_before: float | None = None
         # Persisted handshake reused across restarts; None disables caching.
@@ -318,7 +329,8 @@ class EufyLogin:
         instead of reusing them. No login runs during the login hold-off, nor
         for credentials a login produced (until the broker accepts them; the
         auth cache keeps that mark across a restart) or refused: their
-        rejection starts the hold-off, which outlives a restart. Nor within the
+        rejection starts the hold-off, which outlives a restart and grows with
+        each such login in a row. Nor within the
         retry delay of a failed replacement login or the minimum interval after
         a successful one.
         ``save`` persists the cache after a change. Returns True when the caller
@@ -338,13 +350,10 @@ class EufyLogin:
                 if rejected is self._mqtt_relogin_spent:
                     _LOGGER.debug("MQTT credentials from a login rejected; no login")
                     if self.login_hold_off_left() is None:
-                        self._hold_off_logins(None)
+                        self._hold_off_after_a_rejected_login()
                         changed = True
                     return False
-                if self.login_hold_off_left() is not None:
-                    return False
-                not_before = self._mqtt_relogin_not_before
-                if not_before is not None and time.monotonic() < not_before:
+                if self.replacement_login_wait() is not None:
                     _LOGGER.debug("Replacement MQTT login held back; no login")
                     return False
                 changed = True
@@ -352,6 +361,7 @@ class EufyLogin:
                     await self.login({"mqtt": True})
                 except EufyLoginError:
                     self._mqtt_relogin_spent = rejected
+                    self._mqtt_relogin_refused = rejected
                     raise
                 except (
                     EufyLoginTransientError, aiohttp.ClientError, TimeoutError
@@ -374,17 +384,60 @@ class EufyLogin:
                 if changed:
                     await save()
 
+    def _hold_off_after_a_rejected_login(self) -> None:
+        """Hold off logins after the broker rejected a login's credentials,
+        twice as long as after the previous one in a row, up to
+        _REJECTED_LOGIN_HOLD_OFF_MAX."""
+        cache = self.auth_cache
+        if cache is None:
+            return
+        seconds = LOGIN_HOLD_OFF_DEFAULT * 2 ** cache.rejected_logins
+        if seconds < _REJECTED_LOGIN_HOLD_OFF_MAX:
+            cache.rejected_logins += 1
+        self._hold_off_logins(min(seconds, _REJECTED_LOGIN_HOLD_OFF_MAX))
+
+    def replacement_login_wait(self) -> float | None:
+        """Seconds until a replacement MQTT login may run: the longest of the
+        login hold-off, the retry delay after a failed replacement login and
+        the minimum interval after a successful one. None when one may now.
+        """
+        waits = [self.login_hold_off_left()]
+        if self._mqtt_relogin_not_before is not None:
+            waits.append(self._mqtt_relogin_not_before - time.monotonic())
+        left = [w for w in waits if w is not None and w > 0]
+        return max(left) if left else None
+
+    def mqtt_reload_wait(self, rejected: dict[str, Any]) -> float | None:
+        """Seconds until an entry reload may log in to replace ``rejected``,
+        when no login in this run will: they came from a login (the hold-off
+        stands in for the replacement). None otherwise, also after a refused
+        account login, where re-authentication brings new credentials.
+        """
+        if (
+            rejected is not self._mqtt_relogin_spent
+            or rejected is self._mqtt_relogin_refused
+        ):
+            return None
+        return self.replacement_login_wait()
+
     def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> bool:
         """The broker accepted ``credentials``: a later rejection may log in again.
 
-        Returns True when the auth cache changed and should be saved.
+        Also ends the run of rejected logins. Returns True when the auth cache
+        changed and should be saved.
         """
-        if credentials is None or credentials is not self._mqtt_relogin_spent:
+        if credentials is None:
             return False
-        self._mqtt_relogin_spent = None
         cache = self.auth_cache
+        changed = False
+        if cache is not None and cache.rejected_logins:
+            cache.rejected_logins = 0
+            changed = True
+        if credentials is not self._mqtt_relogin_spent:
+            return changed
+        self._mqtt_relogin_spent = None
         if cache is None or not cache.mqtt_credentials_unaccepted:
-            return False
+            return changed
         cache.mqtt_credentials_unaccepted = False
         return True
 
