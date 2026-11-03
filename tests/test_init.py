@@ -2,9 +2,9 @@
 
 import json
 import logging
-import ssl
 import unittest
 from pathlib import Path
+from ssl import SSLEOFError, SSLError
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -682,11 +682,11 @@ def _brokers(*outcomes):
     return client
 
 
-_EOF = ssl.SSLEOFError(8, "EOF occurred in violation of protocol")
+_EOF = SSLEOFError(8, "EOF occurred in violation of protocol")
 
 
-def _revoked() -> ssl.SSLError:
-    err = ssl.SSLError(1, "[SSL: SSLV3_ALERT_CERTIFICATE_REVOKED] alert")
+def _revoked() -> SSLError:
+    err = SSLError(1, "[SSL: SSLV3_ALERT_CERTIFICATE_REVOKED] alert")
     err.reason = "SSLV3_ALERT_CERTIFICATE_REVOKED"
     return err
 
