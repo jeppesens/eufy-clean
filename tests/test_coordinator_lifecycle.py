@@ -17,6 +17,7 @@ from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from paho.mqtt.packettypes import PacketTypes
 from paho.mqtt.reasoncodes import ReasonCode
 
+from custom_components.robovac_mqtt.api import cloud as cloud_mod
 from custom_components.robovac_mqtt.api.cloud import EufyLogin, EufyLoginError
 from custom_components.robovac_mqtt.api.legacy_parser import parse_legacy_schedules
 from custom_components.robovac_mqtt.api.map_stream import MapData
@@ -915,7 +916,7 @@ async def test_an_accepted_replacement_rearms_the_next_one(hass, login):
     account = _account_login(login.mqtt_credentials)
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
         f"{_MOD}.async_call_later", return_value=MagicMock()
-    ):
+    ), patch.object(cloud_mod, "_MQTT_RELOGIN_MIN_INTERVAL", 0.0):
         (coordinator,) = await _connected_coordinators(hass, account, 1, client_cls)
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()

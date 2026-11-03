@@ -579,6 +579,18 @@ async def test_a_failed_replacement_login_keeps_the_rejected_cert_out(error):
 
 
 @pytest.mark.asyncio
+async def test_rejections_soon_after_a_failed_replacement_login_send_no_login():
+    """Eufy unreachable: the coordinators that ask next get no login of their own."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(side_effect=EufyLoginTransientError("HTTP 503"))
+
+    for _ in range(3):
+        assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_a_retry_after_a_failed_replacement_persists_its_result():
     """The cache is already dropped; the later successful login is still saved."""
     login, rejected, save = _login_with_rejected_credentials()
@@ -588,12 +600,42 @@ async def test_a_retry_after_a_failed_replacement_persists_its_result():
             {"mqtt": {"certificate_pem": "new"}},
         ]
     )
-    await login.replace_rejected_mqtt_credentials(rejected, save)
+    with patch.object(cloud_mod, "_MQTT_RELOGIN_RETRY_DELAY", 0.0):
+        await login.replace_rejected_mqtt_credentials(rejected, save)
 
     assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
 
     assert save.await_count == 2
     assert login.auth_cache.mqtt_credentials == {"certificate_pem": "new"}
+
+
+@pytest.mark.asyncio
+async def test_a_broker_that_rejects_again_soon_after_accepting_gets_no_second_login():
+    """Accept, drop, reject, repeat: one replacement login per interval, and the
+    rejected cert still leaves the cache."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.auth_cache.mqtt_credentials is None
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_replacement_allows_the_next_one_after_the_interval():
+    """A rotation after the interval is replaced again."""
+    login, rejected, save = _login_with_rejected_credentials()
+    with patch.object(cloud_mod, "_MQTT_RELOGIN_MIN_INTERVAL", 0.0):
+        assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is True
+
+    assert login.eufyApi.login.await_count == 2
 
 
 @pytest.mark.asyncio
