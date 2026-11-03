@@ -4,7 +4,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import ssl
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -20,7 +22,30 @@ _LOGGER = logging.getLogger(__name__)
 # CONNACK reasons that reject the client identity: retrying cannot help.
 _AUTH_REJECTED_REASONS = frozenset({"Bad user name or password", "Not authorized"})
 
+# TLS alerts (OpenSSL reason names) by which the broker rejects the client
+# certificate: the same verdict as a refused CONNACK. Any other TLS or socket
+# error says nothing about the certificate and is not counted.
+_CERT_REJECTED_ALERTS = frozenset({
+    "SSLV3_ALERT_BAD_CERTIFICATE",
+    "SSLV3_ALERT_CERTIFICATE_REVOKED",
+    "SSLV3_ALERT_CERTIFICATE_EXPIRED",
+    "SSLV3_ALERT_CERTIFICATE_UNKNOWN",
+    "TLSV1_ALERT_UNKNOWN_CA",
+    "TLSV13_ALERT_CERTIFICATE_REQUIRED",
+})
+
+# The reason in str(ssl.SSLError), e.g. "[SSL: SSLV3_ALERT_BAD_CERTIFICATE] ...".
+_SSL_REASON = re.compile(r"\[SSL: (\w+)\]")
+
 ConnectionListener = Callable[[bool, bool], None]
+
+
+def is_certificate_rejection(err: BaseException | None) -> bool:
+    """Is ``err`` a TLS alert by which the broker rejects the client certificate?"""
+    return (
+        isinstance(err, ssl.SSLError)
+        and getattr(err, "reason", None) in _CERT_REJECTED_ALERTS
+    )
 
 
 def _build_tls_context(certificate_pem: str, private_key: str) -> ssl.SSLContext:
@@ -100,6 +125,9 @@ class EufyCleanClient:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._connected_event = asyncio.Event()
         self._connection_listener: ConnectionListener | None = None
+        # A failed read carried a certificate alert; reported with the
+        # disconnect that follows it.
+        self._cert_rejected = False
 
     def set_connection_listener(self, callback: ConnectionListener | None) -> None:
         """Call ``callback(connected, auth_failed)`` on the event loop on every
@@ -211,6 +239,8 @@ class EufyCleanClient:
         mqtt_client.on_connect = self._on_connect
         mqtt_client.on_message = self._on_message
         mqtt_client.on_disconnect = self._on_disconnect
+        mqtt_client.on_connect_fail = self._on_connect_fail
+        mqtt_client.on_log = self._on_log
 
         _LOGGER.debug("Connecting to MQTT broker at %s...", self.endpoint)
         try:
@@ -270,7 +300,31 @@ class EufyCleanClient:
         else:
             _LOGGER.debug("Disconnected from MQTT broker (clean)")
         # paho also reports a refused CONNACK here; on_connect counted it
-        self._notify_connection(False, False)
+        cert_rejected, self._cert_rejected = self._cert_rejected, False
+        self._notify_connection(False, cert_rejected)
+
+    def _on_connect_fail(self, client: mqtt.Client, userdata: Any) -> None:
+        """A reconnect raised; paho calls this inside its ``except OSError``."""
+        err = sys.exception()
+        if is_certificate_rejection(err):
+            _LOGGER.error("MQTT broker rejected the client certificate: %s", err)
+            self._notify_connection(False, True)
+
+    def _on_log(
+        self, client: mqtt.Client, userdata: Any, level: int, buf: str
+    ) -> None:
+        """Spot a certificate alert in a failed read.
+
+        With TLS 1.3 the broker's alert arrives after the handshake, on the
+        first read; paho reports that read error only to its log, then
+        disconnects.
+        """
+        if level != mqtt.MQTT_LOG_ERR:
+            return
+        match = _SSL_REASON.search(buf)
+        if match and match.group(1) in _CERT_REJECTED_ALERTS:
+            _LOGGER.error("MQTT broker rejected the client certificate: %s", buf)
+            self._cert_rejected = True
 
     def _on_message(self, client, userdata, msg):
         """Handle incoming MQTT messages."""

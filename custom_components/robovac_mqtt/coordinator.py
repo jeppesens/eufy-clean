@@ -6,6 +6,7 @@ import json
 import logging
 import math
 import re
+import ssl
 import time
 import zlib
 from collections.abc import Callable, Sequence
@@ -34,7 +35,7 @@ from homeassistant.helpers.event import async_call_later, async_track_time_inter
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
-from .api.client import EufyCleanClient
+from .api.client import EufyCleanClient, is_certificate_rejection
 from .api.cloud import EufyLogin, EufyLoginError
 from .api.commands import build_command
 from .api.legacy_commands import (
@@ -848,7 +849,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
             # Before connect(): pushes are parsed against the stored state.
             await self.async_load_storage()
-            await self._async_connect_mqtt(creds)
+            await self._async_connect_mqtt_at_setup(creds)
 
         except BaseException as e:
             _LOGGER.error(
@@ -882,32 +883,66 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         await client.connect()
         return client
 
+    async def _async_connect_mqtt_at_setup(self, creds: dict[str, Any]) -> None:
+        """Connect; a certificate the broker rejects in the TLS handshake is
+        replaced once (EufyLogin bounds the logins) and the connect retried.
+
+        With TLS 1.3 the alert comes after connect() and is counted like a
+        refused CONNACK instead.
+        """
+        for attempt in range(2):
+            try:
+                await self._async_connect_mqtt(creds)
+                return
+            except ssl.SSLError as err:
+                if not is_certificate_rejection(err):
+                    raise
+                _LOGGER.warning(
+                    "%s: the MQTT broker rejected the client certificate (%s)",
+                    self.device_name, err,
+                )
+                await self._async_drop_client()
+                # also drops the rejected ones from the cache
+                fresh = await self._async_new_mqtt_credentials(creds)
+                if fresh is None or attempt:
+                    raise
+                creds = fresh
+
+    async def _async_save_auth_cache(self) -> None:
+        """Persist the account's auth cache (no-op without a config entry)."""
+        cache = self.eufy_login.auth_cache
+        if cache is not None and self.config_entry is not None:
+            await AuthStore(self.hass, self.entry_id).async_save(cache)
+
+    async def _async_new_mqtt_credentials(
+        self, rejected: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """Credentials to replace ``rejected`` with, or None for none now.
+
+        A refused account login starts re-authentication.
+        """
+        try:
+            fresh = await self.eufy_login.replace_rejected_mqtt_credentials(
+                rejected, self._async_save_auth_cache
+            )
+        except EufyLoginError as err:
+            _LOGGER.warning(
+                "%s: the Eufy login was refused (%s); re-authentication needed",
+                self.device_name, err,
+            )
+            if self.config_entry is not None:
+                self.config_entry.async_start_reauth(self.hass)
+            return None
+        return self.eufy_login.mqtt_credentials if fresh else None
+
     async def _async_replace_rejected_credentials(self) -> None:
         """Reconnect with new MQTT credentials when the broker keeps rejecting ours."""
         rejected = self._mqtt_credentials
         try:
             if rejected is None:
                 return
-            cache = self.eufy_login.auth_cache
-
-            async def _save() -> None:
-                if cache is not None and self.config_entry is not None:
-                    await AuthStore(self.hass, self.entry_id).async_save(cache)
-
-            try:
-                fresh = await self.eufy_login.replace_rejected_mqtt_credentials(
-                    rejected, _save
-                )
-            except EufyLoginError as err:
-                _LOGGER.warning(
-                    "%s: the Eufy login was refused (%s); re-authentication needed",
-                    self.device_name, err,
-                )
-                if self.config_entry is not None:
-                    self.config_entry.async_start_reauth(self.hass)
-                return
-            creds = self.eufy_login.mqtt_credentials
-            if not fresh or not creds or self._is_closing():
+            creds = await self._async_new_mqtt_credentials(rejected)
+            if not creds or self._is_closing():
                 return
             old = self.client
             if old is not None and hasattr(old, "set_connection_listener"):

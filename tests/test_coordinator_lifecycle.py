@@ -9,6 +9,7 @@ import asyncio
 import base64
 import json
 import logging
+import ssl
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1078,6 +1079,87 @@ async def test_a_failed_reconnect_reloads_the_entry(hass, login):
     hass.config_entries.async_schedule_reload.assert_called_once_with("entry")
     assert coordinator.client is None
     store_cls.return_value.async_save.assert_awaited_with(account.auth_cache)
+
+
+def _ssl_error(reason: str) -> ssl.SSLError:
+    err = ssl.SSLError(1, f"[SSL: {reason}] alert (_ssl.c:1081)")
+    err.reason = reason
+    return err
+
+
+def _clients_connecting(client_cls, *outcomes) -> list[MagicMock]:
+    """Clients whose connect() raises the next outcome (None: connects)."""
+    clients = [
+        MagicMock(connect=AsyncMock(side_effect=outcome), disconnect=AsyncMock())
+        for outcome in outcomes
+    ]
+    client_cls.side_effect = clients
+    return clients
+
+
+async def test_a_certificate_rejected_at_setup_is_replaced_and_connects(hass, login):
+    """TLS alert on the first connect: one login, then the new cert connects."""
+    account = _account_login(login.mqtt_credentials)
+    coordinator = _coordinator(hass, account)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
+        old, new = _clients_connecting(
+            client_cls, _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"), None
+        )
+        await coordinator.initialize()
+
+    account.login.assert_awaited_once()
+    old.disconnect.assert_awaited_once()
+    assert client_cls.call_args.kwargs["certificate_pem"] == "new1"
+    assert coordinator.client is new
+    assert account.auth_cache.mqtt_credentials["certificate_pem"] == "new1"
+
+
+async def test_a_replacement_rejected_at_setup_too_fails_and_holds_off_logins(
+    hass, login
+):
+    """Both certs refused: setup fails, no cert stays cached, logins wait."""
+    account = _account_login(login.mqtt_credentials)
+    coordinator = _coordinator(hass, account)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
+        _clients_connecting(
+            client_cls,
+            _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED"),
+            _ssl_error("SSLV3_ALERT_BAD_CERTIFICATE"),
+        )
+        with pytest.raises(ssl.SSLError):
+            await coordinator.initialize()
+
+    account.login.assert_awaited_once()
+    assert account.auth_cache.mqtt_credentials is None
+    assert account.auth_cache.login_hold_off_left() is not None
+    assert coordinator.client is None
+
+
+async def test_setup_tries_one_replacement_certificate_at_most(hass, login):
+    """Replacements keep coming and keep being rejected: setup still fails."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(return_value=True)
+    coordinator = _coordinator(hass, login)
+    rejected = _ssl_error("SSLV3_ALERT_CERTIFICATE_REVOKED")
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
+        _clients_connecting(client_cls, rejected, rejected, None)
+        with pytest.raises(ssl.SSLError):
+            await coordinator.initialize()
+
+    assert client_cls.call_count == 2
+
+
+async def test_another_tls_failure_at_setup_keeps_the_cached_certificate(hass, login):
+    """A handshake failure that is no verdict on the cert: no login, cert kept."""
+    account = _account_login(login.mqtt_credentials)
+    cached = account.auth_cache.mqtt_credentials
+    coordinator = _coordinator(hass, account)
+    with patch(f"{_MOD}.EufyCleanClient") as client_cls:
+        _clients_connecting(client_cls, _ssl_error("SSLV3_ALERT_HANDSHAKE_FAILURE"))
+        with pytest.raises(ssl.SSLError):
+            await coordinator.initialize()
+
+    account.login.assert_not_awaited()
+    assert account.auth_cache.mqtt_credentials is cached
 
 
 def test_teardown_cancels_the_pending_unavailable_timer(login):
