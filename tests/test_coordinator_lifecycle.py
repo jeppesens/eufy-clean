@@ -11,6 +11,7 @@ import json
 import logging
 import ssl
 import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -371,6 +372,21 @@ async def test_no_background_schedule_fetch_starts_while_one_runs(login):
 
     async with coordinator._sched_refresh_lock:
         coordinator._maybe_refresh_legacy_schedules()
+
+    hass.async_create_task.assert_not_called()
+
+
+async def test_a_direct_schedule_fetch_counts_as_the_last_attempt(login):
+    """The startup fetch is not repeated by the first DPS message after it."""
+    hass = MagicMock()
+    coordinator = _coordinator(hass, login, apiType="legacy")
+    login.tuya_thing_client = MagicMock()
+    coordinator.async_update_listeners = MagicMock()
+    coordinator._tuya_timer_call = AsyncMock(return_value=([], None))
+    coordinator._sched_attempt_ts = time.monotonic() - _SCHEDULE_REFRESH_INTERVAL
+
+    assert await coordinator.async_refresh_legacy_schedules()
+    coordinator._maybe_refresh_legacy_schedules()
 
     hass.async_create_task.assert_not_called()
 

@@ -1879,6 +1879,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             return False
 
         async with self._sched_refresh_lock:
+            # paces the background fetch: any fetch counts as its last attempt
+            self._sched_attempt_ts = time.monotonic()
             raw, _ = await self._tuya_timer_call(
                 "timer.list", ("tuya.m.timer.all.list",)
             )
