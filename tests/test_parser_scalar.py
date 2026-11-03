@@ -57,9 +57,11 @@ def test_repeat_string_is_monday_first_digits(days, expected):
     assert encode_scalar_repeat(days) == expected
 
 
-def test_repeat_string_rejects_an_unknown_day():
+@pytest.mark.parametrize("days", ["Mon, Mondy", "1111111", ["1111111"], "113"])
+def test_repeat_string_rejects_an_unknown_day(days):
+    """A repeated digit is a 0/1 day mask, not a list of day numbers."""
     with pytest.raises(ValueError):
-        encode_scalar_repeat("Mon, Mondy")
+        encode_scalar_repeat(days)
 
 
 @pytest.mark.parametrize(

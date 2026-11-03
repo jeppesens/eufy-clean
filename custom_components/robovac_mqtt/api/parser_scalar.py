@@ -229,15 +229,18 @@ def scalar_raw_to_schedule_entry(raw: dict[str, Any]) -> dict[str, Any]:
 def encode_scalar_repeat(days: list[str] | str | None) -> str:
     """Encode day names into a DPS 151 repeat string (1=Mon..7=Sun).
 
-    A string of digits 1-7, alone or as the only list item, passes through
-    sorted; anything else goes through ``parse_weekdays`` (ValueError on an
-    unknown word).
+    A string of distinct digits 1-7, alone or as the only list item, passes
+    through sorted; anything else goes through ``parse_weekdays`` (ValueError on
+    an unknown word, so a 0/1 day mask such as "1111111" is refused).
     """
     mask = days[0] if isinstance(days, list) and len(days) == 1 else days
-    if isinstance(mask, str) and mask.strip().isdigit() and set(mask.strip()) <= set(
-        _SCALAR_SCHEDULE_DAYS
+    digits = mask.strip() if isinstance(mask, str) else ""
+    if (
+        digits.isdigit()
+        and set(digits) <= set(_SCALAR_SCHEDULE_DAYS)
+        and len(set(digits)) == len(digits)
     ):
-        return "".join(sorted(set(mask.strip())))
+        return "".join(sorted(digits))
     return "".join(str(i + 1) for i in sorted(parse_weekdays(days)))
 
 
