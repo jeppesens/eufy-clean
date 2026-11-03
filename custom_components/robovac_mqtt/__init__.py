@@ -36,7 +36,11 @@ from .api.cloud import (
     EufyLoginTransientError,
     EufySessionReplacedError,
 )
-from .auth_store import AuthStore
+from .auth_store import (
+    AuthStore,
+    async_create_session_replaced_issue,
+    session_replaced_issue_id,
+)
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
@@ -174,16 +178,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     return True
 
 
-def _session_replaced_issue_id(entry_id: str) -> str:
-    """Repair issue id for an entry whose session another client keeps ending."""
-    return f"session_replaced_{entry_id}"
-
-
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     """Delete this entry's cached credentials (bearer tokens, X.509 private key)
     and its repair issues."""
     await AuthStore(hass, entry.entry_id).async_remove()
-    ir.async_delete_issue(hass, DOMAIN, _session_replaced_issue_id(entry.entry_id))
+    ir.async_delete_issue(hass, DOMAIN, session_replaced_issue_id(entry.entry_id))
     # Runs before HA detaches the entry's devices.
     for device_entry in dr.async_entries_for_config_entry(
         dr.async_get(hass), entry.entry_id
@@ -204,7 +203,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     auth_cache = await auth_store.async_load()
 
     session = async_get_clientsession(hass)
-    issue_id = _session_replaced_issue_id(entry.entry_id)
     # Constructed inside the try: it restores the persisted cache, and a corrupt
     # store must degrade to the retried ConfigEntryNotReady, not SETUP_ERROR.
     try:
@@ -217,15 +215,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         )
         await eufy_login.init()
     except EufySessionReplacedError as e:
-        ir.async_create_issue(
-            hass,
-            DOMAIN,
-            issue_id,
-            is_fixable=False,
-            severity=ir.IssueSeverity.ERROR,
-            translation_key="session_replaced",
-            translation_placeholders={"account": username},
-        )
+        async_create_session_replaced_issue(hass, entry.entry_id, username)
         # Reauth is the user's explicit decision to take the session back.
         raise ConfigEntryAuthFailed(str(e)) from e
     except EufyLoginChallengeError as e:
@@ -250,7 +240,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Every outcome: the openudid and the login budget and hold-offs for the
         # retry, fresh tokens, and the tokens a rejected cached run cleared.
         await auth_store.async_save(auth_cache)
-    ir.async_delete_issue(hass, DOMAIN, issue_id)
+    ir.async_delete_issue(hass, DOMAIN, session_replaced_issue_id(entry.entry_id))
 
     coordinators = []
 

@@ -9,15 +9,22 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.const import CONF_USERNAME
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.robovac_mqtt.api.cloud import EufyLogin, EufyLoginError
+from custom_components.robovac_mqtt.api.cloud import (
+    EufyLogin,
+    EufyLoginError,
+    EufySessionReplacedError,
+)
 from custom_components.robovac_mqtt.api.legacy_parser import parse_legacy_schedules
 from custom_components.robovac_mqtt.api.map_stream import MapData
 from custom_components.robovac_mqtt.api.parser import update_state
+from custom_components.robovac_mqtt.api.throttle import SESSION_REPLACED_WINDOW
 from custom_components.robovac_mqtt.api.tuya_thing import TuyaThingClient
 from custom_components.robovac_mqtt.auth_store import AuthCache
 from custom_components.robovac_mqtt.coordinator import (
@@ -895,6 +902,8 @@ async def test_an_accepted_replacement_rearms_the_next_one(hass, login):
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()
         coordinator._on_connection_change(True, False)
+        # outside the window in which a second replacement latches the kick-out
+        account._replacement_login_at = time.monotonic() - SESSION_REPLACED_WINDOW
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()
 
@@ -917,21 +926,34 @@ async def test_refusals_during_a_replacement_start_no_second_one(hass, login):
     assert login.replace_rejected_mqtt_credentials.await_count == 2
 
 
-async def test_a_refused_replacement_login_starts_reauth(hass, login):
-    """The account login itself is refused (password changed): ask the user."""
-    login.replace_rejected_mqtt_credentials = AsyncMock(
-        side_effect=EufyLoginError("Login failed")
-    )
+@pytest.mark.parametrize(
+    ("error", "kicked_out"),
+    [
+        (EufyLoginError("Login failed"), False),
+        (EufySessionReplacedError("kicked out"), True),
+    ],
+    ids=["login-refused", "session-replaced"],
+)
+async def test_a_refused_replacement_login_starts_reauth(hass, login, error, kicked_out):
+    """The account login is refused (password changed), or another client
+    keeps taking the account: ask the user; the latter with a repair issue."""
+    login.replace_rejected_mqtt_credentials = AsyncMock(side_effect=error)
     with patch(f"{_MOD}.EufyCleanClient") as client_cls, patch(
         f"{_MOD}.async_call_later", return_value=MagicMock()
-    ):
+    ), patch(f"{_MOD}.async_create_session_replaced_issue") as create_issue:
         (coordinator,) = await _connected_coordinators(hass, login, 1, client_cls)
         coordinator.config_entry = _entry()
+        coordinator.config_entry.entry_id = "entry"
+        coordinator.config_entry.data = {CONF_USERNAME: "user@example.com"}
         _refuse(coordinator, _AUTH_FAILURE_WARN_AFTER)
         await _settle()
 
     coordinator.config_entry.async_start_reauth.assert_called_once_with(hass)
     assert client_cls.call_count == 1
+    if kicked_out:
+        create_issue.assert_called_once_with(hass, "entry", "user@example.com")
+    else:
+        create_issue.assert_not_called()
 
 
 @pytest.mark.parametrize("during", ["login", "connect"])

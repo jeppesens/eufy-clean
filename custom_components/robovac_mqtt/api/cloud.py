@@ -120,6 +120,8 @@ class EufyLogin:
         # MQTT credentials whose rejection gets no further login: a replacement
         # the broker has not accepted yet, or ones the account login refused.
         self._mqtt_relogin_spent: dict[str, Any] | None = None
+        # time.monotonic() of the last replacement login that brought credentials
+        self._replacement_login_at: float | None = None
         # Persisted handshake reused across restarts; None disables caching.
         self.auth_cache = auth_cache
         if auth_cache is not None:
@@ -236,9 +238,16 @@ class EufyLogin:
             "client is using this account. Not logging in again until the entry "
             "is reauthenticated"
         )
-        cache.clear_tokens()
-        cache.session_replaced_at = time.time()
-        raise EufySessionReplacedError(_SESSION_REPLACED_MESSAGE)
+        raise self._latch_session_replaced()
+
+    def _latch_session_replaced(self) -> EufySessionReplacedError:
+        """Set the kick-out latch in the cache, dropping its tokens; returns
+        the error to raise."""
+        cache = self.auth_cache
+        if cache is not None:
+            cache.clear_tokens()
+            cache.session_replaced_at = time.time()
+        return EufySessionReplacedError(_SESSION_REPLACED_MESSAGE)
 
     def _eufy_session_proved(self) -> bool:
         """Did this run prove the cached EUFY token still works?
@@ -350,7 +359,10 @@ class EufyLogin:
         the throttle state, after a change. Returns True when the caller should
         reconnect with ``mqtt_credentials``, False when it should wait, including
         after a throttle answer. Raises EufyLoginError when the account login is
-        refused (credentials, or a verification code or captcha).
+        refused (credentials, or a verification code or captcha), and
+        EufySessionReplacedError instead of a second replacement login within
+        SESSION_REPLACED_WINDOW of the last one: another client keeps taking
+        the account, and the kick-out latch is set as setup sets it.
         """
         async with self._check_login_lock:
             current = self.mqtt_credentials
@@ -371,6 +383,15 @@ class EufyLogin:
                     )
                     return False
                 changed = True
+                last = self._replacement_login_at
+                if last is not None and time.monotonic() - last < SESSION_REPLACED_WINDOW:
+                    _LOGGER.warning(
+                        "New MQTT credentials were rejected again soon after the "
+                        "last replacement; another client is using this account. "
+                        "Not logging in again until the entry is reauthenticated"
+                    )
+                    self._mqtt_relogin_spent = rejected
+                    raise self._latch_session_replaced()
                 try:
                     await self.login({"mqtt": True})
                 except EufyLoginError:
@@ -386,6 +407,7 @@ class EufyLogin:
                     self.throttle.hold_off(KIND_LOGIN, MISSING_CREDENTIALS_HOLD_OFF)
                     return False
                 self._mqtt_relogin_spent = self.mqtt_credentials
+                self._replacement_login_at = time.monotonic()
                 _LOGGER.info("Fetched new MQTT credentials after a broker rejection")
                 return True
             finally:

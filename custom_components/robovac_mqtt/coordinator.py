@@ -21,6 +21,7 @@ from homeassistant.components.persistent_notification import (
     async_dismiss as pn_async_dismiss,
 )
 from homeassistant.config_entries import ConfigEntry
+from homeassistant.const import CONF_USERNAME
 from homeassistant.core import CALLBACK_TYPE, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -35,7 +36,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api.client import EufyCleanClient
-from .api.cloud import EufyLogin, EufyLoginError
+from .api.cloud import EufyLogin, EufyLoginError, EufySessionReplacedError
 from .api.commands import build_command
 from .api.legacy_commands import (
     build_legacy_command,
@@ -94,7 +95,7 @@ from .api.tuya_mqtt import (
     random_device_id44,
 )
 from .api.tuya_storage import TuyaMapStorage
-from .auth_store import AuthStore
+from .auth_store import AuthStore, async_create_session_replaced_issue
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_VERSION,
@@ -902,6 +903,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     self.device_name, err,
                 )
                 if self.config_entry is not None:
+                    self.config_entry.async_start_reauth(self.hass)
+                return
+            except EufySessionReplacedError:
+                if self.config_entry is not None:
+                    async_create_session_replaced_issue(
+                        self.hass,
+                        self.config_entry.entry_id,
+                        self.config_entry.data[CONF_USERNAME],
+                    )
                     self.config_entry.async_start_reauth(self.hass)
                 return
             creds = self.eufy_login.mqtt_credentials

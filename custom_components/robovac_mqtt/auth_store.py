@@ -18,6 +18,7 @@ from typing import Any
 
 from cryptography import x509
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.storage import Store
 
 from .const import DOMAIN
@@ -236,6 +237,26 @@ class AuthCache:
         self.session_expires_at = None
         self.user_info = None
         self.mqtt_credentials = None
+
+
+def session_replaced_issue_id(entry_id: str) -> str:
+    """Repair issue id for an entry whose session another client keeps ending."""
+    return f"session_replaced_{entry_id}"
+
+
+def async_create_session_replaced_issue(
+    hass: HomeAssistant, entry_id: str, account: str
+) -> None:
+    """Raise the repair issue that goes with a set session-replaced latch."""
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        session_replaced_issue_id(entry_id),
+        is_fixable=False,
+        severity=ir.IssueSeverity.ERROR,
+        translation_key="session_replaced",
+        translation_placeholders={"account": account},
+    )
 
 
 class AuthStore:

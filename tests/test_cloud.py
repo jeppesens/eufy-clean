@@ -15,12 +15,14 @@ from custom_components.robovac_mqtt.api.cloud import (
     EufyLoginError,
     EufyLoginRateLimitedError,
     EufyLoginTransientError,
+    EufySessionReplacedError,
 )
 from custom_components.robovac_mqtt.api.throttle import (
     KIND_LOGIN,
     KIND_REQUESTS,
     LOGIN_BUDGET,
     MISSING_CREDENTIALS_HOLD_OFF,
+    SESSION_REPLACED_WINDOW,
 )
 from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
 from custom_components.robovac_mqtt.auth_store import AuthCache
@@ -624,6 +626,38 @@ async def test_a_replacement_login_without_mqtt_credentials_holds_off_logins():
         MISSING_CREDENTIALS_HOLD_OFF, abs=10
     )
     assert login.throttle.held_off(KIND_REQUESTS) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("since_last", "latches"),
+    [(SESSION_REPLACED_WINDOW - 60, True), (SESSION_REPLACED_WINDOW + 60, False)],
+    ids=["inside-window", "after-window"],
+)
+async def test_a_second_replacement_soon_after_the_last_latches_the_kick_out(
+    since_last, latches
+):
+    """Accepted credentials rejected again within the window: no login, the
+    kick-out latch is set and saved. After the window: a second login."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+    login._replacement_login_at -= since_last
+
+    if not latches:
+        assert await login.replace_rejected_mqtt_credentials(replacement, save)
+        assert len(login.auth_cache.throttle["logins"]) == 2
+        assert login.auth_cache.session_replaced_at is None
+        return
+    with pytest.raises(EufySessionReplacedError):
+        await login.replace_rejected_mqtt_credentials(replacement, save)
+    assert len(login.auth_cache.throttle["logins"]) == 1
+    assert login.auth_cache.session_replaced_at is not None
+    assert save.await_count == 2
+    # the other coordinators of the account wait, without a login
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+    assert len(login.auth_cache.throttle["logins"]) == 1
 
 
 # ── Cloud device discovery ──────────────────────────────────────────
