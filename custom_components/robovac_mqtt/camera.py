@@ -10,6 +10,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from ._orphan_cleanup import prune_orphan_entities
 from .const import DOMAIN
 from .coordinator import EufyCleanCoordinator
 from .entity import API_TYPE_NOVEL, filter_supported_entities
@@ -27,7 +28,21 @@ async def async_setup_entry(
     coordinators: list[EufyCleanCoordinator] = data["coordinators"]
     entities = []
     for coordinator in coordinators:
-        entities.extend(filter_supported_entities(coordinator, [EufyMapCamera(coordinator)]))
+        # The map image only comes from the MQTT biz/ stream (_handle_biz_message).
+        if coordinator.connection_type == "mqtt":
+            entities.extend(
+                filter_supported_entities(coordinator, [EufyMapCamera(coordinator)])
+            )
+
+    # Prune the map camera that older builds registered on Tuya transports.
+    prune_orphan_entities(
+        hass,
+        config_entry.entry_id,
+        coordinators,
+        added_unique_ids={e.unique_id for e in entities if e.unique_id},
+        platform="camera",
+    )
+
     async_add_entities(entities)
 
 

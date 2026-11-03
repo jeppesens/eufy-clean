@@ -211,17 +211,16 @@ unavailable just because the LAN address has shifted.
 > integration debug logs that might contain it into public issues.
 
 > [!NOTE]
-> Live map and live X/Y position are **not** available over either Tuya
-> transport — Eufy delivers them through a separate encrypted P2P channel
-> (`eufy_mega` SDK) that no public reverse-engineering has cracked yet.
-> Everything else — vacuum/mop mode, water level, clean count, spot/zone/room
-> commands, station status, consumables, lifetime stats, all sensors —
-> works fine over both transports.
+> The live map and live X/Y position are **not** implemented over the Tuya
+> transports yet, so the map camera is only created for MQTT robots and zone
+> cleaning needs the MQTT connection. Room and spot cleaning still work over
+> both transports, as do vacuum/mop mode, water level, clean count, station
+> status, consumables and lifetime stats.
 
 ### Optional: Manual room name overrides
 
 The room list (and the `select.robovac_clean_room` entity that targets it)
-normally comes from the same encrypted P2P channel as the map, so on Tuya
+normally only arrives over the Eufy MQTT connection, like the map, so on Tuya
 transports the dropdown is empty. If you'd like to drive room cleaning from
 HA anyway, you can supply your own `room_id: name` mapping:
 
@@ -310,7 +309,9 @@ Clean one or more free-form rectangles instead of whole rooms. Each zone is give
 normalized coordinates `[x0, y0, x1, y1]` — fractions (`0`–`1`) of the rendered map
 image, with `(0, 0)` at the **top-left** and `(1, 1)` at the **bottom-right** of the map
 camera image. They are converted to the robot's world frame against the current map, so the
-map must have been received at least once (run a clean or dock first).
+map must have been received at least once (run a clean or dock first). The map only arrives
+over the Eufy MQTT connection, so on the Tuya transports `zone_clean` fails with an error;
+use `room_clean` there instead.
 
 ```yaml
 action: vacuum.send_command
