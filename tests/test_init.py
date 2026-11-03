@@ -6,6 +6,7 @@ import re
 import time
 import unittest
 from pathlib import Path
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
@@ -756,11 +757,12 @@ async def test_mqtt_robots_left_out_while_logins_are_refused_reload_once_one_is_
     )
     entry.add_to_hass(hass)
     now = time.time()
-    state, wait = {
+    cases: dict[str | None, tuple[dict[str, Any], float | None]] = {
         "hold-off": ({"hold_off": {KIND_LOGIN: now + 600}}, 600),
         "budget": ({"logins": [now - 3600] * LOGIN_BUDGET}, LOGIN_BUDGET_WINDOW - 3600),
         None: ({}, None),
-    }[refusal]
+    }
+    state, wait = cases[refusal]
 
     def coordinator(*args, **kwargs):
         device_id = args[2]["deviceId"]
@@ -785,6 +787,7 @@ async def test_mqtt_robots_left_out_while_logins_are_refused_reload_once_one_is_
     if not reloads:
         return
     _hass, delay, action = call_later.call_args.args
+    assert wait is not None
     assert wait < delay <= wait + 2
     with patch.object(hass.config_entries, "async_schedule_reload") as reload:
         action(None)
