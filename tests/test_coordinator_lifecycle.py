@@ -737,6 +737,20 @@ async def test_a_new_schedule_needs_a_time(hass, login, api_type):
     coordinator.async_send_command.assert_not_awaited()
 
 
+@pytest.mark.parametrize("api_type", ["legacy", "scalar"])
+@pytest.mark.parametrize("bad", ["25:00", "07:60", "7h", ""])
+async def test_an_invalid_schedule_time_is_a_validation_error(hass, login, api_type, bad):
+    coordinator = _legacy_schedule_coordinator(hass, login, [])
+    coordinator.api_type = api_type
+    coordinator.async_send_command = AsyncMock()
+
+    with pytest.raises(ServiceValidationError, match="Invalid time"):
+        await coordinator.async_set_schedule(time=bad)
+
+    coordinator._tuya_timer_call.assert_not_awaited()
+    coordinator.async_send_command.assert_not_awaited()
+
+
 # --- transport availability ----------------------------------------------------------
 
 

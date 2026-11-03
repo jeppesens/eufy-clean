@@ -272,7 +272,7 @@ def _normalize_schedule_time(value: str) -> str:
     elif len(raw) == 4 and raw.isdigit():
         hour, minute = int(raw[:2]), int(raw[2:])
     if hour is None or minute is None or not 0 <= hour <= 23 or not 0 <= minute <= 59:
-        raise HomeAssistantError(
+        raise ServiceValidationError(
             f"Invalid time format: {value!r}. Expected 'HH:MM'."
         )
     return f"{hour:02d}:{minute:02d}"
