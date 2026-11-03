@@ -28,6 +28,7 @@ from custom_components.robovac_mqtt.auth_store import AuthCache
 from custom_components.robovac_mqtt.coordinator import (
     _AUTH_FAILURE_WARN_AFTER,
     _CONNECTION_LOSS_GRACE,
+    _SCHEDULE_REFRESH_INTERVAL,
     _TUYA_SESSION_REFRESH_INTERVAL,
     EufyCleanCoordinator,
     _move_shapes,
@@ -344,6 +345,34 @@ def test_schedule_fetch_retries_at_most_every_cooldown(login):
     coordinator._sched_attempt_ts -= 1000
     coordinator._maybe_refresh_legacy_schedules()
     assert hass.async_create_task.call_count == 2
+
+
+def test_loaded_schedules_are_fetched_again_every_refresh_interval(login):
+    """Schedules changed in the app show up without a restart."""
+    hass = MagicMock()
+    coordinator = _coordinator(hass, login, apiType="legacy")
+    login.tuya_thing_client = MagicMock()
+    coordinator.data = VacuumState(api_type="legacy", received_fields={"schedules"})
+
+    coordinator._maybe_refresh_legacy_schedules()
+    coordinator._sched_attempt_ts -= _SCHEDULE_REFRESH_INTERVAL - 1
+    coordinator._maybe_refresh_legacy_schedules()
+    assert hass.async_create_task.call_count == 1
+
+    coordinator._sched_attempt_ts -= 1
+    coordinator._maybe_refresh_legacy_schedules()
+    assert hass.async_create_task.call_count == 2
+
+
+async def test_no_background_schedule_fetch_starts_while_one_runs(login):
+    hass = MagicMock()
+    coordinator = _coordinator(hass, login, apiType="legacy")
+    login.tuya_thing_client = MagicMock()
+
+    async with coordinator._sched_refresh_lock:
+        coordinator._maybe_refresh_legacy_schedules()
+
+    hass.async_create_task.assert_not_called()
 
 
 async def test_concurrent_first_saves_share_one_document(hass, login):
@@ -825,6 +854,42 @@ async def test_an_unknown_legacy_schedule_is_looked_up_once_then_refused(hass, l
 
     coordinator.async_refresh_legacy_schedules.assert_awaited_once()
     coordinator._tuya_timer_call.assert_not_awaited()
+
+
+def _held_timer_list(coordinator, timers):
+    """Answer timer calls; a list call waits for the returned event. Returns (event, keys)."""
+    release = asyncio.Event()
+    keys = []
+
+    async def _call(key, _methods, **_fields):
+        keys.append(key)
+        if key == "timer.list":
+            await release.wait()
+            return timers, None
+        return {"success": True}, None
+
+    coordinator._tuya_timer_call = _call
+    return release, keys
+
+
+@pytest.mark.parametrize("loaded", [[], [_KITCHEN_HALL_WEEKDAYS]])
+async def test_a_legacy_schedule_edit_waits_for_a_running_fetch(hass, login, loaded):
+    """The lookup of an unknown id and the read-back after the write both see a
+    fetch that starts after the one already running."""
+    login.tuya_thing_client = MagicMock()
+    coordinator = _coordinator(hass, login, apiType="legacy")
+    coordinator.data = VacuumState(api_type="legacy", schedules=parse_legacy_schedules(loaded))
+    release, keys = _held_timer_list(coordinator, [_KITCHEN_HALL_WEEKDAYS])
+    running = asyncio.ensure_future(coordinator.async_refresh_legacy_schedules())
+    await asyncio.sleep(0)
+
+    edit = asyncio.ensure_future(coordinator.async_set_schedule(schedule_id=5, time="10:00"))
+    await asyncio.sleep(0)
+    release.set()
+    await asyncio.gather(running, edit)
+
+    lookup = [] if loaded else ["timer.list"]
+    assert keys == ["timer.list", *lookup, "timer.modify", "timer.list"]
 
 
 async def test_changing_a_scalar_schedule_time_keeps_everything_else(hass, login):

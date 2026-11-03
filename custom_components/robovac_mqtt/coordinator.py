@@ -173,6 +173,8 @@ _LEGACY_MAP_FRESHNESS_MAX_FAILURES = 3
 _MAP_EVENT_MIN_INTERVAL = 0.5
 # Min gap between legacy schedule fetches that were not asked for explicitly.
 _SCHEDULE_REFRESH_RETRY_COOLDOWN = 300.0
+# Loaded legacy schedules are fetched again this often, for edits made in the app.
+_SCHEDULE_REFRESH_INTERVAL = 1800.0
 # Max seconds between a map-state change and its write to .storage.
 _MAP_STATE_SAVE_DELAY = 30.0
 # biz/ frames at least this long (hex chars) are decoded in the executor.
@@ -555,7 +557,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._store_data: dict[str, Any] | None = None
         self._store_load_lock = asyncio.Lock()
         self._last_notified_error_code: int = 0
-        self._sched_refresh_in_progress: bool = False
+        # Held by a legacy schedule fetch; a second fetch waits, then runs.
+        self._sched_refresh_lock = asyncio.Lock()
         self._sched_attempt_ts: float = -_SCHEDULE_REFRESH_RETRY_COOLDOWN
         # DPS 151 is written whole: one read-modify-write at a time.
         self._scalar_schedule_lock = asyncio.Lock()
@@ -1010,10 +1013,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         return self._closing
 
     def _maybe_refresh_legacy_schedules(self) -> None:
-        """Fetch legacy cleaning schedules if not yet loaded, at most every 5 min."""
-        if self.api_type != "legacy" or "schedules" in self.data.received_fields:
+        """Fetch legacy cleaning schedules in the background.
+
+        Until loaded at most every ``_SCHEDULE_REFRESH_RETRY_COOLDOWN``, then every
+        ``_SCHEDULE_REFRESH_INTERVAL``; never while a fetch runs.
+        """
+        if self.api_type != "legacy":
             return
-        if self._sched_refresh_in_progress or self._is_closing():
+        if self._sched_refresh_lock.locked() or self._is_closing():
             return
         if not (
             getattr(self.eufy_login, "tuya_thing_client", None)
@@ -1021,7 +1028,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         ):
             return
         now = time.monotonic()
-        if now - self._sched_attempt_ts < _SCHEDULE_REFRESH_RETRY_COOLDOWN:
+        gap = (
+            _SCHEDULE_REFRESH_INTERVAL
+            if "schedules" in self.data.received_fields
+            else _SCHEDULE_REFRESH_RETRY_COOLDOWN
+        )
+        if now - self._sched_attempt_ts < gap:
             return
         self._sched_attempt_ts = now
         self._spawn(self.async_refresh_legacy_schedules(), "sched_fetch")
@@ -1853,11 +1865,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
 
     async def async_refresh_legacy_schedules(self) -> bool:
-        """Fetch legacy cleaning schedules from Tuya cloud."""
-        if self.api_type != "legacy":
-            return False
+        """Fetch legacy cleaning schedules from Tuya cloud.
 
-        if self._sched_refresh_in_progress:
+        A call during a running fetch waits for it, then fetches again, so the
+        list it leaves is never older than the call. True if the list changed.
+        """
+        if self.api_type != "legacy":
             return False
 
         thing_client = getattr(self.eufy_login, "tuya_thing_client", None)
@@ -1865,8 +1878,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         if thing_client is None and tuya_client is None:
             return False
 
-        self._sched_refresh_in_progress = True
-        try:
+        async with self._sched_refresh_lock:
             raw, _ = await self._tuya_timer_call(
                 "timer.list", ("tuya.m.timer.all.list",)
             )
@@ -1898,8 +1910,6 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 len(schedules),
             )
             return True
-        finally:
-            self._sched_refresh_in_progress = False
 
     def _resolve_schedule_id(self, schedule_id: int | str | None) -> int | str | None:
         """Resolve schedule_id from an explicit id, a label, or the selection."""
