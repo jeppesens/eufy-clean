@@ -404,6 +404,31 @@ def test_a_connection_closed_before_the_connack_is_a_silent_rejection():
 
 
 @pytest.mark.parametrize(
+    ("error", "rejection"),
+    [
+        (mqtt.MQTTErrorCode.MQTT_ERR_CONN_LOST, Rejection.SILENT),
+        (mqtt.MQTTErrorCode.MQTT_ERR_KEEPALIVE, None),
+    ],
+    ids=["connection-lost", "keepalive-timeout"],
+)
+def test_paho_reports_a_lost_connection_as_a_silent_rejection(error, rejection):
+    """The reason comes from paho's own disconnect dispatch, not a copy of it."""
+    client = _make_client()
+    mock_loop = MagicMock()
+    client._loop = mock_loop
+    listener = MagicMock()
+    client.set_connection_listener(listener)
+    paho = mqtt.Client(callback_api_version=CallbackAPIVersion.VERSION2)
+    paho.on_disconnect = client._on_disconnect
+    paho.suppress_exceptions = False
+
+    client._on_socket_open(paho, None, MagicMock())
+    paho._do_on_disconnect(packet_from_broker=False, v1_rc=error)
+
+    assert _listener_calls(mock_loop, listener) == [(False, rejection)]
+
+
+@pytest.mark.parametrize(
     ("connack", "disconnect", "calls"),
     [
         ("Success", "Unspecified error", [(True, None), (False, None)]),
