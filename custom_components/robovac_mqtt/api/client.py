@@ -42,7 +42,9 @@ _CERT_REJECTED_ALERTS = frozenset({
 _HANDSHAKE_CLOSED = (ssl.SSLEOFError, ConnectionResetError)
 
 # paho's disconnect reason for a connection the peer closed.
-_CONNECTION_LOST = "Unspecified error"
+_CONNECTION_LOST = mqtt.convert_disconnect_error_code_to_reason_code(
+    mqtt.MQTTErrorCode.MQTT_ERR_CONN_LOST
+)
 
 # The reason in str(ssl.SSLError), e.g. "[SSL: SSLV3_ALERT_BAD_CERTIFICATE] ...".
 _SSL_REASON = re.compile(r"\[SSL: (\w+)\]")
@@ -369,7 +371,7 @@ class EufyCleanClient:
         rejection: Rejection | None = None
         if cert_rejected:
             rejection = Rejection.EXPLICIT
-        elif unanswered and str(reason_code) == _CONNECTION_LOST:
+        elif unanswered and reason_code == _CONNECTION_LOST:
             _LOGGER.debug(
                 "MQTT broker closed the connection before answering the connect"
             )
