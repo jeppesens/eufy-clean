@@ -41,6 +41,8 @@ from .api.map_stream import (
     try_decode_as_dynamic_data,
     try_extract_map_data,
     try_extract_map_description,
+    try_extract_room_params,
+    try_extract_stream_metadata,
 )
 from .api.parser import update_state
 from .const import (
@@ -155,6 +157,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self.last_seen_maps: dict[int, str] = {}
         self._store = Store(hass, 1, f"{DOMAIN}.{self.device_id}")
         self._map_data_chan_id: int | None = None
+        self._stream_channel_ids: dict[str, int] = {}
         self._map_data: MapData | None = None
         self._robot_pixel: tuple[int, int] | None = None
         self._current_room: tuple[int, str | None] = (0, None)
@@ -492,6 +495,18 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         channel_id, hex_data = result
         _LOGGER.debug("biz/ protocol-41 channel_id=%d, hex_len=%d", channel_id, len(hex_data))
 
+        # The device assigns channel numbers dynamically. Decode Metadata first
+        # instead of assuming that room params always use channel 4.
+        metadata = try_extract_stream_metadata(hex_data)
+        if metadata is not None and len(metadata) >= 2:
+            self._stream_channel_ids.update(metadata)
+            _LOGGER.debug(
+                "Discovered biz channel map for %s: %s",
+                self.device_name,
+                self._stream_channel_ids,
+            )
+            return
+
         # Map discovery: a small single-shot MapDescription frame carries the
         # active map's id + friendly name (delivered on a map switch). Capture it
         # for the Active Map selector, persist, and notify entities.
@@ -506,6 +521,35 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 self.async_update_listeners()
                 self.hass.async_create_task(self.async_save_maps())
             return
+
+        # RoomParams is normally routed by Metadata, but some C20 sessions do
+        # not deliver Metadata before the first room frame. Try small frames
+        # opportunistically as RoomParams before treating them as robot pose.
+        room_channel = self._stream_channel_ids.get("room_params")
+        if channel_id == room_channel or len(hex_data) < 200:
+            room_data = try_extract_room_params(hex_data)
+            if room_data is not None and room_data["rooms"]:
+                rooms = room_data["rooms"]
+                map_id = room_data["map_id"]
+                new_state = replace(
+                    self.data,
+                    rooms=rooms,
+                    map_id=map_id or self.data.map_id,
+                    received_fields=self.data.received_fields | {"rooms"},
+                )
+                self.async_set_updated_data(new_state)
+                if self._segment_update_cancel:
+                    self._segment_update_cancel()
+                self._segment_update_cancel = async_call_later(
+                    self.hass, 2.0, self._async_commit_segment_changes
+                )
+                _LOGGER.debug(
+                    "Published %d rooms for map %d on %s",
+                    len(rooms),
+                    map_id,
+                    self.device_name,
+                )
+                return
 
         # Small channels (<200 hex chars = ~100 bytes): try as robot pose (DynamicData).
         if len(hex_data) < 200:
@@ -573,6 +617,33 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             map_data.ban_mop_zones = self._map_data.ban_mop_zones
 
         self._map_data = map_data
+
+        # MapBackup carries RoomParams alongside the map pixels. Publish those
+        # rooms into the vacuum state as well as using them for map labels.
+        if map_data.room_names:
+            rooms = [
+                {"id": room_id, "name": name}
+                for room_id, name in sorted(map_data.room_names.items())
+            ]
+            if rooms != self.data.rooms:
+                self.async_set_updated_data(
+                    replace(
+                        self.data,
+                        rooms=rooms,
+                        received_fields=self.data.received_fields | {"rooms"},
+                    )
+                )
+                if self._segment_update_cancel:
+                    self._segment_update_cancel()
+                self._segment_update_cancel = async_call_later(
+                    self.hass, 2.0, self._async_commit_segment_changes
+                )
+                _LOGGER.debug(
+                    "Published %d rooms from MapBackup for %s",
+                    len(rooms),
+                    self.device_name,
+                )
+
         self._rerender_map()
 
     def _pose_to_pixel(self, x_cm: int, y_cm: int) -> tuple[int, int] | None:

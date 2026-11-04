@@ -10,7 +10,7 @@ from typing import Any
 from PIL import Image, ImageDraw, ImageFont
 
 from ..proto.cloud import stream_pb2
-from ..utils import decode_varint
+from ..utils import decode_varint, deduplicate_names
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -426,6 +426,67 @@ def render_map_png(
 # ---------------------------------------------------------------------------
 # Protocol parsing
 # ---------------------------------------------------------------------------
+
+def try_extract_stream_metadata(hex_data: str) -> dict[str, int] | None:
+    """Extract the device-assigned semantic channel IDs from Metadata."""
+    try:
+        proto_bytes = _hex_to_proto_bytes(hex_data)
+        metadata = stream_pb2.Metadata().FromString(proto_bytes)
+    except Exception as exc:
+        _LOGGER.debug("Stream Metadata decode failed: %s", exc)
+        return None
+
+    channel_ids = metadata.chan_ids
+    result = {
+        field: int(getattr(channel_ids, field))
+        for field in (
+            "map_info",
+            "path",
+            "room_outline",
+            "room_params",
+            "restricted_zone",
+            "dynamic_data",
+            "temporary_data",
+            "obstacle_info",
+            "map_data",
+            "cruise_data",
+        )
+        if getattr(channel_ids, field)
+    }
+    return result or None
+
+
+def try_extract_room_params(hex_data: str) -> dict[str, Any] | None:
+    """Extract room IDs and names from a delimited RoomParams stream frame."""
+    try:
+        proto_bytes = _hex_to_proto_bytes(hex_data)
+        room_params = stream_pb2.RoomParams().FromString(proto_bytes)
+    except Exception as exc:
+        _LOGGER.debug("RoomParams decode failed: %s", exc)
+        return None
+
+    if not room_params.rooms and not room_params.map_id:
+        return None
+
+    names: list[str] = []
+    rooms: list[dict[str, Any]] = []
+    for room in room_params.rooms:
+        name = room.name.strip() or _ROOM_SCENE_NAMES.get(
+            room.scene.type, f"Room {room.id}"
+        )
+        names.append(name)
+        rooms.append({"id": room.id, "name": name})
+
+    for room, name in zip(rooms, deduplicate_names(names)):
+        room["name"] = name
+
+    _LOGGER.debug(
+        "RoomParams decoded: map_id=%d, rooms=%s",
+        room_params.map_id,
+        rooms,
+    )
+    return {"map_id": room_params.map_id, "rooms": rooms}
+
 
 def try_extract_map_data(hex_data: str) -> MapData | None:
     """Try to extract MapData from biz/ channel hex data.
