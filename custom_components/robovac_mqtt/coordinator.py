@@ -849,17 +849,37 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         (novel/scalar); the primary error_code moved to a different non-zero
         fault — the backstop that also covers legacy, which has no new_code; the
         battery-swap flag went False -> True; or the obstacle-reminder list is
-        non-empty AND differs from the previous one.
+        non-empty AND differs from the previous one; or the fault is non-zero and the
+        stored history does not already record it -- the case of a device that
+        was ALREADY faulted when this coordinator was built, where ``__init__``
+        seeded ``self.data`` from the cloud snapshot so the transition clause
+        above sees the same code on both sides and cannot fire.
 
         Mutates ``new_state.error_log`` (carried forward across updates) and
         persists to the error store.
         """
+        logged_code = (
+            new_state.error_log[0].get("error_code") if new_state.error_log else None
+        )
         fresh = (
             bool(changes.get("new_error_codes") or changes.get("new_warn_codes"))
             or (
                 "error_code" in changes
                 and new_state.error_code != 0
                 and new_state.error_code != self.data.error_code
+            )
+            # A fault this coordinator BOOTED with. __init__ seeds self.data
+            # from device_info["dps"], so an already-faulted device reports the
+            # same code on its first poll and the transition clause above is
+            # 1 != 1. Legacy has no new_code either, so that device -- the
+            # default Tuya-cloud transport -- would never record the fault it
+            # started in. The history is the right thing to compare against:
+            # initialize() loads it before any transport connects, so [0] is
+            # the last fault actually recorded, and logging is self-limiting.
+            or (
+                "error_code" in changes
+                and new_state.error_code != 0
+                and new_state.error_code != logged_code
             )
             or (new_state.battery_restored and not self.data.battery_restored)
             or (

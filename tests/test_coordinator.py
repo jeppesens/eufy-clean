@@ -10,11 +10,14 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.robovac_mqtt.api.map_stream import MapData
+from custom_components.robovac_mqtt.const import DPS_MAP
 from custom_components.robovac_mqtt.coordinator import (
     _ERROR_LOG_MAX,
     EufyCleanCoordinator,
 )
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.proto.cloud.error_code_pb2 import ErrorCode
+from custom_components.robovac_mqtt.utils import encode_message
 
 
 @pytest.fixture
@@ -1033,8 +1036,12 @@ async def test_cloud_poll_records_history_and_notifies(mock_hass, mock_login):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("connection_type", "branch"),
+    [("mqtt", "_initialize_mqtt"), ("local", "_initialize_local")],
+)
 async def test_initialize_loads_error_log_before_the_transport_connects(
-    mock_hass, mock_login
+    mock_hass, mock_login, connection_type, branch
 ):
     """The stored history is loaded BEFORE any transport can deliver a frame.
 
@@ -1042,6 +1049,11 @@ async def test_initialize_loads_error_log_before_the_transport_connects(
     that happens afterwards can either overwrite a just-logged entry or read back
     a file that now holds only that entry -- discarding up to 50 stored ones.
     Asserts the ORDER, which is the whole property.
+
+    Both branches are covered because they shared the connect-then-load order:
+    the load now sits in initialize() ahead of the branch, which is what makes
+    them safe by construction. Parametrized rather than duplicated, so the
+    scenario still lives in exactly one place.
     """
     device_info = {
         "deviceId": "order_dev",
@@ -1049,6 +1061,7 @@ async def test_initialize_loads_error_log_before_the_transport_connects(
         "deviceName": "Order Vac",
     }
     coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.connection_type = connection_type
 
     calls: list[str] = []
     coordinator.async_load_error_log = AsyncMock(
@@ -1058,12 +1071,153 @@ async def test_initialize_loads_error_log_before_the_transport_connects(
         side_effect=lambda: calls.append("load_storage")
     )
 
-    async def _fake_mqtt() -> None:
+    async def _fake_connect() -> None:
         calls.append("connect")
         await coordinator.async_load_storage()
 
-    with patch.object(coordinator, "_initialize_mqtt", side_effect=_fake_mqtt):
+    with patch.object(coordinator, branch, side_effect=_fake_connect):
         await coordinator.initialize()
 
     assert calls == ["load_error_log", "connect", "load_storage"]
     assert calls.index("load_error_log") < calls.index("connect")
+
+
+def _make_booted_faulted_cloud_coordinator(mock_hass, mock_login, dps_error=1):
+    """A legacy cloud coordinator whose device was ALREADY faulted at construction.
+
+    This is the device from the review: ``api/cloud.py`` sets ``"mqtt": False`` so
+    cloud polling is the default transport, ``apiType`` legacy means no ``new_code``,
+    and ``device_info["dps"]`` carries the fault, which ``__init__`` parses straight
+    into ``self.data``.
+    """
+    device_info = {
+        "deviceId": "boot_fault_dev",
+        "deviceModel": "T2210",
+        "deviceName": "Boot Fault Vac",
+        "mqtt": False,
+        "apiType": "legacy",
+        "dps": {"106": dps_error},
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator._async_save_error_log = MagicMock()
+    return coordinator
+
+
+@pytest.mark.asyncio
+async def test_cloud_logs_a_fault_the_coordinator_booted_with(mock_hass, mock_login):
+    """An already-faulted legacy cloud device records the fault it started in.
+
+    Closing the cloud branch's reachability gap is not enough on its own: because
+    ``__init__`` seeds ``self.data`` from the cloud snapshot, the first poll reports
+    the SAME code, so the clear->fault transition clause compares 1 against 1 and
+    legacy has no ``new_code`` to fall back on. Before the history comparison this
+    device kept ``history == []`` for as long as the fault lasted, which is exactly
+    the symptom the review reported.
+
+    Enters through ``_async_update_data`` -- the real polling entry point -- rather
+    than calling ``_log_error_event``, because the thing under test is whether the
+    fault reaches it at all.
+    """
+    coordinator = _make_booted_faulted_cloud_coordinator(mock_hass, mock_login)
+
+    # The premise, asserted rather than assumed: the seed already holds the fault.
+    assert coordinator.data.error_code == 1
+    assert coordinator.data.error_log == []
+
+    mock_login.getCloudDevice = AsyncMock(return_value={"106": 1})
+    new_state = await coordinator._async_update_data()
+
+    assert len(new_state.error_log) == 1, (
+        "the fault the coordinator booted with was never recorded"
+    )
+    assert new_state.error_log[0]["error_code"] == 1
+    assert coordinator._async_save_error_log.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_cloud_does_not_relog_a_boot_fault_already_in_history(
+    mock_hass, mock_login
+):
+    """The same boot fault is recorded once, not once per poll.
+
+    The other half of the clause above: comparing against the stored history makes
+    the logging self-limiting. Without this assertion the fix could log on every
+    single cloud poll -- a 50-entry history filled with one repeated fault -- and
+    still pass the test above.
+    """
+    coordinator = _make_booted_faulted_cloud_coordinator(mock_hass, mock_login)
+    coordinator.data.error_log = [{"error_code": 1, "error_message": "stored"}]
+
+    mock_login.getCloudDevice = AsyncMock(return_value={"106": 1})
+    first = await coordinator._async_update_data()
+    coordinator.data = first
+    second = await coordinator._async_update_data()
+
+    assert len(second.error_log) == 1
+    assert second.error_log[0]["error_message"] == "stored"
+    assert coordinator._async_save_error_log.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_a_later_fault_does_not_inherit_a_cleared_battery_or_reminder(
+    mock_hass, mock_login
+):
+    """The review's own sequence, end to end: a poop/battery frame, then a fault.
+
+    Both halves of finding 1 are already tested on their own -- the parser writing
+    the snapshot, and the freshness predicate reading ``self.data`` -- but nothing
+    joined them, and the join is what the reviewer described: "after a single frame
+    with battery.restored or a poop reminder, a 7002 lift days later still gets
+    battery_restored: True and the old reminder list copied into its error_log
+    entry". This drives the real parser (``_parse_dps``) and the real handler
+    (``_handle_error_changes``) in sequence, so a regression in EITHER half is red.
+    """
+    device_info = {
+        "deviceId": "seq_dev",
+        "deviceModel": "T2351",
+        "deviceName": "Seq Vac",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator._async_save_error_log = MagicMock()
+
+    # Frame 1: a battery swap and a poop reminder, no fault.
+    first = ErrorCode()
+    first.battery.restored = True
+    reminder = first.obstacle_reminder.add()
+    reminder.photo_id = "p1"
+    reminder.accuracy = 90
+    reminder.map_id = 2
+    reminder.point.x = 100
+    reminder.point.y = 200
+
+    state1, changes1 = coordinator._parse_dps(
+        {DPS_MAP["ERROR_CODE"]: encode_message(first)}
+    )
+    coordinator._handle_error_changes(state1, changes1)
+    assert len(state1.error_log) == 1
+    assert state1.error_log[0]["battery_restored"] is True
+    assert state1.error_log[0]["obstacle_reminders"][0]["photo_id"] == "p1"
+
+    # Days later: a 7002 lift, with neither a battery flag nor a reminder.
+    coordinator.data = state1
+    later = ErrorCode()
+    later.error.append(7002)
+
+    state2, changes2 = coordinator._parse_dps(
+        {DPS_MAP["ERROR_CODE"]: encode_message(later)}
+    )
+
+    # The parser must clear both, so replace() cannot carry them forward.
+    assert state2.battery_restored is False
+    assert state2.obstacle_reminders == []
+
+    coordinator._handle_error_changes(state2, changes2)
+    assert len(state2.error_log) == 2
+    newest = state2.error_log[0]
+    assert newest["error_code"] == 7002
+    assert "battery_restored" not in newest, (
+        "a later fault inherited a battery flag that had already cleared"
+    )
+    assert "obstacle_reminders" not in newest, (
+        "a later fault inherited an obstacle reminder that had already cleared"
+    )
