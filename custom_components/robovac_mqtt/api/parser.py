@@ -52,6 +52,19 @@ _LOGGER = logging.getLogger(__name__)
 _OFF_PEAK_RESPONSE_FIELD_NUM = 23  # UnisettingResponse field 23 = OffPeakCharging (undocumented)
 
 
+def _obstacle_type_name(value: int) -> str:
+    """Name an ``ErrorCode.ObstacleReminder.Type`` from the proto enum itself.
+
+    Derived rather than tabulated so a new obstacle type added to
+    ``error_code.proto`` names itself. Unknown values fall back to the number,
+    which is what a device ahead of our compiled proto will send.
+    """
+    try:
+        return ErrorCode.ObstacleReminder.Type.Name(value).strip().lower()
+    except ValueError:
+        return str(value)
+
+
 def _extract_off_peak_charging(raw_b64: str) -> dict[str, int | bool] | None:
     """Extract off-peak charging config from raw UnisettingResponse bytes (field 23).
 
@@ -503,6 +516,28 @@ def _process_other_dps(
                 else:
                     changes["error_code"] = 0
                     changes["error_message"] = ""
+                # Everything above and below is written on EVERY frame, empty or
+                # not: an ErrorCode message is a full snapshot, and the
+                # dataclasses.replace() in update_state would otherwise carry a
+                # cleared fault forward for the life of the config entry.
+                changes["last_error_time"] = int(error_proto.last_time)
+                # new_code: what the device flags as freshly reported this update
+                # (drives the coordinator's persisted error_log).
+                changes["new_error_codes"] = [int(c) for c in error_proto.new_code.error]
+                changes["new_warn_codes"] = [int(c) for c in error_proto.new_code.warn]
+                changes["battery_restored"] = bool(error_proto.battery.restored)
+                changes["obstacle_reminders"] = [
+                    {
+                        "type": int(o.type),
+                        "type_name": _obstacle_type_name(int(o.type)),
+                        "photo_id": o.photo_id,
+                        "accuracy": o.accuracy,
+                        "map_id": o.map_id,
+                        "x": o.point.x,
+                        "y": o.point.y,
+                    }
+                    for o in error_proto.obstacle_reminder
+                ]
 
             elif key == DPS_MAP["ACCESSORIES_STATUS"]:
                 _LOGGER.debug("Received ACCESSORIES_STATUS: %s", value)

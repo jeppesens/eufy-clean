@@ -79,7 +79,7 @@ async def async_setup_entry(
             # Battery sensor
             BatterySensorEntity(coordinator),
             # Error Message Sensor
-            RoboVacSensor(
+            ErrorMessageSensor(
                 coordinator,
                 "error_message",
                 "Error Message",
@@ -89,6 +89,18 @@ async def async_setup_entry(
                 state_class=None,
                 icon="mdi:alert-circle-outline",
                 category=EntityCategory.DIAGNOSTIC,
+                # Full mined ErrorCode data + persisted history as attributes.
+                # The bulky / per-frame ones are excluded from the recorder by
+                # ErrorMessageSensor._unrecorded_attributes.
+                extra_state_attributes_fn=lambda s: {
+                    "error_code": s.error_code,
+                    "error_codes": s.error_codes,
+                    "warn_codes": s.warn_codes,
+                    "last_error_time": s.last_error_time,
+                    "obstacle_reminders": s.obstacle_reminders,
+                    "battery_restored": s.battery_restored,
+                    "history": s.error_log,
+                },
             ),
             # Task Status Sensor
             RoboVacSensor(
@@ -603,6 +615,33 @@ class CurrentRoomSensorEntity(RoboVacSensor):
     @callback
     def _handle_room_update(self) -> None:
         self.async_write_ha_state()
+
+
+class ErrorMessageSensor(RoboVacSensor):
+    """Error Message sensor: keeps its bulky attributes out of the recorder.
+
+    ``last_error_time`` is the robot's own CLOCK_MONOTONIC nanosecond counter
+    (see ``last_time`` in error_code.proto), so it changes on EVERY DPS 177
+    frame. Without this the recorder would store a fresh copy of the whole
+    attribute set each time, including ``history`` -- up to
+    ``_ERROR_LOG_MAX`` (50) entries, roughly 9 KB -- and once obstacle
+    reminders are in there the payload can pass the recorder's 16384-byte
+    limit, at which point Home Assistant logs "exceed maximum size" and stores
+    NONE of this sensor's attributes.
+
+    ``_unrecorded_attributes`` must be a CLASS attribute: Entity.__init_subclass__
+    folds it into __combined_unrecorded_attributes when the class is created, so
+    a per-instance assignment would be read by nothing. That is why this is a
+    subclass rather than a constructor argument, and the test asserts the
+    COMBINED set rather than this declaration.
+
+    The small, automation-useful fields (error_code, error_codes, warn_codes,
+    battery_restored) stay recorded.
+    """
+
+    _unrecorded_attributes = frozenset(
+        {"history", "last_error_time", "obstacle_reminders"}
+    )
 
 
 class BatterySensorEntity(CoordinatorEntity[EufyCleanCoordinator], SensorEntity):

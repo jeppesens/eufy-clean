@@ -131,6 +131,7 @@ def _process_error_code(
     try:
         code = int(value)
         changes["error_code"] = code
+        changes["error_codes"] = [code] if code else []  # keep state shape uniform
         changes["error_message"] = EUFY_CLEAN_ERROR_CODES.get(code, f"Unknown ({code})")
         received.add("error_code")
     except (ValueError, TypeError):

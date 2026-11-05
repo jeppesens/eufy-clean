@@ -86,11 +86,11 @@ def test_update_state_error_code(mock_decode):
     """Test updating error code."""
     state = VacuumState()
 
-    # Mock ErrorCode
-    mock_error = MagicMock(spec=ErrorCode)
-    mock_error.error = []
-    mock_error.warn = [1]  # CRASH BUFFER STUCK
-    mock_decode.return_value = mock_error
+    # Real ErrorCode proto — the parser now reads error[]/new_code/battery/
+    # obstacle_reminder, so a bare MagicMock(spec=ErrorCode) is insufficient.
+    error = ErrorCode()
+    error.warn.append(1)  # CRASH BUFFER STUCK
+    mock_decode.return_value = error
 
     dps = {DPS_MAP["ERROR_CODE"]: "some_encoded_string"}
     new_state, _ = update_state(state, dps)
