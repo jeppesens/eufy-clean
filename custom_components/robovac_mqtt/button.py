@@ -11,19 +11,28 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from ._orphan_cleanup import prune_orphan_entities
+from .const import ACCESSORY_MAX_LIFE, DOMAIN, MODEL_ACCESSORY_MAX_LIFE
 from .coordinator import EufyCleanCoordinator
-from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
+from .entity import (
+    API_TYPE_NOVEL,
+    API_TYPE_SCALAR,
+    effective_api_type,
+    filter_supported_entities,
+)
 from .proto.cloud.consumable_pb2 import ConsumableRequest
 
 _LOGGER = logging.getLogger(__name__)
 
 # Accessory reset buttons: (name, id_suffix, novel reset_type, icon,
-# scalar DPS-150 key, supported api types). Filter/brushes/sensor are
-# universal; cleaning tray + mopping cloth only exist on mop-capable
-# (novel) devices.
+# scalar DPS-150 key, supported api types, usage key). Filter/brushes/sensor
+# are universal; cleaning tray + mopping cloth only exist on mop-capable
+# (novel) devices. Like the accessory sensors, novel devices only get the
+# buttons whose usage key their lifespan table lists (MODEL_ACCESSORY_MAX_LIFE,
+# else ACCESSORY_MAX_LIFE), so the dust bag button only appears on models
+# that track a dust bag.
 _ACCESSORY_RESET_BUTTONS: list[
-    tuple[str, str, int, str, str | None, tuple[str, ...] | None]
+    tuple[str, str, int, str, str | None, tuple[str, ...] | None, str]
 ] = [
     (
         "Reset Filter",
@@ -32,6 +41,7 @@ _ACCESSORY_RESET_BUTTONS: list[
         "mdi:air-filter",
         "dust_filter",
         None,
+        "filter_usage",
     ),
     (
         "Reset Rolling Brush",
@@ -40,6 +50,7 @@ _ACCESSORY_RESET_BUTTONS: list[
         "mdi:broom",
         "roller_brush",
         None,
+        "main_brush_usage",
     ),
     (
         "Reset Side Brush",
@@ -48,6 +59,7 @@ _ACCESSORY_RESET_BUTTONS: list[
         "mdi:broom",
         "side_brush",
         None,
+        "side_brush_usage",
     ),
     (
         "Reset Sensors",
@@ -56,6 +68,7 @@ _ACCESSORY_RESET_BUTTONS: list[
         "mdi:eye-outline",
         "sensors",
         None,
+        "sensor_usage",
     ),
     (
         "Reset Cleaning Tray",
@@ -64,6 +77,7 @@ _ACCESSORY_RESET_BUTTONS: list[
         "mdi:wiper",
         None,
         (API_TYPE_NOVEL,),
+        "scrape_usage",
     ),
     (
         "Reset Mopping Cloth",
@@ -72,6 +86,16 @@ _ACCESSORY_RESET_BUTTONS: list[
         "mdi:water",
         None,
         (API_TYPE_NOVEL,),
+        "mop_usage",
+    ),
+    (
+        "Reset Dust Bag",
+        "_reset_dustbag",
+        ConsumableRequest.DUSTBAG,
+        "mdi:delete",
+        None,
+        (API_TYPE_NOVEL,),
+        "dustbag_usage",
     ),
 ]
 
@@ -145,6 +169,9 @@ async def async_setup_entry(
             ),
         ]
 
+        max_life_table = MODEL_ACCESSORY_MAX_LIFE.get(
+            coordinator.device_model, ACCESSORY_MAX_LIFE
+        )
         for (
             name,
             suffix,
@@ -152,7 +179,13 @@ async def async_setup_entry(
             icon,
             scalar_key,
             supported,
+            usage_key,
         ) in _ACCESSORY_RESET_BUTTONS:
+            if (
+                effective_api_type(coordinator.api_type) == API_TYPE_NOVEL
+                and usage_key not in max_life_table
+            ):
+                continue
             buttons.append(
                 RoboVacButton(
                     coordinator,
@@ -168,6 +201,16 @@ async def async_setup_entry(
             )
 
         entities.extend(filter_supported_entities(coordinator, buttons))
+
+    # Prune registry orphans (e.g., reset buttons for accessories a model's
+    # lifespan table doesn't list, registered by an older build).
+    prune_orphan_entities(
+        hass,
+        config_entry.entry_id,
+        coordinators,
+        added_unique_ids={e.unique_id for e in entities if e.unique_id},
+        platform="button",
+    )
 
     async_add_entities(entities)
 
