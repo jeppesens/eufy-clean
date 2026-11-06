@@ -71,7 +71,7 @@ Select entities exposed per device (hidden until supported DPS fields are receiv
 | Cleaning Mode | Vacuum, Mop, Vacuum and mop, Mopping after sweeping |
 | Water Level | Low, Medium, High |
 | Mop Intensity | Quiet, Automatic, Max *(Matter-compatible alias for Water Level)* |
-| Cleaning Intensity | Normal, Narrow, Quick |
+| Cleaning Intensity | Normal, Narrow, Quick *(Omni E35: Fast, Deep, as in the app)* |
 | Voice Language | 17 languages: English, German, French, Spanish, Japanese, and more |
 
 ### Dock Tasks

@@ -242,6 +242,14 @@ EUFY_CLEAN_CLEANING_MODES = list(CLEANING_MODE_NAMES.values())
 EUFY_CLEAN_WATER_LEVELS = list(MOP_WATER_LEVEL_NAMES.values())
 EUFY_CLEAN_CLEANING_INTENSITIES = list(CLEANING_INTENSITY_NAMES.values())
 
+# Per-model app names for the cleaning intensities above, keyed by protocol
+# name, in the app's order. A listed model only offers the levels its app has;
+# models not listed offer all three under their protocol names.
+MODEL_CLEANING_INTENSITY_LABELS = {
+    # Omni E35 (#189): the app has no Narrow level.
+    "T210M": {"Quick": "Fast", "Normal": "Deep"},
+}
+
 CARPET_STRATEGY_NAMES = {
     0: "Auto Raise",
     1: "Avoid",
