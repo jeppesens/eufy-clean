@@ -263,6 +263,7 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
         def make_coordinator(*args, **kwargs):
             coord = MagicMock()
             coord.initialize = AsyncMock()
+            coord.async_teardown = AsyncMock()
             device_info = args[2] if len(args) > 2 else kwargs.get("device_info", {})
             coord.device_id = device_info["deviceId"]
             coord.device_name = device_info["deviceName"]
@@ -363,6 +364,7 @@ async def test_setup_passes_map_id_overrides_to_coordinator(hass: HomeAssistant)
 
         mock_coord = mock_coord_cls.return_value
         mock_coord.initialize = AsyncMock()
+        mock_coord.async_teardown = AsyncMock()
         mock_coord.device_id = "test_device_id"
         mock_coord.device_name = "Test Vac"
         mock_coord.device_model = "T2118"
