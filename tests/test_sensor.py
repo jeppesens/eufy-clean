@@ -268,6 +268,8 @@ async def test_novel_coordinator_creates_all_sensors():
         "mop_remaining",
     ]:
         assert f"novel_dev_{suffix}" in entity_ids
+    # Only models with a dust bag in MODEL_ACCESSORY_MAX_LIFE get this sensor.
+    assert "novel_dev_dustbag_remaining" not in entity_ids
 
 
 @pytest.mark.asyncio
