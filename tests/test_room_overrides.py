@@ -9,14 +9,17 @@ Covers:
 
 # pylint: disable=redefined-outer-name
 
+from types import MethodType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.robovac_mqtt.config_flow import (
     _format_rooms_text,
     _parse_rooms_text,
 )
+from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.select import RoomSelectEntity
 
 # ── _parse_rooms_text ────────────────────────────────────────────────
@@ -32,7 +35,7 @@ def test_parse_rooms_tolerates_whitespace_blanks_comments():
     assert _parse_rooms_text(text) == {1: "Lounge with space", 5: "Kitchen"}
 
 
-def test_parse_rooms_skips_unparseable_lines():
+def test_parse_rooms_skips_unparsable_lines():
     text = "1: Lounge\nnot a line\n3: \n: missing id\nfour: bad"
     assert _parse_rooms_text(text) == {1: "Lounge"}
 
@@ -75,6 +78,7 @@ def _coord(room_overrides=None, p2p_rooms=None):
     c.build_device_command = MagicMock(return_value={"152": "encoded"})
     c.async_send_command = AsyncMock()
     c.device_info = MagicMock()
+    c.selectable_rooms = MethodType(EufyCleanCoordinator.selectable_rooms, c)
     return c
 
 
@@ -120,11 +124,13 @@ async def test_select_option_sends_room_clean_with_override_id():
 
 
 @pytest.mark.asyncio
-async def test_select_option_unknown_room_logs_and_returns():
+async def test_select_option_unknown_room_raises_and_sends_nothing():
+    """An unknown room is a user error: the action fails instead of passing silently."""
     c = _coord(room_overrides={5: "Kitchen"})
     ent = RoomSelectEntity(c)
     ent.async_write_ha_state = MagicMock()
-    await ent.async_select_option("Nonexistent")
+    with pytest.raises(ServiceValidationError):
+        await ent.async_select_option("Nonexistent")
     c.build_device_command.assert_not_called()
     c.async_send_command.assert_not_awaited()
 
@@ -148,3 +154,21 @@ async def test_select_duplicate_name_resolves_correct_id():
     c.build_device_command.assert_called_once_with(
         "room_clean", room_ids=[2], map_id=3
     )
+
+
+def test_room_settings_are_read_from_the_map_rooms_under_overrides():
+    """With overrides, room_settings lists the select's rooms with the settings
+    the map holds for the same id."""
+    c = _coord(
+        room_overrides={1: "Lounge", 7: "Attic"},
+        p2p_rooms=[
+            {"id": 1, "name": "Living", "fan_speed": 3, "water_level": 0, "clean_times": 2},
+            {"id": 2, "name": "Kitchen", "fan_speed": 1, "water_level": 1, "clean_times": 1},
+        ],
+    )
+    ent = RoomSelectEntity(c)
+    assert ent.extra_state_attributes == {
+        "room_settings": {
+            "Lounge (ID: 1)": {"suction": "Max", "wash": "Low", "clean_times": 2}
+        }
+    }

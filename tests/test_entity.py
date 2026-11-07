@@ -7,6 +7,7 @@ import pytest
 from custom_components.robovac_mqtt.entity import (
     effective_api_type,
     filter_supported_entities,
+    has_firmware_api,
 )
 
 
@@ -57,3 +58,24 @@ def test_filter_supported_entities_missing_attribute_is_universal():
     entity = object()  # no supported_api_types attribute at all
 
     assert filter_supported_entities(coordinator, [entity]) == [entity]
+
+
+@pytest.mark.parametrize(
+    ("thing_client", "tuya_ids", "expected"),
+    [
+        (object(), {"dev1"}, True),
+        # An MQTT robot on an account whose Tuya login works: its id is no devId.
+        (object(), {"other"}, False),
+        (object(), set(), False),
+        (None, {"dev1"}, False),
+    ],
+)
+def test_firmware_api_needs_the_device_known_to_tuya(thing_client, tuya_ids, expected):
+    """Firmware calls address the Tuya devId, so the device must be on the
+    account's Tuya device list as well as the Thing client existing."""
+    coordinator = MagicMock()
+    coordinator.device_id = "dev1"
+    coordinator.eufy_login.tuya_thing_client = thing_client
+    coordinator.eufy_login.tuya_device_ids = tuya_ids
+
+    assert has_firmware_api(coordinator) is expected

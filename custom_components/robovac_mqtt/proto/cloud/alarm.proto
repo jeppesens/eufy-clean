@@ -4,7 +4,6 @@ package  alarm.message;
 option java_package = "com.eufylife.smarthome.protobuftool";
 option java_outer_classname = "AlarmInfo";
 /*VER0.1*/
-/*author : bruce.yin@oceanwing.com*/
 
 
 

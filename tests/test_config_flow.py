@@ -1,16 +1,33 @@
 # pylint: disable=redefined-outer-name
 import json
+import time
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import homeassistant.helpers.config_validation as cv
 import pytest
 import voluptuous_serialize
 from homeassistant import config_entries, data_entry_flow
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import issue_registry as ir
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.robovac_mqtt.api.cloud import (
+    EufyLoginChallengeError,
+    EufyLoginError,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+)
+from custom_components.robovac_mqtt.api.http import EufyHTTPClient
+from custom_components.robovac_mqtt.api.throttle import KIND_AUTO_LOGIN
+from custom_components.robovac_mqtt.auth_store import (
+    AuthCache,
+    AuthStore,
+    async_create_session_replaced_issue,
+    session_replaced_issue_id,
+)
 from custom_components.robovac_mqtt.config_flow import (
     _format_map_ids_text,
     _parse_map_ids_text,
@@ -24,6 +41,7 @@ from custom_components.robovac_mqtt.const import (
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROOM_NAMES,
+    DEFAULT_MAP_MAX_PX,
     DOMAIN,
 )
 
@@ -141,6 +159,30 @@ async def test_options_settings_independent_edit(
     assert result2["data"][CONF_NOTIFY_MOBILE_SERVICE] == ""
     assert result2["data"][CONF_MAP_MAX_PX] == "1024"
     mock_reload_fixture.assert_called_once_with(entry.entry_id)
+
+
+async def test_options_map_size_default_label_matches_the_preselected_size(
+    hass: HomeAssistant,
+):
+    """The map size option labelled "(default)" is the one preselected for an
+    entry that never set map_max_px."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "settings"}
+    )
+
+    key = next(k for k in result["data_schema"].schema if k == CONF_MAP_MAX_PX)
+    options = result["data_schema"].schema[key].config["options"]
+    labelled_default = [o["value"] for o in options if "(default)" in o["label"]]
+    assert labelled_default == [key.default()] == [str(DEFAULT_MAP_MAX_PX)]
 
 
 def _fake_coordinator(device_id: str, *, local_key: str | None = None):
@@ -557,6 +599,299 @@ def test_format_map_ids_round_trips_stored_values():
     assert text == "2\n999: 1\n3001: 2"
     assert _parse_map_ids_text(text) == (2, {999: 1, 3001: 2})
     assert _format_map_ids_text(None, {}) == ""
+
+
+# ── Login error mapping and the reauth identity ───────────────────
+
+
+def _reauth_entry(hass: HomeAssistant) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "old_pass", "vacs": {}},
+        unique_id="user@example.com",
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (EufyLoginError("rejected"), "invalid_auth"),
+        (EufyLoginTransientError("HTTP 429"), "cannot_connect"),
+        (aiohttp.ClientConnectionError("reset"), "cannot_connect"),
+        (TimeoutError(), "cannot_connect"),
+        (RuntimeError("boom"), "unknown"),
+    ],
+)
+async def test_login_errors_map_to_form_errors(hass: HomeAssistant, error, expected):
+    """A rejection, an outage and a bug each get their own form error."""
+    entry = _reauth_entry(hass)
+    result = await entry.start_reauth_flow(hass)
+
+    with patch("custom_components.robovac_mqtt.config_flow.EufyLogin") as mock_cls:
+        mock_cls.return_value.init = AsyncMock(side_effect=error)
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "pass"}
+        )
+
+    assert result2["type"] == data_entry_flow.FlowResultType.FORM
+    assert result2["errors"]["base"] == expected
+
+
+async def test_reauth_reuses_the_stored_openudid_and_saves_tokens(
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
+):
+    """Reauth logs in as the entry's device identity and keeps the new tokens."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(openudid="0123456789abcdef0123456789abcdef", tuya_region="US")
+    )
+
+    def _fake_init_factory(*args, **kwargs):
+        cache = kwargs["auth_cache"]
+
+        async def _init():
+            cache.session = {"access_token": "fresh", "user_id": "u1"}
+
+        instance = MagicMock()
+        instance.init = AsyncMock(side_effect=_init)
+        instance.mqtt_devices = [{"deviceName": "Test Vac", "deviceId": "test123"}]
+        instance.cloud_devices = []
+        return instance
+
+    mock_login_fixture.side_effect = _fake_init_factory
+    result = await entry.start_reauth_flow(hass)
+
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "new_pass"}
+    )
+
+    assert result2["reason"] == "reauth_successful"
+    args = mock_login_fixture.call_args
+    assert args.args[2] == "0123456789abcdef0123456789abcdef"
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.openudid == "0123456789abcdef0123456789abcdef"
+    assert saved.session == {"access_token": "fresh", "user_id": "u1"}
+    assert saved.tuya_region == "US"
+
+
+async def test_reauth_failure_keeps_the_stored_cache(hass: HomeAssistant):
+    """A failed reauth writes nothing to the auth store."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef",
+            session={"access_token": "old"},
+        )
+    )
+    result = await entry.start_reauth_flow(hass)
+
+    with patch("custom_components.robovac_mqtt.config_flow.EufyLogin") as mock_cls:
+        mock_cls.return_value.init = AsyncMock(side_effect=EufyLoginError("no"))
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "wrong"}
+        )
+
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.session == {"access_token": "old"}
+
+
+@pytest.mark.parametrize(
+    "error, expected, minutes",
+    [
+        (
+            EufyLoginRateLimitedError("100028", retry_after=7170, code=100028),
+            "rate_limited",
+            "120",
+        ),
+        (
+            EufyLoginRateLimitedError("100028", retry_after=None, code=100028),
+            "rate_limited",
+            "1",
+        ),
+        (EufyLoginChallengeError("captcha", code=100032), "login_challenge", None),
+    ],
+)
+async def test_login_throttle_and_challenge_map_to_form_errors(
+    hass: HomeAssistant, error, expected, minutes
+):
+    result = await hass.config_entries.flow.async_init(
+        DOMAIN, context={"source": config_entries.SOURCE_USER}
+    )
+    with patch("custom_components.robovac_mqtt.config_flow.EufyLogin") as mock_cls:
+        mock_cls.return_value.init = AsyncMock(side_effect=error)
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"],
+            {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        )
+    assert result2["errors"]["base"] == expected
+    assert (result2["description_placeholders"] or {}).get("minutes") == minutes
+
+
+@pytest.mark.parametrize("step", ["reauth", "reconfigure"])
+async def test_a_stored_login_hold_off_refuses_the_flow_login(hass: HomeAssistant, step):
+    """The entry's hold-off applies to a reauth or reconfigure login: nothing
+    is sent, and the form names the time left."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef",
+            throttle={"hold_off": {"login": time.time() + 3600}},
+        )
+    )
+    if step == "reauth":
+        result = await entry.start_reauth_flow(hass)
+        user_input = {CONF_PASSWORD: "new_pass"}
+    else:
+        result = await entry.start_reconfigure_flow(hass)
+        user_input = {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "new_pass"}
+    websession = MagicMock()
+
+    with patch(
+        "custom_components.robovac_mqtt.config_flow.async_get_clientsession",
+        return_value=websession,
+    ):
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input
+        )
+
+    assert result2["errors"]["base"] == "rate_limited"
+    assert result2["description_placeholders"]["minutes"] == "60"
+    websession.post.assert_not_called()
+
+
+@pytest.mark.parametrize("step", ["reauth", "reconfigure"])
+async def test_the_integrations_own_hold_off_does_not_refuse_the_flow_login(
+    hass: HomeAssistant, step
+):
+    """A hold-off set after MQTT credentials were rejected or missing holds
+    only automatic logins: the user's login is sent and counted."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef",
+            throttle={"hold_off": {KIND_AUTO_LOGIN: time.time() + 900}},
+        )
+    )
+    if step == "reauth":
+        result = await entry.start_reauth_flow(hass)
+        user_input = {CONF_PASSWORD: "new_pass"}
+    else:
+        result = await entry.start_reconfigure_flow(hass)
+        user_input = {CONF_USERNAME: "user@example.com", CONF_PASSWORD: "new_pass"}
+
+    with patch(
+        "custom_components.robovac_mqtt.config_flow.async_get_clientsession",
+        return_value=MagicMock(),
+    ), patch.object(
+        EufyHTTPClient, "_attempt_login", AsyncMock(return_value=None)
+    ) as attempt:
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], user_input
+        )
+
+    assert result2["errors"]["base"] == "invalid_auth"
+    attempt.assert_awaited()
+    saved = await store.async_load()
+    assert len(saved.throttle["logins"]) == 1
+
+
+async def test_a_successful_reauth_keeps_the_stored_logins(
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
+):
+    """The reauth login counts against the entry's budget, with the earlier ones."""
+    entry = _reauth_entry(hass)
+    earlier = time.time() - 60
+    await AuthStore(hass, entry.entry_id).async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef", throttle={"logins": [earlier]}
+        )
+    )
+
+    def _factory(*args, **kwargs):
+        cache = kwargs["auth_cache"]
+        instance = MagicMock()
+
+        async def _init():
+            cache.throttle["logins"].append(earlier + 30)
+            cache.session = {"access_token": "fresh", "user_id": "u1"}
+
+        instance.init = AsyncMock(side_effect=_init)
+        instance.mqtt_devices = [{"deviceName": "Test Vac", "deviceId": "test123"}]
+        instance.cloud_devices = []
+        return instance
+
+    mock_login_fixture.side_effect = _factory
+    result = await entry.start_reauth_flow(hass)
+
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "new_pass"}
+    )
+
+    assert result2["reason"] == "reauth_successful"
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.throttle["logins"] == [earlier, earlier + 30]
+
+
+async def test_failed_reauth_persists_the_spent_login(hass: HomeAssistant):
+    """A failed reauth keeps the old tokens but records the login attempt."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef",
+            session={"access_token": "old"},
+        )
+    )
+    result = await entry.start_reauth_flow(hass)
+
+    def _factory(*args, **kwargs):
+        cache = kwargs["auth_cache"]
+        instance = MagicMock()
+
+        async def _init():
+            cache.throttle["logins"] = [123.0]
+            raise EufyLoginError("no")
+
+        instance.init = AsyncMock(side_effect=_init)
+        return instance
+
+    with patch("custom_components.robovac_mqtt.config_flow.EufyLogin", side_effect=_factory):
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "wrong"}
+        )
+
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.session == {"access_token": "old"}
+    assert saved.throttle["logins"] == [123.0]
+
+
+async def test_successful_reauth_clears_the_session_replaced_latch(
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
+):
+    """The latch and its repair issue go, before the reload sets the entry up."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(openudid="0123456789abcdef0123456789abcdef", session_replaced_at=1.0)
+    )
+    async_create_session_replaced_issue(hass, entry.entry_id, "user@example.com")
+    issue_id = session_replaced_issue_id(entry.entry_id)
+    result = await entry.start_reauth_flow(hass)
+
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "new_pass"}
+    )
+
+    assert result2["reason"] == "reauth_successful"
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.session_replaced_at is None
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
 
 
 # ── Translations ──────────────────────────────────────────────────

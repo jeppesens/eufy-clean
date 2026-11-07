@@ -1,10 +1,6 @@
-"""Shared helper for pruning entity-registry orphans.
+"""Prune entity-registry entries a previous build created but this one gates off.
 
-When entities are conditionally created (e.g., gated by transport type or
-api_type) the previous build may have registered entities the current build
-no longer provides. HA keeps those registry entries forever, so they show as
-permanently-unavailable on the device page until the user manually deletes
-them. This helper removes the diff at platform setup.
+HA keeps such entries forever, showing them as permanently unavailable.
 """
 
 from __future__ import annotations
@@ -32,25 +28,17 @@ def prune_orphan_entities(
 ) -> int:
     """Remove registry entries for our coordinators that this setup didn't add.
 
-    Args:
-        hass: HA core.
-        config_entry_id: ID of the config entry whose entities we are pruning.
-        coordinators: All coordinators owned by this config entry.
-        added_unique_ids: unique_ids of entities the current setup is creating.
-        platform: HA platform domain (e.g., "sensor", "select").
-
-    Returns:
-        Count of orphans removed.
+    ``added_unique_ids`` are the entities the current setup is creating; returns
+    the number of orphans removed.
     """
     try:
         registry = er.async_get(hass)
-        # Snapshot the list — async_remove mutates the registry as we iterate.
+        # snapshot: async_remove mutates the registry as we iterate
         existing_entries = list(
             er.async_entries_for_config_entry(registry, config_entry_id)
         )
     except (AttributeError, RuntimeError) as err:
-        # Best-effort cleanup — skip silently if the registry isn't reachable
-        # (e.g., in narrow unit-test contexts that mock hass).
+        # best-effort: skip silently if the registry isn't reachable
         _LOGGER.debug("Skipping orphan cleanup (no registry available: %s)", err)
         return 0
     device_ids = {c.device_id for c in coordinators}
@@ -58,19 +46,19 @@ def prune_orphan_entities(
     for entry in existing_entries:
         if entry.platform != DOMAIN or entry.domain != platform:
             continue
-        # Our unique_ids are always "{device_id}_{suffix}" — only consider
-        # registry entries that belong to one of our coordinators' devices.
+        # our unique_ids are always "{device_id}_{suffix}"
         if not any(entry.unique_id.startswith(f"{d}_") for d in device_ids):
             continue
         if entry.unique_id in added_unique_ids:
             continue
         _LOGGER.info(
-            "Removing orphan %s entity %s (unique_id=%s) — current build does"
-            " not provide it for this device",
+            "Removing orphan %s entity %s: this build does not provide it for"
+            " this device",
             platform,
             entry.entity_id,
-            entry.unique_id,
         )
+        # unique_id embeds the eufy device id
+        _LOGGER.debug("Orphan unique_id: %s", entry.unique_id)
         registry.async_remove(entry.entity_id)
         removed += 1
     if removed:

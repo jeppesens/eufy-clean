@@ -14,9 +14,9 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import API_TYPE_LEGACY, API_TYPE_NOVEL, API_TYPE_SCALAR, DOMAIN
 from .coordinator import EufyCleanCoordinator
-from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
+from .entity import filter_supported_entities, has_firmware_api
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -33,17 +33,15 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]
     coordinators: list[EufyCleanCoordinator] = data["coordinators"]
 
-    entities = []
+    entities: list[SwitchEntity] = []
 
     for coordinator in coordinators:
         _LOGGER.debug("Adding switch entities for %s", coordinator.device_name)
 
-        # FindRobot works on every transport (find_robot is a legacy command).
-        # The dock/station/setting switches are novel-only — legacy (Tuya Cloud
-        # plain-value) devices can't drive them and they'd register permanently
-        # unavailable, so skip them for legacy (matching number/button/sensor).
-        if coordinator.api_type == "legacy":
-            candidates = [FindRobotSwitchEntity(coordinator)]
+        # legacy devices can only drive find_robot; the rest would register
+        # permanently unavailable
+        if coordinator.api_type == API_TYPE_LEGACY:
+            candidates: list[SwitchEntity] = [FindRobotSwitchEntity(coordinator)]
         else:
             candidates = [
                 DockSwitchEntity(
@@ -73,6 +71,8 @@ async def async_setup_entry(
                 AutoReturnSwitchEntity(coordinator),
                 ActivityLogSwitchEntity(coordinator),
             ]
+        if has_firmware_api(coordinator):
+            candidates.append(AutoUpdateSwitchEntity(coordinator))
         entities.extend(filter_supported_entities(coordinator, candidates))
 
     async_add_entities(entities)
@@ -122,11 +122,7 @@ def _current_dnd_schedule(coordinator: EufyCleanCoordinator) -> dict[str, Any]:
 
 
 class DockSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
-    """Switch for Dock/Station settings.
-
-    Station features; scalar (Tuya) vacuum-only devices like the G50 have no
-    station.
-    """
+    """Switch for Dock/Station settings; vacuum-only scalar devices have none."""
 
     supported_api_types = (API_TYPE_NOVEL,)
 
@@ -378,10 +374,9 @@ class OffPeakChargingSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], Switc
 
 
 class BoostIQSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
-    """Switch for BoostIQ (auto carpet suction boost).
+    """BoostIQ (auto carpet suction boost), scalar DPS 118.
 
-    scalar-protocol only (DPS 118). X-series lumps BoostIQ into the fan-speed
-    list, so this entity is not created there.
+    X-series lumps BoostIQ into the fan-speed list, so it gets no entity there.
     """
 
     supported_api_types = (API_TYPE_SCALAR,)
@@ -424,11 +419,7 @@ class BoostIQSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity)
 
 
 class _ScalarToggleSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
-    """Base for simple scalar-protocol on/off switches backed by a state bool.
-
-    Subclasses set _state_field, _available_field, _command_name + the display
-    attrs. Hidden until the field is reported (scalar devices only).
-    """
+    """Base for scalar on/off switches; subclasses set the three _-fields."""
 
     supported_api_types = (API_TYPE_SCALAR,)
 
@@ -495,3 +486,38 @@ class ActivityLogSwitchEntity(_ScalarToggleSwitchEntity):
         self._attr_name = "Activity Log Upload"
         self._attr_icon = "mdi:upload"
         self._attr_entity_category = EntityCategory.DIAGNOSTIC
+
+
+class AutoUpdateSwitchEntity(CoordinatorEntity[EufyCleanCoordinator], SwitchEntity):
+    """Switch to toggle automatic firmware updates overnight."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Auto Update Firmware"
+    _attr_icon = "mdi:update"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_auto_update_firmware"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def is_on(self) -> bool:
+        """Return switch state."""
+        return bool(self.coordinator.data.auto_update_enabled)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        """Turn on automatic firmware updates."""
+        await self._set(True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        """Turn off automatic firmware updates."""
+        await self._set(False)
+
+    async def _set(self, enabled: bool) -> None:
+        # async_set_auto_update reports failure by returning False, not raising.
+        if not await self.coordinator.async_set_auto_update(enabled):
+            raise HomeAssistantError(
+                f"Could not change automatic firmware updates for "
+                f"{self.coordinator.device_name}"
+            )
