@@ -6,7 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from custom_components.robovac_mqtt.button import RoboVacButton
+from custom_components.robovac_mqtt.button import RoboVacButton, async_setup_entry
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.proto.cloud.consumable_pb2 import (
     ConsumableRequest,
@@ -67,3 +67,46 @@ async def test_button_reset_accessory(mock_coordinator):
         "reset_accessory", reset_type=ConsumableRequest.FILTER_MESH
     )
     mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("model", "present", "absent"),
+    [
+        # Default table: the six accessories, no dust bag.
+        (
+            "T2261",
+            ["filter", "main_brush", "side_brush", "sensors", "scrape", "mop"],
+            ["dustbag"],
+        ),
+        # L60 SES: MODEL_ACCESSORY_MAX_LIFE lists no sensor/tray/mop, but a dust bag.
+        (
+            "T2277",
+            ["filter", "main_brush", "side_brush", "dustbag"],
+            ["sensors", "scrape", "mop"],
+        ),
+    ],
+)
+async def test_novel_reset_buttons_follow_lifespan_table(model, present, absent):
+    """Novel devices only get reset buttons for accessories their table lists."""
+    coordinator = MagicMock()
+    coordinator.device_id = "novel_dev"
+    coordinator.device_name = "Novel Vac"
+    coordinator.device_model = model
+    coordinator.api_type = "novel"
+    coordinator.connection_type = "mqtt"
+    coordinator.data = VacuumState()
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry"
+    hass.data = {"robovac_mqtt": {"test_entry": {"coordinators": [coordinator]}}}
+
+    added_entities = []
+    await async_setup_entry(hass, config_entry, added_entities.extend)
+    entity_ids = {e.unique_id for e in added_entities}
+
+    for part in present:
+        assert f"novel_dev_reset_{part}" in entity_ids
+    for part in absent:
+        assert f"novel_dev_reset_{part}" not in entity_ids
