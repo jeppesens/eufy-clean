@@ -14,9 +14,9 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import API_TYPE_LEGACY, API_TYPE_NOVEL, DOMAIN
 from .coordinator import EufyCleanCoordinator
-from .entity import API_TYPE_NOVEL, filter_supported_entities
+from .entity import filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -38,9 +38,8 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding number entities for %s", coordinator.device_name)
 
-        # Dock number entities require protobuf DPS (novel/scalar); legacy
-        # (Tuya Cloud plain-value) devices have no station support.
-        if coordinator.api_type == "legacy":
+        # legacy (plain-value) devices have no station support
+        if coordinator.api_type == API_TYPE_LEGACY:
             continue
 
         entities.extend(
@@ -71,7 +70,6 @@ async def async_setup_entry(
 
 def _set_wash_freq_value(cfg: dict[str, Any], val: float) -> None:
     """Helper to set wash freq value."""
-    # Ensure structure exists
     if "wash" not in cfg:
         cfg["wash"] = {}
     if "wash_freq" not in cfg["wash"]:
@@ -83,11 +81,7 @@ def _set_wash_freq_value(cfg: dict[str, Any], val: float) -> None:
 
 
 class DockNumberEntity(CoordinatorEntity[EufyCleanCoordinator], NumberEntity):
-    """Number entity for Dock settings.
-
-    Station/mop features; scalar (Tuya) vacuum-only devices like the G50 have
-    no station.
-    """
+    """Number entity for Dock settings; vacuum-only devices have no station."""
 
     supported_api_types = (API_TYPE_NOVEL,)
 

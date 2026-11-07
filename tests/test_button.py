@@ -6,7 +6,12 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from custom_components.robovac_mqtt.button import RoboVacButton
+from custom_components.robovac_mqtt.button import (
+    CheckFirmwareUpdatesButton,
+    RoboVacButton,
+    async_setup_entry,
+)
+from custom_components.robovac_mqtt.const import DOMAIN
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.proto.cloud.consumable_pb2 import (
     ConsumableRequest,
@@ -67,3 +72,23 @@ async def test_button_reset_accessory(mock_coordinator):
         "reset_accessory", reset_type=ConsumableRequest.FILTER_MESH
     )
     mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("has_client", [False, True])
+async def test_firmware_check_button_needs_the_tuya_thing_client(
+    hass, mock_coordinator, has_client
+):
+    """The firmware check button exists only when the Tuya Thing API is reachable."""
+    mock_coordinator.eufy_login.tuya_thing_client = object() if has_client else None
+    mock_coordinator.eufy_login.tuya_device_ids = {mock_coordinator.device_id}
+    mock_coordinator.profile = None
+    entry = MagicMock()
+    entry.entry_id = "fw_entry"
+    hass.data[DOMAIN] = {entry.entry_id: {"coordinators": [mock_coordinator]}}
+
+    add = MagicMock()
+    await async_setup_entry(hass, entry, add)
+
+    made = any(isinstance(e, CheckFirmwareUpdatesButton) for e in add.call_args[0][0])
+    assert made is has_client

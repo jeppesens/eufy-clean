@@ -10,9 +10,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
-from .const import DOMAIN
+from .const import API_TYPE_LEGACY, API_TYPE_NOVEL, DOMAIN
 from .coordinator import EufyCleanCoordinator
+from .entity import filter_supported_entities
+
+PARALLEL_UPDATES = 1
 
 
 async def async_setup_entry(
@@ -24,12 +26,22 @@ async def async_setup_entry(
     data = hass.data[DOMAIN][config_entry.entry_id]
     coordinators: list[EufyCleanCoordinator] = data["coordinators"]
 
-    entities = []
+    entities: list[TimeEntity] = []
     for coordinator in coordinators:
-        entities.append(DoNotDisturbStartTimeEntity(coordinator))
-        entities.append(DoNotDisturbEndTimeEntity(coordinator))
-        entities.append(OffPeakChargingStartTimeEntity(coordinator))
-        entities.append(OffPeakChargingEndTimeEntity(coordinator))
+        # the legacy parser reports neither schedule
+        if coordinator.api_type == API_TYPE_LEGACY:
+            continue
+        entities.extend(
+            filter_supported_entities(
+                coordinator,
+                [
+                    DoNotDisturbStartTimeEntity(coordinator),
+                    DoNotDisturbEndTimeEntity(coordinator),
+                    OffPeakChargingStartTimeEntity(coordinator),
+                    OffPeakChargingEndTimeEntity(coordinator),
+                ],
+            )
+        )
 
     async_add_entities(entities)
 
@@ -74,9 +86,8 @@ class _DoNotDisturbTimeEntity(CoordinatorEntity[EufyCleanCoordinator], TimeEntit
     async def async_set_value(self, value: dt_time) -> None:
         """Update the DND schedule time."""
         data = self.coordinator.data
-        command = build_command(
+        command = self.coordinator.build_device_command(
             "set_do_not_disturb",
-            api_type=self.coordinator.data.api_type,
             active=data.dnd_enabled,
             begin_hour=(
                 value.hour if self._field_prefix == "dnd_start" else data.dnd_start_hour
@@ -138,6 +149,8 @@ class DoNotDisturbEndTimeEntity(_DoNotDisturbTimeEntity):
 class _OffPeakChargingTimeEntity(CoordinatorEntity[EufyCleanCoordinator], TimeEntity):
     """Base class for Off-Peak Charging time entities."""
 
+    # only the novel parser reports the off-peak schedule
+    supported_api_types = (API_TYPE_NOVEL,)
     _field_prefix: str
 
     def __init__(
@@ -175,7 +188,7 @@ class _OffPeakChargingTimeEntity(CoordinatorEntity[EufyCleanCoordinator], TimeEn
     async def async_set_value(self, value: dt_time) -> None:
         """Update the off-peak charging schedule time."""
         data = self.coordinator.data
-        command = build_command(
+        command = self.coordinator.build_device_command(
             "set_off_peak_charging",
             active=data.off_peak_enabled,
             begin_hour=(

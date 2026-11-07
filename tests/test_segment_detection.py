@@ -72,12 +72,20 @@ def mock_coordinator():
     return coordinator
 
 
+def _entry_mock() -> MagicMock:
+    """A config entry whose async_create_task schedules the coroutine."""
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry_id"
+    config_entry.async_create_task = MagicMock(
+        side_effect=lambda _hass, coro, _name=None: asyncio.create_task(coro)
+    )
+    return config_entry
+
+
 @pytest.fixture
 def mock_config_entry():
     """Mock the config entry."""
-    config_entry = MagicMock()
-    config_entry.entry_id = "test_entry_id"
-    return config_entry
+    return _entry_mock()
 
 
 @pytest.mark.asyncio
@@ -334,7 +342,7 @@ async def test_segment_change_detection_end_to_end():
 
     # Initially no rooms
     coordinator.data.rooms = []
-    entity = RoboVacMQTTEntity(coordinator, config_entry=MagicMock())
+    entity = RoboVacMQTTEntity(coordinator, config_entry=_entry_mock())
     assert entity.stored_last_seen_segments is None
 
     # Simulate rooms appearing for the first time
@@ -415,3 +423,20 @@ async def test_backward_compatibility_no_config_entry():
     # But basic functionality should still work
     assert len(entity._get_room_segments()) == 1
     assert entity._get_room_segments()[0].name == "Kitchen"
+
+
+@pytest.mark.asyncio
+@patch("custom_components.robovac_mqtt.vacuum.async_delete_issue")
+async def test_segment_save_is_tracked_by_the_config_entry(
+    _mock_delete_issue, mock_coordinator, mock_config_entry
+):
+    """The background segment save is an entry task, so unload awaits it."""
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.hass.async_create_task.reset_mock()
+    mock_config_entry.async_create_task.reset_mock()
+
+    entity._store_last_seen_segments([Segment(id="1", name="Hall", group=None)])
+    await asyncio.sleep(0)
+
+    mock_config_entry.async_create_task.assert_called_once()
+    mock_coordinator.hass.async_create_task.assert_not_called()

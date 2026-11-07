@@ -11,70 +11,12 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import API_TYPE_LEGACY, API_TYPE_NOVEL, API_TYPE_SCALAR, DOMAIN
 from .coordinator import EufyCleanCoordinator
-from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
-from .proto.cloud.consumable_pb2 import ConsumableRequest
+from .entity import filter_supported_entities, has_firmware_api
+from .profiles import DeviceProfile, get_device_profile
 
 _LOGGER = logging.getLogger(__name__)
-
-# Accessory reset buttons: (name, id_suffix, novel reset_type, icon,
-# scalar DPS-150 key, supported api types). Filter/brushes/sensor are
-# universal; cleaning tray + mopping cloth only exist on mop-capable
-# (novel) devices.
-_ACCESSORY_RESET_BUTTONS: list[
-    tuple[str, str, int, str, str | None, tuple[str, ...] | None]
-] = [
-    (
-        "Reset Filter",
-        "_reset_filter",
-        ConsumableRequest.FILTER_MESH,
-        "mdi:air-filter",
-        "dust_filter",
-        None,
-    ),
-    (
-        "Reset Rolling Brush",
-        "_reset_main_brush",
-        ConsumableRequest.ROLLING_BRUSH,
-        "mdi:broom",
-        "roller_brush",
-        None,
-    ),
-    (
-        "Reset Side Brush",
-        "_reset_side_brush",
-        ConsumableRequest.SIDE_BRUSH,
-        "mdi:broom",
-        "side_brush",
-        None,
-    ),
-    (
-        "Reset Sensors",
-        "_reset_sensors",
-        ConsumableRequest.SENSOR,
-        "mdi:eye-outline",
-        "sensors",
-        None,
-    ),
-    (
-        "Reset Cleaning Tray",
-        "_reset_scrape",
-        ConsumableRequest.SCRAPE,
-        "mdi:wiper",
-        None,
-        (API_TYPE_NOVEL,),
-    ),
-    (
-        "Reset Mopping Cloth",
-        "_reset_mop",
-        ConsumableRequest.MOP,
-        "mdi:water",
-        None,
-        (API_TYPE_NOVEL,),
-    ),
-]
-
 
 PARALLEL_UPDATES = 1
 
@@ -92,82 +34,86 @@ async def async_setup_entry(
 
     for coordinator in coordinators:
         _LOGGER.debug("Adding buttons for %s", coordinator.device_name)
-
-        # Dock and accessory buttons require protobuf DPS (173/168) and are not
-        # available on legacy (Tuya Cloud plain-value) devices.
-        if coordinator.api_type == "legacy":
-            continue
+        profile = (
+            coordinator.profile
+            if isinstance(getattr(coordinator, "profile", None), DeviceProfile)
+            else get_device_profile(
+                getattr(coordinator, "device_model", ""),
+                getattr(coordinator, "api_type", API_TYPE_NOVEL),
+            )
+        )
 
         buttons = [
-            # Vacuum control buttons — mirrors the Eufy app's main screen controls.
             RoboVacButton(coordinator, "Start Cleaning", "_start_cleaning", "start_auto"),
             RoboVacButton(coordinator, "Pause", "_pause", "pause"),
             RoboVacButton(coordinator, "Return to Base", "_return_to_base", "return_to_base"),
-            # Station buttons (wash/dry/dust) — scalar (Tuya) devices like the
-            # G50 are vacuum-only and have no station.
-            RoboVacButton(
-                coordinator,
-                "Dry Mop",
-                "_dry_mop",
-                "go_dry",
-                supported_api_types=(API_TYPE_NOVEL,),
-            ),
-            RoboVacButton(
-                coordinator,
-                "Wash Mop",
-                "_wash_mop",
-                "go_selfcleaning",
-                supported_api_types=(API_TYPE_NOVEL,),
-            ),
-            RoboVacButton(
-                coordinator,
-                "Empty Dust Bin",
-                "_empty_dust_bin",
-                "collect_dust",
-                supported_api_types=(API_TYPE_NOVEL,),
-            ),
-            RoboVacButton(
-                coordinator,
-                "Stop Dry Mop",
-                "_stop_dry_mop",
-                "stop_dry",
-                supported_api_types=(API_TYPE_NOVEL,),
-            ),
-            # Detangle roller brush — scalar/Tuya devices only (DPS 153).
-            RoboVacButton(
-                coordinator,
-                "Detangle Roller Brush",
-                "_detangle_brush",
-                "detangle_brush",
-                "mdi:broom",
-                category=EntityCategory.CONFIG,
-                supported_api_types=(API_TYPE_SCALAR,),
-            ),
         ]
 
-        for (
-            name,
-            suffix,
-            reset_type,
-            icon,
-            scalar_key,
-            supported,
-        ) in _ACCESSORY_RESET_BUTTONS:
+        if coordinator.api_type != API_TYPE_LEGACY:
+            buttons.extend([
+                # station actions; scalar devices are vacuum-only, no station
+                RoboVacButton(
+                    coordinator,
+                    "Dry Mop",
+                    "_dry_mop",
+                    "go_dry",
+                    supported_api_types=(API_TYPE_NOVEL,),
+                ),
+                RoboVacButton(
+                    coordinator,
+                    "Wash Mop",
+                    "_wash_mop",
+                    "go_selfcleaning",
+                    supported_api_types=(API_TYPE_NOVEL,),
+                ),
+                RoboVacButton(
+                    coordinator,
+                    "Empty Dust Bin",
+                    "_empty_dust_bin",
+                    "collect_dust",
+                    supported_api_types=(API_TYPE_NOVEL,),
+                ),
+                RoboVacButton(
+                    coordinator,
+                    "Stop Dry Mop",
+                    "_stop_dry_mop",
+                    "stop_dry",
+                    supported_api_types=(API_TYPE_NOVEL,),
+                ),
+                # scalar DPS 153
+                RoboVacButton(
+                    coordinator,
+                    "Detangle Roller Brush",
+                    "_detangle_brush",
+                    "detangle_brush",
+                    "mdi:broom",
+                    category=EntityCategory.CONFIG,
+                    supported_api_types=(API_TYPE_SCALAR,),
+                ),
+            ])
+
+        for spec in profile.accessories.values():
             buttons.append(
                 RoboVacButton(
                     coordinator,
-                    name,
-                    suffix,
+                    spec.button_name,
+                    spec.button_id,
                     "reset_accessory",
-                    icon,
+                    spec.icon,
                     category=EntityCategory.CONFIG,
-                    supported_api_types=supported,
-                    reset_type=reset_type,
-                    scalar_key=scalar_key,
+                    supported_api_types=spec.supported_api_types,
+                    reset_type=spec.proto_type,
+                    scalar_key=spec.scalar_key,
+                    legacy_key=spec.legacy_key,
                 )
             )
 
-        entities.extend(filter_supported_entities(coordinator, buttons))
+        if coordinator.api_type == API_TYPE_LEGACY:
+            entities.extend(buttons)
+        else:
+            entities.extend(filter_supported_entities(coordinator, buttons))
+        if has_firmware_api(coordinator):
+            entities.append(CheckFirmwareUpdatesButton(coordinator))
 
     async_add_entities(entities)
 
@@ -189,14 +135,13 @@ class RoboVacButton(CoordinatorEntity[EufyCleanCoordinator], ButtonEntity):
     ) -> None:
         """Initialize button."""
         super().__init__(coordinator)
-        # DPS protocols this button exists on (see entity.py); None = all.
+        # protocols this button exists on (see entity.py); None = all
         self.supported_api_types = supported_api_types
         self._command = command
         self._command_kwargs = kwargs
         self._available_fn = available_fn
         self._attr_unique_id = f"{coordinator.device_id}{id_suffix}"
 
-        # Use Home Assistant standard naming
         self._attr_has_entity_name = True
         self._attr_name = name_suffix
 
@@ -219,3 +164,21 @@ class RoboVacButton(CoordinatorEntity[EufyCleanCoordinator], ButtonEntity):
             **self._command_kwargs,
         )
         await self.coordinator.async_send_command(cmd)
+
+
+class CheckFirmwareUpdatesButton(CoordinatorEntity[EufyCleanCoordinator], ButtonEntity):
+    """Button to manually check for firmware updates from the cloud."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Check for Firmware Updates"
+    _attr_icon = "mdi:refresh"
+    _attr_entity_category = EntityCategory.DIAGNOSTIC
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_check_firmware_updates"
+        self._attr_device_info = coordinator.device_info
+
+    async def async_press(self) -> None:
+        """Handle the button press."""
+        await self.coordinator.async_check_firmware_updates()

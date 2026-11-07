@@ -1,9 +1,20 @@
 """Unit tests for api/legacy_parser.py: legacy DPS -> VacuumState mapping."""
 
+import base64
+import dataclasses
+import json
+
 import pytest
 
-from custom_components.robovac_mqtt.api.legacy_parser import update_state_legacy
+from custom_components.robovac_mqtt import profiles
+from custom_components.robovac_mqtt.api.legacy_parser import (
+    encode_legacy_loops,
+    parse_legacy_schedules,
+    update_state_legacy,
+)
+from custom_components.robovac_mqtt.const import LEGACY_DPS_MAP
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.profiles import LEGACY_DUSTBAG_50H, DeviceProfile
 
 # ── Work Status (DPS 15) ───────────────────────────────────────────
 
@@ -230,6 +241,56 @@ def test_play_pause_tracked():
     assert "play_pause" in new_state.received_fields
 
 
+# ── Pause control (DPS 122) ────────────────────────────────────────
+
+
+def test_pause_control_outranks_a_running_work_status():
+    """DPS 15 keeps reading "Running" for a paused job; 122 is the truth."""
+    state = VacuumState()
+    new_state, _ = update_state_legacy(state, {"15": "Running", "122": "Pause"})
+
+    assert new_state.activity == "paused"
+
+
+def test_continue_resumes_a_job_the_pause_control_paused():
+    """...and it has to work in the other direction too.
+
+    Because 15 never leaves "Running", only 122 can undo what 122 did. Without
+    this the entity stayed Paused for the rest of a clean resumed from the eufy
+    app — nothing else was ever going to move it back.
+    """
+    paused, _ = update_state_legacy(VacuumState(), {"15": "Running", "122": "Pause"})
+    assert paused.activity == "paused"
+
+    resumed, changes = update_state_legacy(paused, {"122": "Continue"})
+    assert resumed.activity == "cleaning"
+    assert changes["activity"] == "cleaning"
+
+
+def test_nosweep_is_not_read_as_a_resume():
+    """The control's idle position is ambiguous — a stopped job sits there too."""
+    paused, _ = update_state_legacy(VacuumState(), {"15": "Running", "122": "Pause"})
+    unchanged, _ = update_state_legacy(paused, {"122": "Nosweep"})
+
+    assert unchanged.activity == "paused"
+
+
+def test_continue_does_not_override_a_work_status_in_the_same_frame():
+    """A frame that also docks the robot wins: docked is not "resumed"."""
+    paused, _ = update_state_legacy(VacuumState(), {"15": "Running", "122": "Pause"})
+    docked, _ = update_state_legacy(paused, {"15": "Charging", "122": "Continue"})
+
+    assert docked.activity == "docked"
+
+
+def test_continue_while_docked_changes_nothing():
+    """Only a PAUSED job resumes; the work status owns every other state."""
+    docked, _ = update_state_legacy(VacuumState(), {"15": "Charging"})
+    still_docked, _ = update_state_legacy(docked, {"122": "Continue"})
+
+    assert still_docked.activity == "docked"
+
+
 # ── Multiple DPS in one update ──────────────────────────────────────
 
 
@@ -278,3 +339,83 @@ def test_received_fields_accumulate():
 
     assert "battery_level" in state2.received_fields
     assert "activity" in state2.received_fields
+
+
+# ── Consumables (DPS 116) ──────────────────────────────────────────
+
+
+def _consumables(durations: dict[str, int]) -> dict[str, str]:
+    doc = {"consumable": {"duration": durations}}
+    return {LEGACY_DPS_MAP["CONSUMABLES"]: base64.b64encode(json.dumps(doc).encode()).decode()}
+
+
+def test_consumable_hours_map_onto_the_profile_fields():
+    state, _ = update_state_legacy(
+        VacuumState(), _consumables({"SB": 50, "RB": 40, "FM": 29, "DB": 3, "TR": 9})
+    )
+    assert state.accessories.side_brush_usage == 50
+    assert state.accessories.main_brush_usage == 40
+    assert state.accessories.filter_usage == 29
+    assert state.accessories.dustbag_usage == 3
+
+
+def test_a_spec_with_a_new_legacy_key_is_parsed(monkeypatch):
+    """A profile spec alone wires a DPS 116 key; no second table to edit."""
+    spec = dataclasses.replace(LEGACY_DUSTBAG_50H, attr_name="mop_usage", legacy_key="MP")
+    monkeypatch.setitem(
+        profiles.MODEL_PROFILES,
+        "T9999",
+        DeviceProfile(model="T9999", api_type="legacy", accessories={"mop_usage": spec}),
+    )
+    state, _ = update_state_legacy(VacuumState(), _consumables({"MP": 12}))
+    assert state.accessories.mop_usage == 12
+
+
+@pytest.mark.parametrize(
+    ("days", "expected"),
+    [
+        ("Mon, Sun", "1100000"),
+        (["Weekdays"], "0111110"),
+        ("Every day", "1111111"),
+        ("0010010", "0010010"),
+        (["0010010"], "0010010"),
+        (None, "0000000"),
+    ],
+)
+def test_loops_mask_is_sunday_first(days, expected):
+    assert encode_legacy_loops(days) == expected
+
+
+def test_loops_mask_rejects_an_unknown_day():
+    with pytest.raises(ValueError):
+        encode_legacy_loops("Tue, Xday")
+
+
+def _timer(doc: dict) -> dict:
+    encoded = base64.b64encode(json.dumps(doc).encode()).decode()
+    return {"timerId": 7, "status": 0, "time": "09:15", "loops": "0100010",
+            "dps": {"124": encoded}}
+
+
+def test_app_schedule_shows_its_rooms_and_levels():
+    """property[].roomId carries the rooms; levels read in any case and spelling."""
+    (entry,) = parse_legacy_schedules({"result": [_timer({
+        "method": "scheduleRoomsClean",
+        "data": {"mapId": 3, "cleanMode": "customize", "cleanLevel": "max",
+                 "waterMode": "medium", "property": [{"roomId": 0}, {"roomId": 2}],
+                 "cleanTimes": 1},
+        "timestamp": 1_700_000_000_000,
+    })]})
+    assert entry == {
+        "id": 7, "enabled": False, "time": "09:15", "days": "Mon, Fri",
+        "loops": "0100010", "action": "scheduleRoomsClean", "map_id": 3,
+        "suction": "Max", "water": "Mid", "mode": "customize", "clean_times": 1,
+        "rooms": [0, 2],
+    }
+
+
+def test_schedule_room_ids_list_is_still_read():
+    (entry,) = parse_legacy_schedules(
+        [_timer({"method": "scheduleRoomsClean", "data": {"roomIds": [4, 5]}})]
+    )
+    assert entry["rooms"] == [4, 5]
