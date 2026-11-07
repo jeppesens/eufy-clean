@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import homeassistant.helpers.config_validation as cv
 import pytest
 import voluptuous_serialize
@@ -11,6 +12,11 @@ from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
+from custom_components.robovac_mqtt.api.cloud import (
+    EufyLoginError,
+    EufyLoginTransientError,
+)
+from custom_components.robovac_mqtt.auth_store import AuthCache, AuthStore
 from custom_components.robovac_mqtt.config_flow import (
     _format_map_ids_text,
     _parse_map_ids_text,
@@ -24,6 +30,7 @@ from custom_components.robovac_mqtt.const import (
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROOM_NAMES,
+    DEFAULT_MAP_MAX_PX,
     DOMAIN,
 )
 
@@ -141,6 +148,30 @@ async def test_options_settings_independent_edit(
     assert result2["data"][CONF_NOTIFY_MOBILE_SERVICE] == ""
     assert result2["data"][CONF_MAP_MAX_PX] == "1024"
     mock_reload_fixture.assert_called_once_with(entry.entry_id)
+
+
+async def test_options_map_size_default_label_matches_the_preselected_size(
+    hass: HomeAssistant,
+):
+    """The map size option labelled "(default)" is the one preselected for an
+    entry that never set map_max_px."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="Test Vac",
+        data={CONF_USERNAME: "u@example.com", CONF_PASSWORD: "p", "vacs": {}},
+        options={},
+        unique_id="u@example.com",
+    )
+    entry.add_to_hass(hass)
+    result = await hass.config_entries.options.async_init(entry.entry_id)
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"next_step_id": "settings"}
+    )
+
+    key = next(k for k in result["data_schema"].schema if k == CONF_MAP_MAX_PX)
+    options = result["data_schema"].schema[key].config["options"]
+    labelled_default = [o["value"] for o in options if "(default)" in o["label"]]
+    assert labelled_default == [key.default()] == [str(DEFAULT_MAP_MAX_PX)]
 
 
 def _fake_coordinator(device_id: str, *, local_key: str | None = None):
@@ -557,6 +588,104 @@ def test_format_map_ids_round_trips_stored_values():
     assert text == "2\n999: 1\n3001: 2"
     assert _parse_map_ids_text(text) == (2, {999: 1, 3001: 2})
     assert _format_map_ids_text(None, {}) == ""
+
+
+# ── Login error mapping and the reauth identity ───────────────────
+
+
+def _reauth_entry(hass: HomeAssistant) -> MockConfigEntry:
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "old_pass", "vacs": {}},
+        unique_id="user@example.com",
+    )
+    entry.add_to_hass(hass)
+    return entry
+
+
+@pytest.mark.parametrize(
+    "error, expected",
+    [
+        (EufyLoginError("rejected"), "invalid_auth"),
+        (EufyLoginTransientError("HTTP 429"), "cannot_connect"),
+        (aiohttp.ClientConnectionError("reset"), "cannot_connect"),
+        (TimeoutError(), "cannot_connect"),
+        (RuntimeError("boom"), "unknown"),
+    ],
+)
+async def test_login_errors_map_to_form_errors(hass: HomeAssistant, error, expected):
+    """A rejection, an outage and a bug each get their own form error."""
+    entry = _reauth_entry(hass)
+    result = await entry.start_reauth_flow(hass)
+
+    with patch("custom_components.robovac_mqtt.config_flow.EufyLogin") as mock_cls:
+        mock_cls.return_value.init = AsyncMock(side_effect=error)
+        result2 = await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "pass"}
+        )
+
+    assert result2["type"] == data_entry_flow.FlowResultType.FORM
+    assert result2["errors"]["base"] == expected
+
+
+async def test_reauth_reuses_the_stored_openudid_and_saves_tokens(
+    hass: HomeAssistant, mock_login_fixture, mock_reload_fixture
+):
+    """Reauth logs in as the entry's device identity and keeps the new tokens."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(openudid="0123456789abcdef0123456789abcdef", tuya_region="US")
+    )
+
+    def _fake_init_factory(*args, **kwargs):
+        cache = kwargs["auth_cache"]
+
+        async def _init():
+            cache.session = {"access_token": "fresh", "user_id": "u1"}
+
+        instance = MagicMock()
+        instance.init = AsyncMock(side_effect=_init)
+        instance.mqtt_devices = [{"deviceName": "Test Vac", "deviceId": "test123"}]
+        instance.cloud_devices = []
+        return instance
+
+    mock_login_fixture.side_effect = _fake_init_factory
+    result = await entry.start_reauth_flow(hass)
+
+    result2 = await hass.config_entries.flow.async_configure(
+        result["flow_id"], {CONF_PASSWORD: "new_pass"}
+    )
+
+    assert result2["reason"] == "reauth_successful"
+    args = mock_login_fixture.call_args
+    assert args.args[2] == "0123456789abcdef0123456789abcdef"
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.openudid == "0123456789abcdef0123456789abcdef"
+    assert saved.session == {"access_token": "fresh", "user_id": "u1"}
+    assert saved.tuya_region == "US"
+
+
+async def test_reauth_failure_keeps_the_stored_cache(hass: HomeAssistant):
+    """A failed reauth writes nothing to the auth store."""
+    entry = _reauth_entry(hass)
+    store = AuthStore(hass, entry.entry_id)
+    await store.async_save(
+        AuthCache(
+            openudid="0123456789abcdef0123456789abcdef",
+            session={"access_token": "old"},
+        )
+    )
+    result = await entry.start_reauth_flow(hass)
+
+    with patch("custom_components.robovac_mqtt.config_flow.EufyLogin") as mock_cls:
+        mock_cls.return_value.init = AsyncMock(side_effect=EufyLoginError("no"))
+        await hass.config_entries.flow.async_configure(
+            result["flow_id"], {CONF_PASSWORD: "wrong"}
+        )
+
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.session == {"access_token": "old"}
 
 
 # ── Translations ──────────────────────────────────────────────────

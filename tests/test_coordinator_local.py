@@ -8,6 +8,7 @@ Complements test_coordinator.py which covers MQTT and cloud transports.
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.robovac_mqtt.api.local_tuya import LocalTuyaError
 from custom_components.robovac_mqtt.coordinator import (
@@ -155,3 +156,27 @@ async def test_send_command_routes_to_local_client(mock_hass, mock_login):
 
     await coordinator.async_send_command({"154": "BgoEIgIIAg=="})
     fake_client.send_command.assert_awaited_once_with({"154": "BgoEIgIIAg=="})
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("cloud", ["failing", "absent"])
+async def test_a_map_operation_the_cloud_cannot_carry_fails_loudly(
+    mock_hass, mock_login, cloud
+):
+    """The LAN socket accepts DPS 124 and ignores it, so it is never the fallback."""
+    info = _device_info(
+        connection_type="local", local_key="k" * 16, local_host="192.168.1.50",
+        apiType="legacy",
+    )
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, info)
+    coordinator.client = MagicMock()
+    coordinator.client.send_command = AsyncMock()
+    if cloud == "failing":
+        mock_login.tuya_client = MagicMock()
+        mock_login.sendCloudCommand = AsyncMock(side_effect=OSError("timed out"))
+    else:
+        mock_login.tuya_client = None
+
+    with pytest.raises(HomeAssistantError, match="map operation"):
+        await coordinator.async_send_command({"124": "eyJtZXRob2QiOiAieCJ9"})
+    coordinator.client.send_command.assert_not_awaited()

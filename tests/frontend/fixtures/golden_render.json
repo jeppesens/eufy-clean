@@ -1,0 +1,398 @@
+{
+  "v": 1,
+  "room_class_base": 8,
+  "server_pixel_colors": {
+    "0": [
+      30,
+      30,
+      30
+    ],
+    "1": [
+      20,
+      20,
+      20
+    ],
+    "2": [
+      200,
+      200,
+      200
+    ],
+    "3": [
+      200,
+      200,
+      200
+    ]
+  },
+  "server_room_palette": [
+    [
+      45,
+      45,
+      45
+    ],
+    [
+      100,
+      150,
+      200
+    ],
+    [
+      150,
+      200,
+      130
+    ],
+    [
+      200,
+      160,
+      130
+    ],
+    [
+      180,
+      140,
+      200
+    ],
+    [
+      200,
+      190,
+      110
+    ],
+    [
+      140,
+      190,
+      200
+    ],
+    [
+      200,
+      130,
+      150
+    ],
+    [
+      160,
+      200,
+      180
+    ]
+  ],
+  "cases": [
+    {
+      "name": "apartment",
+      "description": "150x215 apartment, 6 rooms, room_id_offset=1 (legacy: real room id 0 exists). Room outlines carry sub_type 1, interiors sub_type 0, with unmapped pv-0 pockets inside rooms.",
+      "cells": 32250,
+      "room_id_offset": 1,
+      "payload": {
+        "v": 3,
+        "revision": 1,
+        "width": 150,
+        "height": 215,
+        "origin_x": 0,
+        "origin_y": 0,
+        "resolution": 5,
+        "occupancy": "eNrtnM2y6yAMg78h0/d/5TtzFvf8pGkAS4BbvOqmjQZkIRy7sGPHjh073jcegYh+//tXTqiOy+B4HY+b798G/3/lhKq0Bd8fHz3fP4UEVXmGiiVR3a1qEBVCVJVQe9cKIaraterPn3AOHtc5GPy9R4uW1KPCxfZKrjbwChfbzw+IKgMD2V7cO7gMKmTKgCAH789iiTJg9QxfD1DtIHl4RZ4cRIYKtzIgWyuSeIYjj2fokb3LHcR94iDLQdznIDJlIM/pzLra3i17tzmIWxmQKQNT9Ko/f3J4UdZnezXUalSotf3VA2JrxfYMBlTIlAEX22+52swrXGz/+QCNMpDnRs+62t4nezU5iFsZkCkDSTzD1/6kqV8hQ4WL7XVQW9YKtbZfPiC8g+TxDKPfWnbltOgNb3/+DEGlqVsMQdVct5iH6lcOetgeRdVfr286nWlThti9K6ZXCFHtd169sneNCvdaIVsrBDlYwVXFDiJE5bzRl2C51oYqVK6930HcyoBMGcijVyyuosE2mWOCZ6jtDqzKQayeoZy7A/uVge0ZDKiQocK9VsjWCkEOVnUHxneQJJ4hZBvGeobS0h0o7ySP3btMN3CPXr0pqmCbzDECVWd34HS2/2V9XBnI4xnI42SQocLqGcqr7sDWtcLqGaS3CZJ4hhLrDhzpGUp1d2DFDuJi+9MHhHhF+jvOWnWG/u7A56gQourpDpRPNQY2D5kykKfOsKcaHcowaqpxqT4ZkniGEugOPE81Wj1D2VONy5/OS3YOmLssWAqVuG4xrqZyAXX3ySi9KLJzcE81Zrt5iW/0yFBh9QxlxlRjsE3m8Ew1rtVJ/olTjf35064MyJQBX51BrVesXmcItsnM6ZNBhmpPNX6yZyhd3YEXqLB6hjJ8qjHYJnN4phpX9QzlY6Yal/zHxR07LDWZ6RE9BzkModarEhVQi4pqoD7EU40aqD1r5Ycq20EpVLUX1SSoF5V2qnEClWTK4IMq1yuWRCWBqp5q1EBtzEEOcyBTBpJ4hmKZapxApUZUM1ivnmpcT0Uxoxp7Fi/hGbqnGuc4UBmvWJ/tOqjDVHTqVKMGansOjrANImUgiWco+qnGOQ60EdVw1vevlROqeAdxohp+ha/0DEy1DU07OIz1cV6xPttFUEeq6LypRg3ULmWwJ6hOr0jiGYp4qnFa4aoR1VjWq6caV1VRbKhmVP6t/znge5e6Y8eOHTveJf4BPd7fsg==",
+        "rooms_grid": "eNrt2TsKgEAQRMH1e/8ji7mg0CyuY728h8qnNUlS3aagcz/HUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUdVTjfnhpfq6aomjoqKioqKioqKioqKiohpblUZFdXV1DaKioqKioqKioqKioqKiorpX9Ynq76o9joqKioqKioqKioqKiopqbJXUo+31qKioqKioqKioqKioqKioqKioqKioqKioqKioqKieqSRJVToAhoE2Hg==",
+        "rooms": [
+          {
+            "id": 0,
+            "name": "Living Rm"
+          },
+          {
+            "id": 1,
+            "name": "Bedroom"
+          },
+          {
+            "id": 2,
+            "name": "Bedroom 2"
+          },
+          {
+            "id": 3,
+            "name": "Kitchen"
+          },
+          {
+            "id": 4,
+            "name": "Hallway"
+          },
+          {
+            "id": 5,
+            "name": "Bathroom"
+          }
+        ],
+        "room_polygons": {},
+        "virtual_walls": [],
+        "forbidden_zones": [],
+        "ban_mop_zones": [],
+        "dock": null,
+        "robot": null,
+        "trail": [],
+        "trail_types": [],
+        "trail_seq": 0,
+        "trail_color": null,
+        "prev_trail": []
+      },
+      "expected_rgb": "eNrt3aENg2AUhdEl0EyH7hBoNLpDoNFvrPqSIEhIuX3nyx2gcMwvoIyjJEmSJEmSntUQWPrvP7+iC4LTWkE7Cq41R48gQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgwc6C/iE2WlAECRIkSNBJxkkmWrDec/QIEiRIkCBBggQJEiRIkCBBggQJEiRIkCBBggQJEiRIkCBBggQJEiRIkCBBggTvFox+PpbgHzxzTpAgQYIECTrJdBbclgoaQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgQYIECRIkSJAgwW6CvlYQLSiCBAkSJOgk4yQTLbjsFT2CBAkSJEiQIEGCBAkSJEiQIEGCBAkSJEiQIEGCBAkSJEiQIEGCBAkSJEiQIMG7BdO/VtD8iV9Jkpq/u6T0d5dqf9kPR5Cge0jQCBIkSNAIGkGCBAkaQSNIkCBBI2gECRIkaASNIEGCBI2gESRIkKARNIIECRI0gkaQIEGCRtAIEiRI0AgaQYIECRpBI0jQPSRoBAkS7CwoXyuQJEmSJEnSVx+r0Pb4",
+      "expected_class": "eNrt3CEShTAMQEHqgA/3vy4CgeArMpkGus/DrKiBZDpNkqTv1gJFn7/eclPNjztVSzAqKioqKioqKioqKioqKioqKioqKioqKioqKqr3qEpOLZMmvFSDq4rO6NdgVFRUVFRUVFRUVFRUVH1U0U3yFFX425uK6jWnvf0eR0VFRUVFRUVFRUVFRTWyKmdzIKhK2rKgGlxV87S3PRgVFRUVFRUVFRUVFRVVH1XJGxellH8y3fur2jpHRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUU1uqrkLFWS9JUOK4SBCA=="
+    },
+    {
+      "name": "mask_origin_offset",
+      "description": "Same apartment with the room mask's origin moved off the map origin, so _ro_dx/_ro_dy are non-zero and the mask is smaller than the grid. Cells outside the mask must be room-less on both ends.",
+      "cells": 32250,
+      "room_id_offset": 1,
+      "payload": {
+        "v": 3,
+        "revision": 1,
+        "width": 150,
+        "height": 215,
+        "origin_x": 0,
+        "origin_y": 0,
+        "resolution": 5,
+        "occupancy": "eNrtnMmS3CAQRJ9Q9P//siPaB8e4JbFUJss0dfKlzQuoShJEDezYsWPHjt8br0CU/v54jEuq8zY4n+OV+X023gNcU6W64N8/Xy2//wgJVbqiYkqq3KwGqRBSFaK2zhVCqtK5aq+fcA2e9zXY/v99UiGjwpXthblakVe4sv1zgKgy0DHbk3sFp6FCpgwIajC/F0uUAatneA+gWkHWySvWqUFkVLiVAdlcsYhnONfxDC2yd7uCuHccZDWIex9Epgysszszr7Y3y162BnErAzJlYIhetdfPGl6U+bO9GLWYCrW2Pw0Qmyu2ZzBQIVMGXNmezdXqvMJ9dkamDKxzomdebW+TvZIaxK0MyJSBRTzDe32Wub9CRoUr28tQa+YKtbbfDhBeQdbxDL2/WhZRmb7wttdPF6rqrB9H9YQ6GdWPGvRke5Sq/b6+anemThli566YXiGk2t+8WmXvngr3XCGbKwQ1WJCrihVESOU80afgda2NKnRdm19B3MqATBlYR6+YXEWDz2TOAZ6hALW8BrF6hp+5GlQGtmcwUCGjwj1XyOYKq2f4m6uiFWQRzxCyDX09QynqYXlJHjt33VANPHt/H1XwmczZg6reNsyR7f9nfVwZWMczsI6TQUaF1TPcDdA0V1g9g/Q0wSKeod02dPcMRailK4gr2y8HCOUVy59x5rpnaLIND1QIqSptg6erMbB4yJSBde4ZdlejQxl6dTVO9U6GRTxDY9bfdDVaPUPaXY3T785Tvhwwv7JgKqpgV+MIqkfU/U5G6UWR7YO7q3G1k5f4RI+MCqtnSCO6GoPPZE5PV+NcL8m/sauxvX7qlQGZMuC7Z1DrFbPfMwSfyYx5J4OManc1frNnqJa9JyqsniF172oMPpM5PV2Ns3qG9DVdjVP+xcUdOyx3Mh3C26nHaQi1XqWogFpUVIN6iLsaNagtc+VHla2gFFXtRTUF6qXSdjUOSCWZMvhQ5XrFlFQSVHVXowa1sgY5zYFMGVjEMyRLV+OAVKqkGpH16q7G+VQUM1XfvXgKz9Dc1TjGgcryivmzXYfaTUWHdjVqUOtrsIdtECkDi3iGpO9qHONAK6m6Z337XDlRxSuIk6r7Eb7QMzDUNlxSHcMurp5W8Bh2cSWjcqCaqIKoOaoxtuGaasTNf74Ge96BhpWhW9b3zPZy1FKqvlkfmisbqn4FsVGNuPnP1+Dw2N+zd+zYseM3xx/yx9dy",
+        "rooms_grid": "eNrt2TsKgEAQRMH1e/8ji5GJ4MCw4rj18obKuzVJ0n+bEp37ORAVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRUVFRXVaKpvPrxU1VVLICoqKioqKioqKioqKiqqyqpsVFR3rYmoqKioqKioqKioqKioqKieVX2iGl21B6KioqKioqKioqKioqKiqqySerS9EBUVFRUVFRUVFRUVFRUVFRUVFRUVlSRJkiRJVwfxcssl",
+        "rooms": [
+          {
+            "id": 0,
+            "name": "Living Rm"
+          },
+          {
+            "id": 1,
+            "name": "Bedroom"
+          },
+          {
+            "id": 2,
+            "name": "Bedroom 2"
+          },
+          {
+            "id": 3,
+            "name": "Kitchen"
+          },
+          {
+            "id": 4,
+            "name": "Hallway"
+          },
+          {
+            "id": 5,
+            "name": "Bathroom"
+          }
+        ],
+        "room_polygons": {},
+        "virtual_walls": [],
+        "forbidden_zones": [],
+        "ban_mop_zones": [],
+        "dock": null,
+        "robot": null,
+        "trail": [],
+        "trail_types": [],
+        "trail_seq": 0,
+        "trail_color": null,
+        "prev_trail": []
+      },
+      "expected_rgb": "eNrt3TFu6kAUBdBNpPbqUmcR1NTUWURqai8rkZAQAmKMPYa5M+fKze/yc94dnmUCwyAiIiIiIiIiInXlIzDpP//0/2iB4OdhDLpuBQ/j7jXXWCh/P/blPwnGCV6FIEGCBAnefYEjqIMECRIkSJBgA4LTGw5BHSRIkCDBUMFlt/AEm+ngaQAIOkUJEiRIsDHBpzYcgjpIkCBBgimCRW7hCeZ28O4AEHSKEiRIkGC64JoNh6AOEiRIkCBBgnUKztlwCOogQYIECcYJFnxIQTCxg5cDQNApSpAgQYLNCC7YcAjqIEGCBAkSJFi54MSGQ1AH0wV9Qmy0oBAkSJAgQZuMTSZacPzevehyN9GT4PyHFAR1kCBBggSDBIt/GALBrA7eDgBBpyhBggQJNiC4eMMhqIMECRIkSJBgtYIPNxyCOkiQIEGCiYKlHlIQDO3geQAIOkUJEiT4XsHo98dWKPjshtP5u9B1kCBBggRTBIcNvnTJJhPUwf8GYL3gz34MutxNECRIkGBjgis3HII6SJAgQYIECVYoOHPDIaiDBAkSJJglWPYhBcG4Dl4NAEGnKEGCBAm2IbhswyGogwQJEiRIkGDNgtMbDkEdTBf0bQXRgkKQIEGCBG0yNplowf1xfM3lbqIfwaceUhDUQYIECRJMEdziwxAIBnXw7gAQdIoSJEiQYLrgmg2HoA4SJEiQIEGCdQrO2XAI6iBBggQJxgkWfEhBMLGDlwNA0ClKkCDB9wqmf1tB5+/4FRER6fxvlyT9b5fG45dr1lXr3QQaggQJ5gquf0hBMLqDJwKCTlEXQYIEGxOcv+EQ1EE0BAkSDBIs/mEIBLM6eDsABJ2iaAgSJNiA4OINh6AOoiFIkCBBgtUKPtxwCOogGoIECSYKlnpIQTC0g+cBIOgURUOQIMGWBJ/dcAjqIBqCBAlGXMMGX7pURnCbN9HJzF9RJYIGIL2DBoBgtwOwtaAXuK0HoPIOGoDOT9EeBsDrYPoAEEwfgHcJeoEr9SsK7aAB6PwUbWkAvA6mD0CH31bgM35FRERERERERGTr/AKhLYWS",
+      "expected_class": "eNrtnE1zwyAMRDfm0o/k///dTqeHzjQpxiBhybw9+BbPG7FaEwOWEEIIXVe3AY3+/vcuT1Rv3fqhet9X+Uf6vpxGtdUEVS4qUau+Hiyn9mBMqjQ9KNwOlU0PKk8yiGSAyoZK1Io5g80IKk8PCrdDZdODIhnw1XJUolbMGWxGUHl6ULgdKpseFMmAr5aj0oq1Crlq6bTCC9XiVEHX6D/2dcJzsIFqq72ujUK1QZWPSgGpattkCsmA24epRK1SUsXswSzJIHwFlQ2V8iSDSIarun10J/lRKrVQDf/3dqnVulTHe3AGlY4nw2y3/3X9a6rPbnkmA1QhqRSKquPpvCwVbu+nErVKRhU2GZQnGYSvoLKhEsnAnGE5Ki1ZK5+dA4NUTrssoFqcKqbbb499nfDEaaDqONU4nWqDKh+VIlLVtskUkgG3j1KJWuWkitmDSZJB+AoqGyrlSQaRDJd1e8gvLiLk8k7mdL2kuvurI0UnUHXk1epUylMrMYIJejBFMohkgMqGSnmSQSQDbrehErVizrBcMghfQWVDpTzJIJIBt9tQiVoxZ7BRx6nGrfptbj/VTzX23MlS41QeqE5Ug6h7VNOs1EBV6lJxVheVO6qzrxTf7e2orVRzXT9UKzdU+xGUG5V5q8uiB0OupSKEELqKvgDx/qhu"
+    },
+    {
+      "name": "novel_offset0",
+      "description": "The novel/MQTT numbering: room_id_offset=0, real ids start at 1. The wire never carries the offset, so the client must land on the same cells without knowing it.",
+      "cells": 10800,
+      "room_id_offset": 0,
+      "payload": {
+        "v": 3,
+        "revision": 1,
+        "width": 90,
+        "height": 120,
+        "origin_x": 0,
+        "origin_y": 0,
+        "resolution": 5,
+        "occupancy": "eNrtmtGOhSAMRE80/v8v78PGG1eFltKOmxv7TEYpw2lB4Y03erE5wjfqd+RBeTVj20fhGHlQXszYuqP4OzJRebGVKVNuzrVG+fad8SkPeKMbXLyRpexwHZoV3JXRrGBvdrKdQoly10ZT3hhzHULWHZMpZ11zJct2CkLW9WZXQyQeY91lruV5Rsi6u9kNK0d6JKtqnt5koK+zquZpxZOU1ynl8jwbygk7BSHr9MrksC5WuylStoGQSdGW65CegE6zE7sOVV/3SW1U2Xc69vQEIZJ7XEeItyE/R7KReR5c0FKUJ/mMlvwIWWfhLr+mIK5WNhC+pisgSzniOsqU+/cEuzfK7kXr+ud/2plT3ZnfuFa3U8itg+YtyGOsu51rbZ4F1aqFgJr7unY2qFE2r0XX4r7OvAWpqINM9fwB1n3r90F/BE4grmvR4T3oD1OZMmXfZ5k0Zc/jVHn23Ykkf6lhTnkytdV5RruCSZsk9s7MuC7Cn/kzbNh1CFkXXsmw6xCybpn7M2SOdTm4G3EdQtb5/wzJyjGPsW4Od5um+3rjjWv8AENDTn8=",
+        "rooms_grid": "eNrt1skJgEAUBcGPa/4ZG4AgDxdmBqsDqHNXSVdNQVVzGJlMJpPJZDL5Dfm7rxtRXsLIZDK5TzmrL3kNIpPJZPIz+U6t5T2MTCaT/yaP2PZqZDKZTCaTyeRWsnTuAGIAhoE=",
+        "rooms": [
+          {
+            "id": 1,
+            "name": "Living Rm"
+          },
+          {
+            "id": 2,
+            "name": "Bedroom"
+          },
+          {
+            "id": 3,
+            "name": "Bedroom 2"
+          },
+          {
+            "id": 4,
+            "name": "Kitchen"
+          },
+          {
+            "id": 5,
+            "name": "Hallway"
+          },
+          {
+            "id": 6,
+            "name": "Bathroom"
+          }
+        ],
+        "room_polygons": {},
+        "virtual_walls": [],
+        "forbidden_zones": [],
+        "ban_mop_zones": [],
+        "dock": null,
+        "robot": null,
+        "trail": [],
+        "trail_types": [],
+        "trail_seq": 0,
+        "trail_color": null,
+        "prev_trail": []
+      },
+      "expected_rgb": "eNrt3DEKg0AQQNFLpPZ0qT2EtbV1DpHaeo5lG5IiQnB2JrzP9CsPVpBdnCZJkq7qllj+ip+rf9W4b5EwrxpbLMlDgwYNGjRo0KBBgwYNGjRo0KBBgwYNGjRo0KBBo6+Gs7aTzzP8HJYGDe+NmhrxWJKHBg0aNGjQoEGDBg0avTTyb1aX1Rjy1UyjhYad8qbxXCNhaNCgQYMGDRo0aNCgQYNGF43KZ/TJGsXvb9CwU+porHskDw0aNGjQoEGDBg0aNGj01fDXRKnUThnb2VtY+/z3Q4MGDRo0aNCgQYMGDRo0aNCgQYMGDRo0aNCgQYPGFRpOHiVJ+rED8bEKkA==",
+      "expected_class": "eNrt2bEKwjAYhdFmtGrf/3FFXBTBXmJ/DPF8czhDhnJLlkX6VAvKTj1OPsmn3e7yGkUmk8lkMpk8oly2kbp23bRy4RY9R5HJ5P+Qs7/jDjn8Ig4l191Gu+xGJpPJY8k9WzSSu/bzj+W622hbFJlMJn8nl72Izfo+mPciXw+MTCaTyWQyeRa5bH1J790AB5g5TA=="
+    },
+    {
+      "name": "all_combinations",
+      "description": "Every (sub_type, pv, stored room id) combination exactly once \u2014 64 cells, including a sub-type on a cell that belongs to no room.",
+      "cells": 64,
+      "room_id_offset": 1,
+      "payload": {
+        "v": 3,
+        "revision": 1,
+        "width": 16,
+        "height": 4,
+        "origin_x": 0,
+        "origin_y": 0,
+        "resolution": 5,
+        "occupancy": "eNpjYGRiZmFlY+fg5OLm4eXjZyCRDwA34AHh",
+        "rooms_grid": "eNpjYEAFjGiACQ0wowEAB3AAYQ==",
+        "rooms": [
+          {
+            "id": 0,
+            "name": "R0"
+          },
+          {
+            "id": 1,
+            "name": "R1"
+          },
+          {
+            "id": 2,
+            "name": "R2"
+          }
+        ],
+        "room_polygons": {},
+        "virtual_walls": [],
+        "forbidden_zones": [],
+        "ban_mop_zones": [],
+        "dock": null,
+        "robot": null,
+        "trail": [],
+        "trail_types": [],
+        "trail_seq": 0,
+        "trail_color": null,
+        "prev_trail": []
+      },
+      "expected_rgb": "eNqTk5MTERE5AQZyRLBTpiEQRBw/e9qJJjiCiONnn1iAQFB78bIB8lBR1w==",
+      "expected_class": "eNpjYGRiZkDCHEDAwIjAnEDAwIjAXEDAwIjAAB+AATA="
+    },
+    {
+      "name": "palette_cycle",
+      "description": "12 rooms: more than the server's 8 cycling hues and more than the client's 10, so both ends collide rooms, and differently.",
+      "cells": 144,
+      "room_id_offset": 1,
+      "payload": {
+        "v": 3,
+        "revision": 1,
+        "width": 12,
+        "height": 12,
+        "origin_x": 0,
+        "origin_y": 0,
+        "resolution": 5,
+        "occupancy": "eNpjYhpcAABSIAEh",
+        "rooms_grid": "eNpNwccRACAMAKCLNZb95/UpEPEVVDR0DEwkFjYOLh65NAOp",
+        "rooms": [
+          {
+            "id": 0,
+            "name": "Room 0"
+          },
+          {
+            "id": 1,
+            "name": "Room 1"
+          },
+          {
+            "id": 2,
+            "name": "Room 2"
+          },
+          {
+            "id": 3,
+            "name": "Room 3"
+          },
+          {
+            "id": 4,
+            "name": "Room 4"
+          },
+          {
+            "id": 5,
+            "name": "Room 5"
+          },
+          {
+            "id": 6,
+            "name": "Room 6"
+          },
+          {
+            "id": 7,
+            "name": "Room 7"
+          },
+          {
+            "id": 8,
+            "name": "Room 8"
+          },
+          {
+            "id": 9,
+            "name": "Room 9"
+          },
+          {
+            "id": 10,
+            "name": "Room 10"
+          },
+          {
+            "id": 11,
+            "name": "Room 11"
+          }
+        ],
+        "room_polygons": {},
+        "virtual_walls": [],
+        "forbidden_zones": [],
+        "ban_mop_zones": [],
+        "dock": null,
+        "robot": null,
+        "trail": [],
+        "trail_types": [],
+        "trail_seq": 0,
+        "trail_color": null,
+        "prev_trail": []
+      },
+      "expected_rgb": "eNpLmXYihRCadqKJIDqxgDDa0nOCIDqxL48g6tl3giAiwsnTFpzYQhClDLLwAQB1QxYI",
+      "expected_class": "eNpNwbcBACAMAKA11lj+/9VRIOIrqGjoGJhILGwcXDzWuweZ"
+    },
+    {
+      "name": "no_room_mask",
+      "description": "No room mask at all: render_map_png's else-branch, colours from the occupancy value alone.",
+      "cells": 96,
+      "room_id_offset": 0,
+      "payload": {
+        "v": 3,
+        "revision": 1,
+        "width": 12,
+        "height": 8,
+        "origin_x": -1200,
+        "origin_y": -800,
+        "resolution": 5,
+        "occupancy": "eNpjYGRiZoBiJCYDEpMRicnEQKJ6ABuoAJE=",
+        "rooms_grid": "eNpjYKAtAAAAYAAB",
+        "rooms": [],
+        "room_polygons": {},
+        "virtual_walls": [],
+        "forbidden_zones": [],
+        "ban_mop_zones": [],
+        "dock": null,
+        "robot": null,
+        "trail": [],
+        "trail_types": [],
+        "trail_seq": 0,
+        "trail_color": null,
+        "prev_trail": []
+      },
+      "expected_rgb": "eNqTk5MTERE5AQZyONgEFQDZBBVA2JQroLN7AHWRfpE=",
+      "expected_class": "eNpjYGRiZoBiJCYDEpMRicnEQKJ6ABuoAJE="
+    }
+  ]
+}

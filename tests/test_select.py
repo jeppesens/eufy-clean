@@ -2,11 +2,12 @@
 
 # pylint: disable=redefined-outer-name
 
+from types import MethodType
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.const import EntityCategory
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
@@ -40,6 +41,9 @@ def mock_coordinator():
     coordinator.last_update_success = True
     # Manual room overrides default empty — falls through to coordinator.data.rooms
     coordinator.room_name_overrides = {}
+    coordinator.selectable_rooms = MethodType(
+        EufyCleanCoordinator.selectable_rooms, coordinator
+    )
     return coordinator
 
 
@@ -147,11 +151,24 @@ async def test_scene_select_entity(mock_coordinator):
 
 
 @pytest.mark.asyncio
+async def test_scene_select_unknown_task_raises(mock_coordinator):
+    """An unknown task is a user error: the action fails and nothing is sent."""
+    mock_coordinator.data.scenes = [{"id": 1, "name": "Scene 1", "type": 1}]
+    entity = SceneSelectEntity(mock_coordinator)
+    entity.async_write_ha_state = MagicMock()
+
+    with pytest.raises(ServiceValidationError):
+        await entity.async_select_option("Scene 9 (ID: 9)")
+    mock_coordinator.async_send_command.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_room_select_entity(mock_coordinator):
     """Test RoomSelectEntity."""
     mock_coordinator.data.rooms = [
         {"id": 10, "name": "Kitchen"},
         {"id": 12, "name": "Living Room"},
+        {"id": 3},
     ]
     # The reported (cloud) map id differs from the resolved one, so the
     # assertion below fails if the select bypasses resolve_map_id().
@@ -163,7 +180,12 @@ async def test_room_select_entity(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
 
     assert entity.name == "Clean Room"
-    assert entity.options == ["None", "Kitchen (ID: 10)", "Living Room (ID: 12)"]
+    assert entity.options == [
+        "None",
+        "Kitchen (ID: 10)",
+        "Living Room (ID: 12)",
+        "Room (ID: 3)",
+    ]
     assert entity.current_option == "None"
 
     await entity.async_select_option("Kitchen (ID: 10)")
@@ -397,6 +419,42 @@ async def test_legacy_coordinator_excludes_novel_only_selects():
         assert novel_only not in classes, f"{novel_only} should be hidden on legacy"
     # The universal suction-level select stays (set_fan_speed works on legacy).
     assert "SuctionLevelSelectEntity" in classes
+
+
+@pytest.mark.asyncio
+async def test_legacy_gets_the_room_select_even_with_no_rooms_yet():
+    """A failed map fetch must not cost the registry entry.
+
+    The legacy room list comes from a blob download during initialize(), so it
+    can be empty at setup for a purely transient reason. Gating creation on it
+    while prune_orphan_entities deletes anything this setup did not add meant one
+    failed download permanently deleted select.<device>_clean_room — entity_id,
+    name, area and all — and broke every automation naming it. The empty list is
+    self-healing instead: options come from the coordinator, and selecting a room
+    re-fetches the map first.
+    """
+    coordinator = MagicMock(spec=EufyCleanCoordinator)
+    coordinator.device_id = "legacy_dev"
+    coordinator.device_name = "Legacy Vac"
+    coordinator.device_model = "T2210"
+    coordinator.api_type = "legacy"
+    coordinator.connection_type = "cloud"
+    coordinator.room_name_overrides = {}
+    coordinator.data = VacuumState()  # no rooms: the fetch failed
+    coordinator.last_update_success = True
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "legacy_entry"
+    hass.data = {"robovac_mqtt": {"legacy_entry": {"coordinators": [coordinator]}}}
+
+    added_entities: list = []
+    with patch("custom_components.robovac_mqtt.select.prune_orphan_entities") as prune:
+        await async_setup_entry(hass, config_entry, added_entities.extend)
+
+    assert "RoomSelectEntity" in {type(e).__name__ for e in added_entities}
+    # ...and so it is not in the set the prune would delete.
+    assert "legacy_dev_room_select" in prune.call_args.kwargs["added_unique_ids"]
 
 
 # ---------------------------------------------------------------------------
