@@ -13,7 +13,6 @@ from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.sensor import (
     CurrentRoomSensorEntity,
     RoboVacSensor,
-    _active_rooms_available,
     _active_rooms_value,
     async_setup_entry,
 )
@@ -158,7 +157,6 @@ def test_active_rooms_uses_scene_name_when_room_ids_are_empty(mock_coordinator):
     mock_coordinator.data.current_scene_id = 7
     mock_coordinator.data.current_scene_name = "After Dinner"
 
-    assert _active_rooms_available(mock_coordinator.data) is True
     assert _active_rooms_value(mock_coordinator.data) == "After Dinner"
 
 
@@ -166,7 +164,6 @@ def test_active_rooms_uses_zone_count_when_present(mock_coordinator):
     """Test active rooms sensor falls back to zone count."""
     mock_coordinator.data.active_zone_count = 2
 
-    assert _active_rooms_available(mock_coordinator.data) is True
     assert _active_rooms_value(mock_coordinator.data) == "2 zones"
 
 
@@ -193,18 +190,31 @@ async def test_legacy_coordinator_excludes_novel_sensors():
 
     await async_setup_entry(hass, config_entry, added_entities.extend)
 
-    # Should have exactly 4 universal sensors: Battery, Error Message, Task Status, Work Mode
+    # Universal sensors plus the protocol-independent cleaning statistics.
+    # Stats are reported by every protocol (legacy via ClearTime/ClearArea), and
+    # each stays hidden behind its availability_fn until the device sends a value,
+    # so listing them for legacy costs nothing. What legacy must NOT get is the
+    # novel-only DPS sensors (consumables, dock status, map/scene state).
     entity_ids = [e.unique_id for e in added_entities]
-    assert len(added_entities) == 4
+    assert set(entity_ids) == {
+        "legacy_dev_battery",
+        "legacy_dev_error_message",
+        "legacy_dev_task_status",
+        "legacy_dev_work_mode",
+        "legacy_dev_cleaning_time",
+        "legacy_dev_cleaning_area",
+        "legacy_dev_total_cleaning_area",
+        "legacy_dev_total_cleaning_time",
+        "legacy_dev_schedules",
+    }
     assert "legacy_dev_battery" in entity_ids
     assert "legacy_dev_error_message" in entity_ids
     assert "legacy_dev_task_status" in entity_ids
     assert "legacy_dev_work_mode" in entity_ids
 
-    # Novel-only sensors should NOT be present
+    # Novel-only sensors should NOT be present. Cleaning time/area are NOT in this
+    # list: they are reported by every protocol (legacy via ClearTime/ClearArea).
     for suffix in [
-        "cleaning_time",
-        "cleaning_area",
         "water_level",
         "dock_status",
         "active_map",
@@ -322,6 +332,14 @@ def test_current_room_sensor_values_and_unknown(mock_coordinator):
     assert sensor.extra_state_attributes == {"room_id": 7, "room_name": "Bathroom"}
     mock_coordinator.current_room.return_value = (7, None)
     assert sensor.native_value == "Room 7"
-    mock_coordinator.current_room.return_value = (0, None)
+    mock_coordinator.current_room.return_value = None
     assert sensor.native_value is None
     assert sensor.extra_state_attributes == {"room_id": None, "room_name": None}
+
+
+def test_current_room_sensor_shows_legacy_room_zero(mock_coordinator):
+    """Legacy robots number rooms from 0."""
+    sensor = CurrentRoomSensorEntity(mock_coordinator)
+    mock_coordinator.current_room.return_value = (0, None)
+    assert sensor.native_value == "Room 0"
+    assert sensor.extra_state_attributes == {"room_id": 0, "room_name": None}

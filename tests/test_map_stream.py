@@ -5,14 +5,16 @@ import pytest
 
 from custom_components.robovac_mqtt.api.map_stream import (
     MapData,
-    _lz4_block_decompress,
+    _dash,
     parse_biz_protocol41,
     render_map_png,
+    room_polygons_to_cells,
+    split_trail_runs,
     try_extract_map_data,
     try_extract_map_description,
 )
 from custom_components.robovac_mqtt.proto.cloud import stream_pb2
-from custom_components.robovac_mqtt.utils import encode_varint
+from custom_components.robovac_mqtt.utils import encode_varint, lz4_block_decompress
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -79,28 +81,28 @@ def test_parse_biz_invalid_json():
 
 
 # ---------------------------------------------------------------------------
-# _lz4_block_decompress
+# lz4_block_decompress
 # ---------------------------------------------------------------------------
 
 
 def test_lz4_literal_only():
     """Token with only literals (no back-reference) decompresses correctly."""
     # 0x50: lit_len=5, match_nibble=0; pos >= n after literals so loop exits.
-    assert _lz4_block_decompress(b"\x50ABCDE", 5) == b"ABCDE"
+    assert lz4_block_decompress(b"\x50ABCDE", 5) == b"ABCDE"
 
 
 def test_lz4_with_backreference():
     """Back-reference copies bytes from earlier in the output buffer."""
     # 0x32: lit_len=3 ("ABC"), match_nibble=2 -> match_len=6, offset=3
     # Copies output[0..6] => "ABCABC", total output = "ABCABCABC"
-    assert _lz4_block_decompress(b"\x32ABC\x03\x00", 9) == b"ABCABCABC"
+    assert lz4_block_decompress(b"\x32ABC\x03\x00", 9) == b"ABCABCABC"
 
 
 def test_lz4_overlapping_backreference():
     """Overlapping back-reference (offset < match_len) duplicates bytes correctly."""
     # 0x11: lit_len=1 ("Z"), match_nibble=1 -> match_len=5, offset=1
     # Copies from output[-1] 5 times: ZZZZZ, total = "ZZZZZZ"
-    assert _lz4_block_decompress(b"\x11Z\x01\x00", 6) == b"ZZZZZZ"
+    assert lz4_block_decompress(b"\x11Z\x01\x00", 6) == b"ZZZZZZ"
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +227,131 @@ def test_map_description_strips_whitespace():
         6,
         "The main floor",
     )
+
+
+# ---------------------------------------------------------------------------
+# room_polygons_to_cells — the live 0x65 ROOM outline transform
+# ---------------------------------------------------------------------------
+
+
+def test_room_polygons_to_cells_applies_origin_and_row_flip():
+    """A vertex is ``(v + origin) / 10`` in cells, with the row flipped.
+
+    The flip matters: MapData's grid planes are stored bottom-up and
+    render_map_png flips everything back, so geometry must be pre-flipped the
+    same way the walls and zones are.
+    """
+    cells = room_polygons_to_cells(
+        {0: [(0, 0), (100, 0), (100, 100)]},
+        origin_x=520,
+        origin_y=1350,
+        height=215,
+    )
+    # col = (0 + 520)/10 = 52 ; row = 214 - (0 + 1350)/10 = 79
+    assert cells[0][0] == (52.0, 79.0)
+    assert cells[0][1] == (62.0, 79.0)
+    assert cells[0][2] == (62.0, 69.0)
+
+
+def test_room_polygons_to_cells_keeps_room_zero_and_drops_degenerate():
+    """Room id 0 survives; a polygon with under three vertices cannot enclose
+    anything and is dropped rather than shipped as a broken ring."""
+    cells = room_polygons_to_cells(
+        {0: [(0, 0), (10, 0), (10, 10)], 4: [(0, 0), (10, 0)]},
+        origin_x=0,
+        origin_y=0,
+        height=100,
+    )
+    assert 0 in cells
+    assert 4 not in cells
+
+
+def test_room_polygons_to_cells_preserves_subcell_precision():
+    """Vertices are vector data: 0.5 cm steps must not be rounded to whole cells."""
+    cells = room_polygons_to_cells(
+        {1: [(1, 2), (3, 4), (5, 6)]}, origin_x=0, origin_y=0, height=10
+    )
+    assert cells[1][0] == (0.1, 9.0 - 0.2)
+
+
+def test_render_map_png_draws_room_outlines():
+    """Polygons change the rendered image, and rendering without them still works."""
+    map_data = MapData(
+        raw_pixels=bytes([0b10101010] * 100),
+        width=20,
+        height=20,
+        resolution=5,
+    )
+    before = render_map_png(map_data)
+    map_data.room_polygons = {
+        0: [(2.0, 2.0), (15.0, 2.0), (15.0, 15.0), (2.0, 15.0)]
+    }
+    after = render_map_png(map_data)
+    assert before[:8] == b"\x89PNG\r\n\x1a\n"
+    assert after[:8] == b"\x89PNG\r\n\x1a\n"
+    assert after != before
+
+
+# ---------------------------------------------------------------------------
+# Typed trail runs — cleaning passes vs transit legs
+# ---------------------------------------------------------------------------
+
+
+def test_split_trail_runs_breaks_on_type_change():
+    """A transit leg and a cleaning pass are not one continuous stroke.
+
+    Joining them would draw a solid line along a route the robot only drove,
+    implying coverage that does not exist.
+    """
+    points = [(0, 0), (1, 0), (2, 0), (3, 0)]
+    runs = split_trail_runs(points, types=[0, 0, 1, 1])
+    assert [t for _, t in runs] == [0, 1]
+    assert [pts for pts, _ in runs] == [[(0, 0), (1, 0)], [(2, 0), (3, 0)]]
+
+
+def test_split_trail_runs_still_breaks_on_jumps():
+    """The relocalisation break survives alongside the type break."""
+    points = [(0, 0), (1, 0), (900, 900)]
+    runs = split_trail_runs(points, types=[0, 0, 0])
+    assert len(runs) == 2
+    assert all(t == 0 for _, t in runs)
+
+
+def test_split_trail_runs_without_types_is_one_type():
+    """Producers with no type (the novel pose path) yield plain type-0 runs."""
+    runs = split_trail_runs([(0, 0), (1, 1), (2, 2)])
+    assert len(runs) == 1
+    assert runs[0][1] == 0
+    assert runs[0][0] == [(0, 0), (1, 1), (2, 2)]
+
+
+def test_split_trail_runs_pads_short_type_list():
+    """A types array shorter than the points must not raise or misalign."""
+    runs = split_trail_runs([(0, 0), (1, 0), (2, 0)], types=[1])
+    assert [t for _, t in runs] == [1, 0]
+
+
+def test_dash_splits_by_arc_length():
+    """Dashes are cut by distance travelled, so the rhythm survives corners."""
+    segments = _dash([(0.0, 0.0), (20.0, 0.0)], 5.0, 5.0)
+    assert len(segments) == 2
+    assert segments[0][0] == (0.0, 0.0)
+    assert segments[0][-1] == (5.0, 0.0)
+    assert segments[1][0] == (10.0, 0.0)
+
+
+def test_dash_degenerate_input_is_safe():
+    """A single point or a zero dash length must not hang or raise."""
+    assert not _dash([(0.0, 0.0)], 5.0, 5.0)
+    assert _dash([(0.0, 0.0), (5.0, 0.0)], 0.0, 5.0) == [[(0.0, 0.0), (5.0, 0.0)]]
+
+
+def test_render_map_png_dashes_transit_differently():
+    """A trail rendered as transit differs from the same trail rendered as cleaning."""
+    map_data = MapData(
+        raw_pixels=bytes([0b10101010] * 100), width=20, height=20, resolution=5
+    )
+    trail = [(x, 10) for x in range(2, 18)]
+    solid = render_map_png(map_data, robot_trail=trail, robot_trail_types=[0] * len(trail))
+    dashed = render_map_png(map_data, robot_trail=trail, robot_trail_types=[1] * len(trail))
+    assert solid != dashed
