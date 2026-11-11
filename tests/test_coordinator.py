@@ -516,19 +516,10 @@ def test_build_device_command_novel(mock_hass, mock_login):
     assert "160" in cmd
 
 
-@pytest.mark.parametrize(
-    "caller_kwargs,expected",
-    [
-        # The coordinator's own model: a T2080A gets zero-based room order.
-        ({}, [(6, 0), (2, 1)]),
-        # A model passed by the caller wins over the coordinator's.
-        ({"model": "T2351"}, [(6, 1), (2, 2)]),
-    ],
-)
-def test_build_device_command_passes_model(
-    mock_hass, mock_login, caller_kwargs, expected
-):
-    """build_device_command passes the device model unless the caller passes one."""
+def test_build_device_command_caller_model_wins(mock_hass, mock_login):
+    """A model passed by the caller wins over the coordinator's own, so this
+    T2080A gets one-based room order. The coordinator's own model is covered by
+    test_s1_pro_room_command_uses_its_model_context."""
     device_info = {
         "deviceId": "dev1",
         "deviceModel": "T2080A",
@@ -538,10 +529,10 @@ def test_build_device_command_passes_model(
     coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
 
     cmd = coordinator.build_device_command(
-        "room_clean", room_ids=[6, 2], map_id=1, **caller_kwargs
+        "room_clean", room_ids=[6, 2], map_id=1, model="T2351"
     )
     rooms = decode(ModeCtrlRequest, cmd[DPS_MAP["PLAY_PAUSE"]]).select_rooms_clean.rooms
-    assert [(room.id, room.order) for room in rooms] == expected
+    assert [(room.id, room.order) for room in rooms] == [(6, 1), (2, 2)]
 
 
 @pytest.mark.asyncio
