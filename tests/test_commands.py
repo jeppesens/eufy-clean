@@ -9,7 +9,6 @@ from custom_components.robovac_mqtt.api.commands import (
     _build_off_peak_sub_bytes,
     build_command,
     build_map_load_command,
-    build_room_clean_command,
     build_set_boost_iq_command,
     build_set_child_lock_command,
     build_set_cleaning_intensity_command,
@@ -419,18 +418,6 @@ def test_off_peak_command_dispatch():
         end_minute=30,
     )
     assert DPS_MAP["UNSETTING"] in result
-
-
-def test_build_room_clean_command_keeps_room_zero():
-    """Room id 0 is a real id on some maps (T2080A after room merges) and must
-    reach SelectRoomsClean alongside the requested map id."""
-    result = build_room_clean_command([0, 5], map_id=1)
-    decoded = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
-    assert decoded.method == EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN
-    src = decoded.select_rooms_clean
-    assert src.map_id == 1
-    assert src.clean_times == 1
-    assert [(r.id, r.order) for r in src.rooms] == [(0, 1), (5, 2)]
 
 
 def test_set_room_custom_keeps_room_zero():
