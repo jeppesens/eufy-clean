@@ -1,23 +1,27 @@
 """Unit tests for the EufyCleanCoordinator."""
 
-# pylint: disable=redefined-outer-name
-
+import io
 from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.update_coordinator import UpdateFailed
+from PIL import Image
 
+from custom_components.robovac_mqtt.api.map_render import render_map
 from custom_components.robovac_mqtt.api.map_stream import MapData
-from custom_components.robovac_mqtt.const import DPS_MAP
-from custom_components.robovac_mqtt.coordinator import (
-    _ERROR_LOG_MAX,
-    EufyCleanCoordinator,
-)
+from custom_components.robovac_mqtt.const import (DPS_MAP,
+                                                  WORK_STATE_REMOTE_CTRL)
+from custom_components.robovac_mqtt.coordinator import (_ERROR_LOG_MAX,
+                                                        EufyCleanCoordinator)
 from custom_components.robovac_mqtt.models import VacuumState
+from custom_components.robovac_mqtt.proto.cloud.control_pb2 import \
+    ModeCtrlRequest
 from custom_components.robovac_mqtt.proto.cloud.error_code_pb2 import ErrorCode
-from custom_components.robovac_mqtt.utils import encode_message
+from custom_components.robovac_mqtt.utils import decode, encode_message
+
+# pylint: disable=redefined-outer-name
 
 
 @pytest.fixture
@@ -487,6 +491,30 @@ def test_parse_dps_novel(mock_hass, mock_login):
     assert new_state.battery_level == 75
 
 
+@pytest.mark.parametrize(
+    ("connection_type", "has_p2p", "expected"),
+    [
+        ("mqtt", False, True),
+        ("local", True, True),
+        ("local", False, False),
+        ("cloud", False, False),
+    ],
+)
+def test_receives_map(mock_hass, mock_login, connection_type, has_p2p, expected):
+    """A map arrives over Eufy MQTT or the local P2P feed, never over Tuya Cloud polling."""
+    device_info = {
+        "deviceId": "dev1",
+        "deviceModel": "T2080A",
+        "deviceName": "Vac",
+        "apiType": "novel",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.connection_type = connection_type
+    coordinator.p2p = MagicMock() if has_p2p else None
+
+    assert coordinator.receives_map is expected
+
+
 def test_build_device_command_legacy(mock_hass, mock_login):
     """build_device_command should use legacy builder for legacy api_type."""
     device_info = {
@@ -514,6 +542,25 @@ def test_build_device_command_novel(mock_hass, mock_login):
     cmd = coordinator.build_device_command("find_robot", active=True)
     # Novel find_robot uses DPS 160
     assert "160" in cmd
+
+
+def test_build_device_command_caller_model_wins(mock_hass, mock_login):
+    """A model passed by the caller wins over the coordinator's own, so this
+    T2080A gets one-based room order. The coordinator's own model is covered by
+    test_s1_pro_room_command_uses_its_model_context."""
+    device_info = {
+        "deviceId": "dev1",
+        "deviceModel": "T2080A",
+        "deviceName": "Vac",
+        "apiType": "novel",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+
+    cmd = coordinator.build_device_command(
+        "room_clean", room_ids=[6, 2], map_id=1, model="T2351"
+    )
+    rooms = decode(ModeCtrlRequest, cmd[DPS_MAP["PLAY_PAUSE"]]).select_rooms_clean.rooms
+    assert [(room.id, room.order) for room in rooms] == [(6, 1), (2, 2)]
 
 
 @pytest.mark.asyncio
@@ -757,7 +804,7 @@ def current_room_coordinator():
 @pytest.mark.parametrize("pixel,expected", [
     ((0, 0), (7, "Bathroom")), ((3, 0), (8, "Hallway")),
     ((0, 2), (9, "Living Room")), ((3, 2), (9, "Living Room")),
-    (None, (0, None)), ((-1, 0), (0, None)), ((4, 0), (0, None)),
+    (None, (None, None)), ((-1, 0), (None, None)), ((4, 0), (None, None)),
 ])
 def test_physical_room(current_room_coordinator, pixel, expected):
     coordinator = current_room_coordinator
@@ -772,9 +819,9 @@ def test_missing_map_or_mask(current_room_coordinator):
     coordinator = current_room_coordinator
     coordinator._robot_pixel = (0, 0)
     coordinator._map_data.room_pixels = None
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() == (None, None)
     coordinator._map_data = None
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() == (None, None)
 
 
 @pytest.mark.parametrize("width,height", [(0, 3), (4, 0), (-1, 3)])
@@ -783,7 +830,7 @@ def test_invalid_dimensions(current_room_coordinator, width, height):
     coordinator._robot_pixel = (0, 0)
     coordinator._map_data.width = width
     coordinator._map_data.height = height
-    assert coordinator.current_room() == (0, None)
+    assert coordinator.current_room() == (None, None)
 
 
 def test_only_room_changes_signal(current_room_coordinator):
@@ -816,6 +863,59 @@ def test_current_room_name_fallback(current_room_coordinator):
     assert coordinator.current_room() == (7, None)
     coordinator.data.rooms = [{"id": 7, "name": "Bathroom"}]
     assert coordinator.current_room() == (7, "Bathroom")
+
+
+def test_calibration_points_match_the_renderer(mock_hass, mock_login):
+    """World-cm <-> image-pixel pairs follow the renderer's Y-flip and scale."""
+    coordinator = EufyCleanCoordinator(
+        mock_hass, mock_login, {"deviceId": "d", "deviceModel": "T2080A", "deviceName": "S1"}
+    )
+    assert coordinator.calibration_points() is None
+    md = MapData(raw_pixels=b"\xaa" * 50, width=20, height=10, origin_x=-100, origin_y=-50, resolution=5)
+    coordinator._map_data = md
+    coordinator.map_image = render_map(md, max_px=200)
+    assert Image.open(io.BytesIO(coordinator.map_image)).size == (200, 100)
+    points = coordinator.calibration_points()
+    assert points[0] == {"vacuum": {"x": -100, "y": -50}, "map": {"x": 5.0, "y": 95.0}}
+    # +500 cm in x = +100 grid cells; +500 cm in y moves up the image.
+    assert points[1]["map"] == {"x": 1005.0, "y": 95.0}
+    assert points[2]["map"] == {"x": 5.0, "y": -905.0}
+
+
+def test_remote_control_is_not_treated_as_the_robot_moving_for_p2p():
+    """Manual control must not trigger the continuously moving map retry policy."""
+
+    class _Stub:
+        data = VacuumState(activity="cleaning", status_code=3)
+
+    stub = _Stub()
+    assert EufyCleanCoordinator._robot_is_moving(stub) is True
+    stub.data = VacuumState(activity="cleaning", status_code=WORK_STATE_REMOTE_CTRL)
+    assert EufyCleanCoordinator._robot_is_moving(stub) is False
+    stub.data = VacuumState(activity="docked", status_code=0)
+    assert EufyCleanCoordinator._robot_is_moving(stub) is False
+
+
+def test_s1_pro_remote_command_uses_its_model_context(mock_hass, mock_login):
+    device_info = {
+        "deviceId": "dev1", "deviceModel": "T2080A", "deviceName": "Vac", "apiType": "novel",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    assert coordinator.build_device_command("remote_move", direction="left") == {"155": "BBICCAM="}
+    assert coordinator.build_device_command("remote_move", direction="brake") == {"155": "AhIA"}
+
+
+@pytest.mark.parametrize("connection_type", ["local", "cloud"])
+def test_s1_pro_room_command_uses_its_model_context(mock_hass, mock_login, connection_type):
+    """Room entities need no model override to get the T2080A's zero-based slots."""
+    device_info = {
+        "deviceId": "dev1", "deviceModel": "T2080A", "deviceName": "Vac",
+        "apiType": "novel", "connection_type": connection_type,
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    command = coordinator.build_device_command("room_clean", room_ids=[6, 2], map_id=7)
+    rooms = decode(ModeCtrlRequest, command["152"]).select_rooms_clean.rooms
+    assert [(room.id, room.order) for room in rooms] == [(6, 0), (2, 1)]
 
 
 # ---------------------------------------------------------------------------

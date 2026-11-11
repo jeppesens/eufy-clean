@@ -194,9 +194,9 @@ async def test_legacy_coordinator_excludes_novel_sensors():
 
     await async_setup_entry(hass, config_entry, added_entities.extend)
 
-    # Should have exactly 4 universal sensors: Battery, Error Message, Task Status, Work Mode
+    # Should have exactly 5 universal sensors: Battery, Error Code, Error Message, Task Status, Work Mode
     entity_ids = [e.unique_id for e in added_entities]
-    assert len(added_entities) == 4
+    assert len(added_entities) == 5
     assert "legacy_dev_battery" in entity_ids
     assert "legacy_dev_error_message" in entity_ids
     assert "legacy_dev_task_status" in entity_ids
@@ -241,7 +241,7 @@ async def test_novel_coordinator_creates_all_sensors():
     # Full novel sensor set (universals + novel-only + device-info + accessories).
     # Exact count guarded against accidental duplicates from the merge.
     assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
-    assert len(added_entities) == 27
+    assert len(added_entities) == 29
     assert "novel_dev_current_room" in entity_ids
 
     # Universal sensors
@@ -254,6 +254,7 @@ async def test_novel_coordinator_creates_all_sensors():
         "cleaning_area",
         "water_level",
         "dirty_water_level",
+        "clean_water_level",
         "dock_status",
         "active_map",
     ]:
@@ -272,47 +273,42 @@ async def test_novel_coordinator_creates_all_sensors():
 
 
 @pytest.mark.asyncio
-async def test_novel_cloud_or_local_skips_p2p_only_sensors():
-    """Novel devices on Tuya transports (no P2P) should skip active_map sensor."""
-    for transport in ("cloud", "local"):
-        coordinator = MagicMock()
-        coordinator.device_id = f"novel_{transport}"
-        coordinator.device_name = f"Novel Vac ({transport})"
-        coordinator.device_model = "T2080A"
-        coordinator.api_type = "novel"
-        coordinator.connection_type = transport
-        coordinator.data = VacuumState()
-        coordinator.last_update_success = True
+@pytest.mark.parametrize(("receives_map", "expected"), [(False, 26), (True, 28)])
+async def test_map_channel_sensors_follow_receives_map(receives_map, expected):
+    """active_map and current_room come with the map, so they only exist where
+    one can arrive (coordinator.receives_map); elsewhere nothing would ever
+    fill them."""
+    coordinator = MagicMock()
+    coordinator.device_id = "novel_dev"
+    coordinator.device_name = "Novel Vac"
+    coordinator.device_model = "T2080A"
+    coordinator.api_type = "novel"
+    coordinator.receives_map = receives_map
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
 
-        hass = MagicMock()
-        config_entry = MagicMock()
-        config_entry.entry_id = f"entry_{transport}"
-        hass.data = {
-            "robovac_mqtt": {
-                f"entry_{transport}": {"coordinators": [coordinator]}
-            }
-        }
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "entry"
+    hass.data = {"robovac_mqtt": {"entry": {"coordinators": [coordinator]}}}
 
-        added_entities = []
-        await async_setup_entry(hass, config_entry, added_entities.extend)
-        entity_ids = [e.unique_id for e in added_entities]
+    added_entities = []
+    await async_setup_entry(hass, config_entry, added_entities.extend)
+    entity_ids = [e.unique_id for e in added_entities]
 
-        # Full novel set minus the P2P-only current_room and active_map
-        # sensors (skipped on Tuya transports). Two fewer than the MQTT case.
-        assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
-        assert len(added_entities) == 25, (
-            f"transport={transport}: got {len(added_entities)} entities"
-        )
-        assert f"novel_{transport}_active_map" not in entity_ids
-        # Other novel sensors still present
-        for suffix in [
-            "cleaning_time",
-            "cleaning_area",
-            "water_level",
-            "dirty_water_level",
-            "dock_status",
-        ]:
-            assert f"novel_{transport}_{suffix}" in entity_ids
+    assert len(set(entity_ids)) == len(added_entities), "duplicate sensor unique_ids"
+    assert len(added_entities) == expected
+    for suffix in ("active_map", "current_room"):
+        assert (f"novel_dev_{suffix}" in entity_ids) == receives_map
+    # Other novel sensors are there either way
+    for suffix in [
+        "cleaning_time",
+        "cleaning_area",
+        "water_level",
+        "dirty_water_level",
+        "dock_status",
+    ]:
+        assert f"novel_dev_{suffix}" in entity_ids
 
 
 def test_current_room_sensor_values_and_unknown(mock_coordinator):
@@ -324,6 +320,8 @@ def test_current_room_sensor_values_and_unknown(mock_coordinator):
     mock_coordinator.current_room.return_value = (7, None)
     assert sensor.native_value == "Room 7"
     mock_coordinator.current_room.return_value = (0, None)
+    assert sensor.native_value == "Room 0"  # room id 0 is a real room
+    mock_coordinator.current_room.return_value = (None, None)
     assert sensor.native_value is None
     assert sensor.extra_state_attributes == {"room_id": None, "room_name": None}
 

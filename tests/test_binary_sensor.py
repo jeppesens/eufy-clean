@@ -8,7 +8,10 @@ import pytest
 from homeassistant.components.binary_sensor import BinarySensorDeviceClass
 from homeassistant.const import EntityCategory
 
-from custom_components.robovac_mqtt.binary_sensor import RoboVacBinarySensor
+from custom_components.robovac_mqtt.binary_sensor import (
+    RoboVacBinarySensor,
+    async_setup_entry,
+)
 from custom_components.robovac_mqtt.models import VacuumState
 
 
@@ -82,3 +85,29 @@ def test_binary_sensor_availability_honors_coordinator_state(mock_coordinator):
 
     mock_coordinator.last_update_success = False
     assert entity.available is False
+
+
+@pytest.mark.asyncio
+async def test_remote_mode_sensor_follows_the_work_state(mock_coordinator):
+    """Remote Mode is on exactly while the robot reports state 6 (REMOTE_CTRL)."""
+    mock_coordinator.api_type = "novel"
+    hass = MagicMock()
+    hass.data = {"robovac_mqtt": {"e": {"coordinators": [mock_coordinator]}}}
+    added: list = []
+    await async_setup_entry(hass, MagicMock(entry_id="e"), added.extend)
+    sensor = next(e for e in added if e.unique_id == "test_id_remote_mode")
+    sensor.hass = MagicMock()
+    for state, expected in ((6, True), (5, False), (3, False)):
+        mock_coordinator.data.status_code = state
+        assert sensor.is_on is expected
+    assert sensor.entity_category is None
+
+
+@pytest.mark.asyncio
+async def test_remote_mode_sensor_not_created_for_other_protocols(mock_coordinator):
+    mock_coordinator.api_type = "scalar"
+    hass = MagicMock()
+    hass.data = {"robovac_mqtt": {"e": {"coordinators": [mock_coordinator]}}}
+    added: list = []
+    await async_setup_entry(hass, MagicMock(entry_id="e"), added.extend)
+    assert all(e.unique_id != "test_id_remote_mode" for e in added)

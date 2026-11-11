@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import math
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -28,14 +31,16 @@ from homeassistant.helpers.issue_registry import (
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import build_command
+from .api.commands import REMOTE_DIRECTIONS, build_command
 from .const import (
     DOMAIN,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     LEGACY_CLEAN_SPEEDS,
     SCALAR_SUCTION_LEVELS,
+    WORK_STATE_REMOTE_CTRL,
 )
 from .coordinator import EufyCleanCoordinator
+from .errors import error_attributes
 
 if TYPE_CHECKING:
     from homeassistant.components.vacuum import Segment
@@ -99,6 +104,10 @@ def _segment_name_map(segments: list[Segment]) -> dict[str, str]:
 
 _LOGGER = logging.getLogger(__name__)
 
+# The app resends a drive command every 500 ms while its joystick is held.
+_REMOTE_REPEAT_SECONDS = 0.5
+_REMOTE_MAX_SECONDS = 10.0
+
 # CLEAN_AREA was added in HA 2026.3; fall back gracefully on older installs
 _CLEAN_AREA_FEATURE = getattr(VacuumEntityFeature, "CLEAN_AREA", None)
 
@@ -157,6 +166,18 @@ async def async_setup_entry(
         "async_room_at_point",
         supports_response=SupportsResponse.ONLY,
     )
+    # Manual drive: repeats the move like the app's joystick (every 500 ms), then
+    # brakes. See async_remote_drive.
+    platform.async_register_entity_service(
+        "remote_drive",
+        {
+            vol.Required("direction"): vol.In(list(REMOTE_DIRECTIONS)),
+            vol.Optional("duration", default=1.0): vol.All(
+                vol.Coerce(float), vol.Range(min=0, max=_REMOTE_MAX_SECONDS)
+            ),
+        },
+        "async_remote_drive",
+    )
     # Switch the active map to another saved multi-map by its cloud map id
     # (novel/protobuf devices only). See async_map_load / build_map_load_command
     # for the pose-re-localization caveat.
@@ -193,12 +214,14 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         super().__init__(coordinator)
         self._attr_unique_id = coordinator.device_id
         self._config_entry = config_entry
+        self._remote_driving = False
+        self._remote_stop = asyncio.Event()
 
         self._attr_device_info = coordinator.device_info
 
         # Scalar (G50) suction is Quiet/Standard/Turbo/Max; BoostIQ is a separate
         # switch (DPS 118), not a 5th fan speed.
-        if coordinator.api_type == "scalar":
+        if coordinator.api_type == "scalar" or coordinator.tuya_transport:
             self._attr_fan_speed_list: list[str] = list(SCALAR_SUCTION_LEVELS)
         elif coordinator.api_type == "legacy":
             self._attr_fan_speed_list = list(LEGACY_CLEAN_SPEEDS)
@@ -372,11 +395,23 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             await self._async_send_room_clean(room_ids, map_id, mode="CUSTOMIZE")
             return
 
-        # Legacy-style: 'room_ids' list of ints + optional global params
+        # Legacy-style: 'room_ids' list of ints (or one id) + optional global params
         if "room_ids" not in params:
             return
 
-        room_ids = params["room_ids"]
+        raw_ids = params["room_ids"]
+        if isinstance(raw_ids, (int, float, str)):
+            raw_ids = [raw_ids]  # a single id, as in `room_ids: 3`
+        room_ids = []
+        for rid in raw_ids:
+            try:
+                room_ids.append(int(rid))
+            except (ValueError, TypeError):
+                _LOGGER.warning("Skipping room with invalid id: %s", rid)
+
+        if not room_ids:
+            return
+
         merged_params = self._merge_room_clean_defaults(params)
 
         fan_speed = merged_params.get("fan_speed")
@@ -435,11 +470,17 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         quads_cm = self.coordinator.normalized_rects_to_quads_cm(rects)
         if not quads_cm:
-            _LOGGER.warning(
+            if not self.coordinator.receives_map:
+                connection_type = self.coordinator.connection_type
+                raise HomeAssistantError(
+                    f"zone_clean needs the map, which {self.coordinator.device_name} "
+                    f"does not receive over its Tuya ({connection_type}) connection; "
+                    "use room_clean instead"
+                )
+            raise HomeAssistantError(
                 "zone_clean: no map available yet (run a clean once so the map "
                 "populates) or all rectangles were invalid — nothing sent"
             )
-            return
 
         map_id = params.get("map_id") or self.coordinator.resolve_map_id()
         clean_times = int(params.get("clean_times", 1))
@@ -474,10 +515,63 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         Backs the bundled card's tap-a-room-on-the-map selection. ``x``/``y`` are
         fractions of the rendered map image (top-left origin). Returns
-        ``{"room_id": int, "room_name": str}``; ``room_id`` 0 means "no room there".
+        ``{"room_id": int, "room_name": str}``; ``room_id`` -1 means "no room
+        there" (0 is a valid room id on some robots).
         """
         room_id, room_name = self.coordinator.room_id_at_normalized(x, y)
+        if room_id is None:
+            return {"room_id": -1, "room_name": ""}
         return {"room_id": room_id, "room_name": room_name or ""}
+
+    async def async_remote_drive(self, direction: str, duration: float = 1.0) -> None:
+        """Drive by hand for ``duration`` seconds, then brake.
+
+        The robot only keeps moving while the command is repeated, so a single
+        service call becomes a bounded run: safe against a lost connection or a
+        stuck automation. ``brake`` (or a zero duration) just stops.
+        """
+        coordinator = self.coordinator
+        if coordinator.api_type != "novel":
+            raise HomeAssistantError("Manual drive needs a protobuf (novel) robot")
+        if direction not in REMOTE_DIRECTIONS or not math.isfinite(duration) or not 0 <= duration <= _REMOTE_MAX_SECONDS:
+            raise HomeAssistantError("Choose a valid direction and a finite duration between 0 and 10 seconds")
+        if direction != "brake" and duration > 0:
+            if coordinator.data.status_code != WORK_STATE_REMOTE_CTRL:
+                raise HomeAssistantError("Enable manual control before driving the robot")
+            if self._remote_driving:
+                raise HomeAssistantError("A manual drive is already running; brake before starting another")
+            command = coordinator.build_device_command("remote_move", direction=direction)
+            self._remote_driving = True
+            self._remote_stop.clear()
+            try:
+                loop = asyncio.get_running_loop()
+                end = loop.time() + duration
+                while not self._remote_stop.is_set() and coordinator.data.status_code == WORK_STATE_REMOTE_CTRL:
+                    await coordinator.async_send_command(command, wait=False)
+                    if loop.time() + _REMOTE_REPEAT_SECONDS >= end:
+                        # Wait out the rest so the brake goes out at `end`, not a
+                        # repeat interval early; a brake call still ends it sooner.
+                        with suppress(TimeoutError):
+                            await asyncio.wait_for(
+                                self._remote_stop.wait(), max(0.0, end - loop.time())
+                            )
+                        break
+                    with suppress(TimeoutError):
+                        await asyncio.wait_for(self._remote_stop.wait(), _REMOTE_REPEAT_SECONDS)
+            finally:
+                try:
+                    await coordinator.async_send_command(
+                        coordinator.build_device_command("remote_move", direction="brake"),
+                        wait=False,
+                    )
+                finally:
+                    self._remote_driving = False
+            return
+        self._remote_stop.set()
+        await coordinator.async_send_command(
+            coordinator.build_device_command("remote_move", direction="brake"),
+            wait=False,
+        )
 
     async def async_map_load(self, cloud_mapid: int, seq: int = 1) -> None:
         """Switch the active map to a saved multi-map by its cloud map id.
@@ -557,9 +651,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             "cleaning_area": data.cleaning_area,
             "task_status": data.task_status,
             "trigger_source": data.trigger_source,
-            "error_code": data.error_code,
+            **error_attributes(data),
             "error_message": data.error_message,
-            "error_codes": data.error_codes,
             "warn_codes": data.warn_codes,
             "status_code": data.status_code,
             "work_mode": data.work_mode,
@@ -681,18 +774,10 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             await self._async_handle_zone_clean(params)
             return
 
-        # Handle Apple Home app_segment_clean command
+        # Handle Apple Home app_segment_clean command: a list of room ids (int,
+        # str or float from JSON), cleaned like room_clean's room_ids.
         if command == "app_segment_clean" and isinstance(params, list):
-            # Convert to room_clean format; handle int, str, and float IDs from JSON
-            room_ids = []
-            for room_id in params:
-                try:
-                    room_ids.append(int(room_id))
-                except (ValueError, TypeError):
-                    pass
-            if room_ids:
-                await self._async_handle_room_clean({"room_ids": room_ids})
-                return
+            await self._async_handle_room_clean({"room_ids": params})
             return
 
         command_kwargs: dict[str, Any] = {}

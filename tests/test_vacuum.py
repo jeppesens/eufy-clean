@@ -2,6 +2,7 @@
 
 # pylint: disable=redefined-outer-name, unused-argument
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -25,6 +26,7 @@ def mock_coordinator():
     coordinator.device_name = "Test Vac"
     coordinator.device_model = "T2118"
     coordinator.api_type = "novel"
+    coordinator.connection_type = "mqtt"
     coordinator.data = VacuumState()
     coordinator.async_send_command = AsyncMock()
     coordinator.build_device_command = MagicMock(return_value={"cmd": "val"})
@@ -151,14 +153,28 @@ async def test_zone_clean_no_rects_noop(mock_coordinator, mock_config_entry):
 
 
 @pytest.mark.asyncio
-async def test_zone_clean_no_map_noop(mock_coordinator, mock_config_entry):
-    """zone_clean before the map has loaded (helper returns []) dispatches nothing."""
+@pytest.mark.parametrize(
+    ("receives_map", "connection_type", "message"),
+    [
+        (True, "mqtt", "no map available yet"),
+        (True, "local", "no map available yet"),
+        (False, "cloud", r"Tuya \(cloud\) connection; use room_clean"),
+        (False, "local", r"Tuya \(local\) connection; use room_clean"),
+    ],
+)
+async def test_zone_clean_no_map_raises(
+    mock_coordinator, mock_config_entry, receives_map, connection_type, message
+):
+    """zone_clean without a map (helper returns []) raises and dispatches nothing."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.receives_map = receives_map
+    mock_coordinator.connection_type = connection_type
     mock_coordinator.normalized_rects_to_quads_cm = MagicMock(return_value=[])
 
-    await entity.async_send_command(
-        "zone_clean", {"zones": [[0.1, 0.2, 0.3, 0.4]]}
-    )
+    with pytest.raises(HomeAssistantError, match=message):
+        await entity.async_send_command(
+            "zone_clean", {"zones": [[0.1, 0.2, 0.3, 0.4]]}
+        )
 
     mock_coordinator.normalized_rects_to_quads_cm.assert_called_once()
     mock_coordinator.async_send_command.assert_not_called()
@@ -409,3 +425,144 @@ async def test_forget_map_active_raises(mock_coordinator, mock_config_entry):
         await entity.async_forget_map(11)
     mock_coordinator.async_forget_map.assert_not_called()
     mock_coordinator.async_send_command.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_remote_drive_repeats_then_brakes(mock_coordinator, mock_config_entry):
+    """One service call is a bounded run: repeated moves, then always a brake."""
+    mock_coordinator.data.status_code = 6
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.build_device_command = MagicMock(
+        side_effect=lambda cmd, **kw: {"cmd": kw["direction"]}
+    )
+    with patch("custom_components.robovac_mqtt.vacuum._REMOTE_REPEAT_SECONDS", 0.01):
+        await entity.async_remote_drive("forward", 0.05)
+    sent = [c.args[0]["cmd"] for c in mock_coordinator.async_send_command.await_args_list]
+    assert sent[0] == "forward" and sent.count("forward") >= 2
+    assert sent[-1] == "brake" and sent.count("brake") == 1
+
+
+@pytest.mark.asyncio
+async def test_remote_drive_brakes_even_if_a_send_fails(mock_coordinator, mock_config_entry):
+    mock_coordinator.data.status_code = 6
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.build_device_command = MagicMock(
+        side_effect=lambda cmd, **kw: {"cmd": kw["direction"]}
+    )
+    mock_coordinator.async_send_command = AsyncMock(
+        side_effect=[HomeAssistantError("lost"), None]
+    )
+    with pytest.raises(HomeAssistantError):
+        await entity.async_remote_drive("left", 1)
+    assert mock_coordinator.async_send_command.await_args_list[-1].args[0] == {"cmd": "brake"}
+
+
+@pytest.mark.asyncio
+async def test_remote_drive_brake_and_zero_duration_only_stop(mock_coordinator, mock_config_entry):
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.build_device_command = MagicMock(
+        side_effect=lambda cmd, **kw: {"cmd": kw["direction"]}
+    )
+    await entity.async_remote_drive("brake")
+    await entity.async_remote_drive("forward", 0)
+    assert [c.args[0]["cmd"] for c in mock_coordinator.async_send_command.await_args_list] == ["brake", "brake"]
+
+
+@pytest.mark.asyncio
+async def test_remote_drive_rejects_non_protobuf_robots(mock_coordinator, mock_config_entry):
+    mock_coordinator.api_type = "scalar"
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    with pytest.raises(HomeAssistantError):
+        await entity.async_remote_drive("forward", 1)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", [float("nan"), float("inf"), -1, 11])
+async def test_remote_drive_rejects_non_finite_or_unbounded_duration(mock_coordinator, mock_config_entry, duration):
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    with pytest.raises(HomeAssistantError, match="finite duration"):
+        await entity.async_remote_drive("forward", duration)
+    mock_coordinator.async_send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_remote_drive_requires_manual_mode(mock_coordinator, mock_config_entry):
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    with pytest.raises(HomeAssistantError, match="Enable manual"):
+        await entity.async_remote_drive("forward", 1)
+    mock_coordinator.async_send_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_brake_interrupts_a_run_and_conflicting_moves_are_rejected(mock_coordinator, mock_config_entry):
+    mock_coordinator.data.status_code = 6
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    first_move = asyncio.Event()
+    sent = []
+    mock_coordinator.build_device_command.side_effect = lambda cmd, **kw: {"cmd": kw["direction"]}
+
+    async def send(command, **kwargs):
+        sent.append(command["cmd"])
+        first_move.set()
+
+    mock_coordinator.async_send_command.side_effect = send
+    run = asyncio.create_task(entity.async_remote_drive("left", 10))
+    try:
+        await asyncio.wait_for(first_move.wait(), 1)
+        with pytest.raises(HomeAssistantError, match="already running"):
+            await entity.async_remote_drive("right", 1)
+        await entity.async_remote_drive("brake")
+        await asyncio.wait_for(run, 1)
+        assert sent[0] == "left" and all(value == "brake" for value in sent[1:])
+    finally:
+        run.cancel()
+        await asyncio.gather(run, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("duration", [0.05, 0.5])
+async def test_remote_drive_brakes_at_the_requested_end_not_a_repeat_early(
+    mock_coordinator, mock_config_entry, duration
+):
+    """The run lasts `duration`: no brake straight after the first move for short runs."""
+    mock_coordinator.data.status_code = 6
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.build_device_command = MagicMock(
+        side_effect=lambda cmd, **kw: {"cmd": kw["direction"]}
+    )
+    stamps: list[tuple[str, float]] = []
+    loop = asyncio.get_running_loop()
+
+    async def send(command, **_kw):
+        stamps.append((command["cmd"], loop.time()))
+
+    mock_coordinator.async_send_command = AsyncMock(side_effect=send)
+    with patch("custom_components.robovac_mqtt.vacuum._REMOTE_REPEAT_SECONDS", duration * 2):
+        await entity.async_remote_drive("forward", duration)
+    (name0, start), (name1, braked) = stamps[0], stamps[-1]
+    assert (name0, name1) == ("forward", "brake")
+    assert braked - start >= duration * 0.9
+
+
+@pytest.mark.asyncio
+async def test_a_brake_call_still_ends_a_run_early(mock_coordinator, mock_config_entry):
+    mock_coordinator.data.status_code = 6
+    entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.build_device_command = MagicMock(
+        side_effect=lambda cmd, **kw: {"cmd": kw["direction"]}
+    )
+    run = asyncio.ensure_future(entity.async_remote_drive("forward", 5))
+    await asyncio.sleep(0.05)
+    await entity.async_remote_drive("brake")
+    await asyncio.wait_for(run, 1)
+
+
+def test_vacuum_error_codes_attribute_holds_screen_codes_for_the_s1_pro(mock_coordinator, mock_config_entry):
+    """The docking-retry automation matches E74/E75/E76 against this attribute."""
+    mock_coordinator.data.device_model = "T2080A"
+    mock_coordinator.data.error_code = 19924741
+    mock_coordinator.data.error_codes = [19924741]
+    mock_coordinator.data.warn_codes = []
+    attrs = RoboVacMQTTEntity(mock_coordinator, mock_config_entry).extra_state_attributes
+    assert attrs["error_codes"] == ["E75"] and attrs["error_codes_raw"] == [19924741]
+    assert attrs["warn_codes"] == []

@@ -23,6 +23,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 try:
@@ -32,10 +33,15 @@ except ImportError:  # pragma: no cover - tinytuya is declared in manifest.json
 
 _LOGGER = logging.getLogger(__name__)
 
-# tinytuya's blocking receive() should return promptly so we can react to
-# cancellation; values larger than ~5 s leave us blocked too long if the
-# device goes silent.
-_RECV_TIMEOUT = 5.0
+# receive() holds the device lock for the whole timeout, and send_command()
+# queues behind it, so this is also the worst-case latency of every command
+# (a drive command used to wait up to 5 s). Short enough to feel instant, long
+# enough not to spin.
+_RECV_TIMEOUT = 0.5
+# Everything else (waited writes, status(), reconnects) keeps tinytuya's usual
+# timeout (set_socketTimeout replaces the constructor's connection_timeout too): set_socketTimeout also bounds the connection, and on a timeout
+# tinytuya reconnects and re-sends, which would double-send a slow robot's writes.
+_COMMAND_TIMEOUT = 5.0
 _RECONNECT_BACKOFF_INITIAL = 5.0
 _RECONNECT_BACKOFF_MAX = 60.0
 
@@ -121,13 +127,13 @@ class LocalTuyaClient:
             address=self.host,
             local_key=self.local_key,
             version=self.version,
-            connection_timeout=10,
             persist=True,
         )
         # Don't let tinytuya retry endlessly on missing replies — we manage
         # reconnect ourselves so we can surface failures to the coordinator.
         self._dev.set_socketRetryLimit(1)
         self._dev.set_socketRetryDelay(0)
+        self._dev.set_socketTimeout(_COMMAND_TIMEOUT)
 
     async def disconnect(self) -> None:
         """Cancel the listener task and close the socket."""
@@ -159,8 +165,12 @@ class LocalTuyaClient:
                 pass
             self._listen_task = None
 
-    async def send_command(self, dps: dict[str, Any]) -> None:
+    async def send_command(self, dps: dict[str, Any], *, wait: bool = True) -> None:
         """Send a DPS write to the device.
+
+        ``wait=False`` skips waiting for the device's reply (which arrives as an
+        ordinary push for anything it acts on). Drive commands get no reply at all,
+        so waiting on them just stalls the next command by the socket timeout.
 
         ``dps`` is a mapping of DPS index (string) to value matching the same
         format the MQTT and Cloud transports use. Values may be plain
@@ -179,9 +189,20 @@ class LocalTuyaClient:
         # failure; we only care about exceptions.
         try:
             async with self._dev_lock:
-                await self._loop.run_in_executor(
-                    None, self._dev.set_multiple_values, dps
+                write = self._loop.run_in_executor(
+                    None, partial(self._dev.set_multiple_values, dps, nowait=not wait)
                 )
+                try:
+                    await asyncio.shield(write)
+                except asyncio.CancelledError:
+                    # Cancelling an await cannot stop its executor thread. Keep
+                    # the socket lock until the write finishes before a brake,
+                    # receiver or disconnect can use the non-thread-safe device.
+                    try:
+                        await write
+                    except Exception:  # noqa: BLE001 - preserve cancellation
+                        pass
+                    raise
         except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
             raise LocalTuyaError(
                 f"Failed to send local Tuya command to {self.device_id}: {e}"
@@ -287,7 +308,11 @@ class LocalTuyaClient:
         if self._dev is None:
             return None
         self._dev.set_socketTimeout(_RECV_TIMEOUT)
-        return self._dev.receive()
+        try:
+            return self._dev.receive()
+        finally:
+            # The device lock is held, so nothing else runs on this socket meanwhile.
+            self._dev.set_socketTimeout(_COMMAND_TIMEOUT)
 
     def _dispatch(self, payload: Any) -> None:
         """Wrap a DPS payload into the MQTT envelope and fire the callback."""
@@ -298,6 +323,7 @@ class LocalTuyaClient:
             return
         if not self._on_message:
             return
+        _LOGGER.debug("Local Tuya %s: received DPS %s", self.device_id, sorted(dps, key=str))
         # Match the wire format _handle_mqtt_message expects:
         #   {"payload": json.dumps({"data": <dps>})}
         # then the coordinator parses payload as JSON, extracts data.

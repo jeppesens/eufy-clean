@@ -35,6 +35,7 @@ from .entity import (
     effective_api_type,
     filter_supported_entities,
 )
+from .errors import error_attributes, error_sensor_value
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +79,15 @@ async def async_setup_entry(
         sensors: list[SensorEntity] = [
             # Battery sensor
             BatterySensorEntity(coordinator),
+            RoboVacSensor(
+                coordinator,
+                "error_code",
+                "Error Code",
+                error_sensor_value,
+                icon="mdi:alert-circle-outline",
+                category=EntityCategory.DIAGNOSTIC,
+                extra_state_attributes_fn=error_attributes,
+            ),
             # Error Message Sensor
             ErrorMessageSensor(
                 coordinator,
@@ -135,8 +145,8 @@ async def async_setup_entry(
         # they are skipped entirely for legacy devices. Per-protocol gating
         # (scalar vs novel) is handled by filter_supported_entities via each
         # sensor's supported_api_types. The "active_map" sensor additionally
-        # requires the MQTT/P2P transport (Tuya Cloud / local-Tuya don't carry
-        # MultiMapsManageResponse) and is appended separately below.
+        # needs a map channel (MQTT, or the local P2P feed) and is appended
+        # separately below.
         novel_sensors: list[SensorEntity] = [
             # Cleaning Time Sensor
             RoboVacSensor(
@@ -230,6 +240,17 @@ async def async_setup_entry(
                 unit=None,
                 state_class=None,
                 availability_fn=lambda s: "station_dirty_water" in s.received_fields,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
+            RoboVacSensor(
+                coordinator,
+                "clean_water_level",
+                "Clean Water Level",
+                lambda s: s.station_clean_water_level,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                availability_fn=lambda s: "station_clean_water_level" in s.received_fields,
                 supported_api_types=(API_TYPE_NOVEL,),
             ),
             # Dock status sensor
@@ -360,11 +381,13 @@ async def async_setup_entry(
         ]
 
         # Accessory Sensors. Filter/brushes/sensor are universal; cleaning tray
-        # and mopping cloth only exist on mop-capable (novel) devices.
+        # and mopping cloth only exist on mop-capable (novel) devices; dust bag
+        # and sewage tank filter only on models whose MODEL_ACCESSORY_MAX_LIFE
+        # entry lists them.
         # Novel devices only get a sensor for accessories their lifespan table
-        # lists, so a new accessory added here must also be added to
-        # ACCESSORY_MAX_LIFE (and any MODEL_ACCESSORY_MAX_LIFE entry that has
-        # it), or it silently gets no sensor.
+        # lists, so a new accessory added here must also be added to the table
+        # of every model that has it (ACCESSORY_MAX_LIFE for models without an
+        # override), or it silently gets no sensor.
         accessories = [
             ("filter_usage", "Filter Remaining", "mdi:air-filter", None),
             ("main_brush_usage", "Rolling Brush Remaining", "mdi:broom", None),
@@ -378,6 +401,12 @@ async def async_setup_entry(
             ),
             ("mop_usage", "Mopping Cloth Remaining", "mdi:water", (API_TYPE_NOVEL,)),
             ("dustbag_usage", "Dust Bag Remaining", "mdi:delete", (API_TYPE_NOVEL,)),
+            (
+                "dirty_waterfilter_usage",
+                "Sewage Tank Filter Remaining",
+                "mdi:filter-outline",
+                (API_TYPE_NOVEL,),
+            ),
         ]
         max_life_table = MODEL_ACCESSORY_MAX_LIFE.get(
             coordinator.device_model, ACCESSORY_MAX_LIFE
@@ -457,10 +486,9 @@ async def async_setup_entry(
                 )
             )
 
-        # Active map ID sensor — only populated by the MQTT/P2P transport.
-        # Tuya Cloud / local-Tuya don't carry MultiMapsManageResponse so the
-        # ID never arrives; skip the entity to avoid permanent `unavailable`.
-        if coordinator.connection_type == "mqtt":
+        # The active map id and the current room come with the map, so skip
+        # them where no map arrives to avoid a permanent `unavailable`.
+        if coordinator.receives_map:
             novel_sensors.append(CurrentRoomSensorEntity(coordinator))
             novel_sensors.append(
                 RoboVacSensor(
@@ -596,11 +624,11 @@ class CurrentRoomSensorEntity(RoboVacSensor):
 
     def _room_value(self) -> str | None:
         room_id, room_name = self.coordinator.current_room()
-        return (room_name or f"Room {room_id}") if room_id else None
+        return (room_name or f"Room {room_id}") if room_id is not None else None
 
     def _room_attributes(self) -> dict[str, Any]:
         room_id, room_name = self.coordinator.current_room()
-        return {"room_id": room_id or None, "room_name": room_name}
+        return {"room_id": room_id, "room_name": room_name}
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
