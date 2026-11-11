@@ -236,13 +236,16 @@ unavailable just because the LAN address has shifted.
 >   being cleaned;
 > - the active map id, so room and zone commands target the right map.
 >
-> Verified end to end on the S1 Pro (T2080A). The channel is documented in
-> `docs/P2P_MAP_CHANNEL.md`. The P2P password comes from your Tuya Cloud session,
-> so each new P2P connection needs a fresh cloud-issued session. The feed needs
-> Tuya protocol 3.3 and a Tuya Cloud session. Without them, and over Tuya Cloud
-> polling, there is no map: the map camera isn't created and `zone_clean` fails
-> with an error. Everything else (vacuum/mop mode, water level, spot and room
-> commands, station, consumables, lifetime stats) works over both transports.
+> Verified end to end on the S1 Pro (T2080A). Other robots on local Tuya 3.3
+> start the feed too and so get the map camera, but only the S1 Pro is verified
+> to send a map over it. The channel is documented in `docs/P2P_MAP_CHANNEL.md`.
+> The P2P password comes from your Tuya Cloud session, so each new P2P connection
+> needs a fresh cloud-issued session. The feed needs Tuya protocol 3.3 and a Tuya
+> Cloud session. Without them, and over Tuya Cloud polling, no map arrives: the
+> map camera isn't created, and `zone_clean` fails with an error unless a map
+> from an earlier session with the feed is still stored. Everything else
+> (vacuum/mop mode, water level, spot and room commands, station, consumables,
+> lifetime stats) works over both transports.
 
 ### Optional: Manual room name overrides
 
@@ -337,8 +340,9 @@ normalized coordinates `[x0, y0, x1, y1]` — fractions (`0`–`1`) of the rende
 image, with `(0, 0)` at the **top-left** and `(1, 1)` at the **bottom-right** of the map
 camera image. They are converted to the robot's world frame against the current map, so the
 map must have been received at least once (run a clean or dock first). The map only arrives
-over Eufy MQTT or the local P2P feed, so over Tuya Cloud polling (or local Tuya without the
-feed) `zone_clean` fails with an error; use `room_clean` there instead.
+over Eufy MQTT or the local P2P feed. Over Tuya Cloud polling (or local Tuya without the feed)
+`zone_clean` fails with an error, unless a map from an earlier session with the feed is still
+stored; use `room_clean` there instead.
 
 ```yaml
 action: vacuum.send_command
