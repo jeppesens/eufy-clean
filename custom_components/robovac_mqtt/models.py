@@ -49,12 +49,28 @@ class VacuumState:
     fan_speed: str = "Standard"
 
     # Error state
-    error_code: int = 0
+    error_code: int = 0          # primary code (a real error[] wins over a warn[])
     error_message: str = ""
     error_codes: list[int] = field(default_factory=list)
     warn_codes: list[int] = field(default_factory=list)
     last_error_code: int = 0
     last_error_message: str = ""
+    # proto last_time. Confirmed by error_code.proto's own field comment:
+    # nanoseconds of CLOCK_MONOTONIC since the robot booted -- NOT a wall clock,
+    # so it resets on reboot and is not comparable across them or between robots.
+    # The error_log carries a real timestamp ("time") for ordering; this is kept
+    # as the device's own reading.
+    last_error_time: int = 0
+    # proto new_code — codes the device flags as FRESHLY reported this update; the
+    # coordinator uses these to append to the persisted error_log.
+    new_error_codes: list[int] = field(default_factory=list)
+    new_warn_codes: list[int] = field(default_factory=list)
+    battery_restored: bool = False                          # proto battery.restored
+    # proto obstacle_reminder[]: [{type, type_name, photo_id, accuracy, map_id, x, y}]
+    obstacle_reminders: list[dict[str, Any]] = field(default_factory=list)
+    # Persisted rolling history of error/warn events (managed + stored by the
+    # coordinator, mirrored here so entities can read it). Newest first.
+    error_log: list[dict[str, Any]] = field(default_factory=list)
     charging: bool = False
 
     # Cleaning Stats

@@ -12,6 +12,7 @@ from homeassistant.const import PERCENTAGE, EntityCategory
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.sensor import (
     CurrentRoomSensorEntity,
+    ErrorMessageSensor,
     RoboVacSensor,
     _active_rooms_available,
     _active_rooms_value,
@@ -323,3 +324,52 @@ def test_current_room_sensor_values_and_unknown(mock_coordinator):
     mock_coordinator.current_room.return_value = (None, None)
     assert sensor.native_value is None
     assert sensor.extra_state_attributes == {"room_id": None, "room_name": None}
+
+
+def test_error_sensor_keeps_bulky_attributes_out_of_the_recorder():
+    """The error sensor's big, per-frame attributes are excluded from recording.
+
+    Asserts the COMBINED set Home Assistant actually consults, not the
+    declaration: Entity.__init_subclass__ folds _unrecorded_attributes into
+    __combined_unrecorded_attributes when the CLASS is built, so an equivalent
+    written as a constructor argument or an instance attribute would be read by
+    nothing while still looking right. Reading back through the mangled name is
+    what makes that difference visible.
+    """
+    combined = ErrorMessageSensor._Entity__combined_unrecorded_attributes
+
+    assert {"history", "last_error_time", "obstacle_reminders"} <= combined
+    # The small, automation-useful fields stay recorded.
+    assert not ({"error_code", "error_codes", "warn_codes"} & combined)
+
+
+@pytest.mark.asyncio
+async def test_setup_entry_uses_the_unrecorded_error_sensor():
+    """async_setup_entry builds the error sensor from ErrorMessageSensor.
+
+    The class carrying the exclusion is worthless if the platform still
+    instantiates plain RoboVacSensor, and nothing else in the suite would
+    notice: both render identical states and attributes.
+    """
+    coordinator = MagicMock()
+    coordinator.device_id = "unrec_dev"
+    coordinator.device_name = "Unrec Vac"
+    coordinator.device_model = "T2261"
+    coordinator.api_type = "novel"
+    coordinator.connection_type = "mqtt"
+    coordinator.data = VacuumState()
+    coordinator.last_update_success = True
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "test_entry"
+    hass.data = {"robovac_mqtt": {"test_entry": {"coordinators": [coordinator]}}}
+
+    added_entities = []
+    await async_setup_entry(hass, config_entry, added_entities.extend)
+
+    error_sensors = [
+        e for e in added_entities if e.unique_id == "unrec_dev_error_message"
+    ]
+    assert len(error_sensors) == 1
+    assert isinstance(error_sensors[0], ErrorMessageSensor)
