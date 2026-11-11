@@ -781,6 +781,17 @@ MODEL_ACCESSORY_MAX_LIFE = {
         "side_brush_usage": 250,
         "dustbag_usage": 1440,
     },
+    # Omni E35 (#186): values from the app's Replace tab; sensor-cleaning
+    # interval from its Maintain tab. The Brush Guard (120 h) is left out until
+    # it's known whether it follows the scrape or the dustbag counter.
+    "T210M": {
+        "filter_usage": 360,
+        "main_brush_usage": 180,
+        "side_brush_usage": 180,
+        "sensor_usage": 120,
+        "mop_usage": 60,
+        "dirty_waterfilter_usage": 180,
+    },
     # S1 Pro: roller mop, filter cleaned every 60 h, sensors every 360 h, no
     # cleaning tray. Values from the Eufy app's accessory table
     # (assets/accessory/T2080A_accessory_json.json, ``count_time`` in hours).
