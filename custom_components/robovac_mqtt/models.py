@@ -53,6 +53,8 @@ class VacuumState:
     error_message: str = ""
     error_codes: list[int] = field(default_factory=list)
     warn_codes: list[int] = field(default_factory=list)
+    last_error_code: int = 0
+    last_error_message: str = ""
     charging: bool = False
 
     # Cleaning Stats
@@ -77,6 +79,7 @@ class VacuumState:
     dock_status: str | None = None  # Text description (debounced in coordinator)
     station_clean_water: int = 0  # Percentage?
     station_dirty_water: str = "Unknown"  # Station dirty-water tank level (WaterLevel name)
+    station_clean_water_level: str = "Unknown"  # Station clean-water tank band (S1 Pro, WaterLevel name)
     station_waste_water: int = 0
     dock_auto_cfg: dict[str, Any] = field(default_factory=dict)
     trigger_source: str = "unknown"
@@ -107,7 +110,7 @@ class VacuumState:
     voice_set_id: int = 1201  # current voice pack set_id (default = English Female)
 
     # scalar-protocol fields (e.g. T2210/G50)
-    boost_iq: bool = False  # BoostIQ auto-carpet-boost (scalar-protocol DPS 118)
+    boost_iq: bool = False  # BoostIQ auto-carpet-boost (scalar DPS 118 / Tuya-transport DPS 159)
     volume: int = 0  # Voice volume 0-100% (novel: DPS 161; scalar: DPS 111 0-10 *10)
     cleaning_pattern: str = (
         "Arranged"  # Path pattern Arranged/Random (scalar-protocol DPS 154)
@@ -119,6 +122,10 @@ class VacuumState:
     # Device settings (from DPS 176 UnisettingResponse)
     wifi_signal: float = -100.0  # AP signal strength in dBm (converted from 0-100%)
     child_lock: bool = False  # Children lock switch
+    height_detection: str | None = None  # S1 Pro height detection sensitivity
+    camera_enabled: bool | None = None  # S1 Pro video switch (read-only)
+    # Last DP 181 video-manager reply as (method, result, monotonic time received).
+    video_response: tuple[int, int, float] | None = None
     dnd_enabled: bool = False  # Do Not Disturb switch
     dnd_start_hour: int = 22  # Do Not Disturb start hour
     dnd_start_minute: int = 0  # Do Not Disturb start minute

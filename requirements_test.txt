@@ -5,3 +5,4 @@ types-requests
 types-setuptools
 protobuf
 voluptuous-serialize
+types-PyYAML
