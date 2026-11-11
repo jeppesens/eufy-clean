@@ -25,6 +25,7 @@ message ConsumableRequest {
 message ConsumableRuntime {
     message Duration {
         uint32 duration = 1;   // 单位：hour
+        uint32 duration_min = 22;  // minutes; Tuya-transport firmware (S1 Pro / T2080) reports this instead
     }
 
     Duration side_brush = 1;    //边刷

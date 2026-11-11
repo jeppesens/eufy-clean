@@ -23,13 +23,20 @@ from custom_components.robovac_mqtt.api.commands import (
     build_set_water_level_command,
     build_zone_clean_command,
 )
-from custom_components.robovac_mqtt.api.parser import _extract_off_peak_charging
+from custom_components.robovac_mqtt.api.parser import (
+    _decode_raw_varints,
+    _extract_off_peak_charging,
+)
 from custom_components.robovac_mqtt.const import (
     DPS_MAP,
     EUFY_CLEAN_CONTROL,
     SCALAR_DPS,
 )
-from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
+from custom_components.robovac_mqtt.proto.cloud.control_pb2 import (
+    ModeCtrlRequest,
+    RemoteCtrl,
+    SelectRoomsClean,
+)
 from custom_components.robovac_mqtt.proto.cloud.map_edit_pb2 import MapEditRequest
 from custom_components.robovac_mqtt.proto.cloud.multi_maps_pb2 import (
     MultiMapsManageRequest,
@@ -129,6 +136,38 @@ def test_set_child_lock_command():
     assert DPS_MAP["UNSETTING"] in result
     decoded = decode(UnisettingRequest, result[DPS_MAP["UNSETTING"]])
     assert decoded.children_lock.value is True
+
+
+@pytest.mark.parametrize("room_ids", [[8], [6, 2], [0], [2, 0, 6]])
+@pytest.mark.parametrize("mode", ["GENERAL", "CUSTOMIZE"])
+@pytest.mark.parametrize("tuya_transport", [False, True])
+def test_s1_pro_room_clean_uses_zero_based_slots(room_ids, mode, tuya_transport):
+    """T2080A uses order as a slot; leaving slot zero empty selects room zero."""
+    command = build_command(
+        "room_clean", model="T2080A", tuya_transport=tuya_transport,
+        room_ids=room_ids, map_id=7, mode=mode,
+    )
+    request = decode(ModeCtrlRequest, command[DPS_MAP["PLAY_PAUSE"]])
+    assert request.method == EUFY_CLEAN_CONTROL.START_SELECT_ROOMS_CLEAN
+    rooms_clean = request.select_rooms_clean
+    assert rooms_clean.map_id == 7
+    assert rooms_clean.clean_times == 1
+    assert rooms_clean.mode == (SelectRoomsClean.CUSTOMIZE if mode == "CUSTOMIZE" else SelectRoomsClean.GENERAL)
+    assert [(room.id, room.order) for room in rooms_clean.rooms] == [
+        (room_id, slot) for slot, room_id in enumerate(room_ids)
+    ]
+
+
+@pytest.mark.parametrize("model", ["", "T2351", "T2080"])
+@pytest.mark.parametrize("tuya_transport", [False, True])
+def test_other_models_keep_one_based_room_order(model, tuya_transport):
+    """The verified T2080A fix must not change other models or unknown callers."""
+    command = build_command(
+        "room_clean", model=model, tuya_transport=tuya_transport,
+        room_ids=[6, 0, 2], map_id=4,
+    )
+    rooms = decode(ModeCtrlRequest, command[DPS_MAP["PLAY_PAUSE"]]).select_rooms_clean.rooms
+    assert [(room.id, room.order) for room in rooms] == [(6, 1), (0, 2), (2, 3)]
 
 
 # ── zone (select-zones) clean ────────────────────────────────────────
@@ -403,3 +442,53 @@ def test_set_room_custom_keeps_room_zero():
     assert decoded.method == MapEditRequest.SET_ROOMS_CUSTOM
     assert decoded.map_id == 1
     assert [r.id for r in decoded.rooms_custom.rooms_parm.rooms] == [0, 2]
+
+
+def test_tuya_transport_suction_is_the_level_name():
+    """Over Tuya (S1 Pro) DPS 158 is an enum string, not the MQTT index."""
+    assert build_command("set_fan_speed", tuya_transport=True, fan_speed="quiet") == {"158": "Quiet"}
+    assert build_command("set_fan_speed", tuya_transport=True, fan_speed="Max") == {"158": "Max"}
+    assert build_command("set_fan_speed", tuya_transport=True, fan_speed="Boost_IQ") == {"159": True}
+    assert build_command("set_fan_speed", tuya_transport=True, fan_speed="nope") == {}
+    # MQTT robots keep the index.
+    assert build_command("set_fan_speed", fan_speed="Quiet") == {"158": 0}
+
+
+def test_tuya_transport_boost_iq_is_dps_159():
+    assert build_command("set_boost_iq", tuya_transport=True, active=False) == {"159": False}
+
+
+def test_remote_move_commands():
+    """Manual drive writes a RemoteCtrl on DPS 155; unknown directions build nothing."""
+    for name, value in (("brake", 0), ("forward", 1), ("back", 2), ("left", 3), ("right", 4)):
+        command = build_command("remote_move", direction=name)
+        assert list(command) == ["155"]
+        assert decode(RemoteCtrl, command["155"]).direction == value
+    assert build_command("remote_move", direction="sideways") == {}
+
+
+def test_remote_mode_enter_and_exit():
+    assert decode(ModeCtrlRequest, build_command("start_remote")["152"]).method == 5
+    assert decode(ModeCtrlRequest, build_command("stop_remote")["152"]).method == 16
+
+
+def test_set_height_detection_matches_the_app_payloads():
+    """Byte-for-byte what was written to a real S1 Pro (field 107, length-prefixed)."""
+    assert build_command("set_height_detection", mode="Safe") == {"176": "A9gGAQ=="}
+    assert build_command("set_height_detection", mode="medium") == {"176": "A9gGAg=="}
+    assert build_command("set_height_detection", mode="FREE") == {"176": "A9gGAw=="}
+    assert build_command("set_height_detection", mode="nope") == {}
+
+
+@pytest.mark.parametrize(("direction", "value"), [("brake", 0), ("forward", 1), ("back", 2), ("left", 3), ("right", 4)])
+def test_s1_pro_remote_direction_uses_the_v2_normal_envelope(direction, value):
+    """Decode method=NORMAL and its nested value, including a present BRAKE parameter."""
+    command = build_command("remote_move", model="T2080A", direction=direction)
+    raw = base64.b64decode(command["155"])
+    length, pos = decode_varint(raw, 0)
+    assert length == len(raw) - pos
+    request = _decode_raw_varints(raw[pos:])
+    assert request.get(1, 0) == 0  # NORMAL, not ROCKER
+    assert set(request) == {2}  # normal remains present even with default value 0
+    assert _decode_raw_varints(request[2]).get(1, 0) == value
+    assert build_command("remote_move", model="T2351", direction=direction) == build_command("remote_move", direction=direction)
