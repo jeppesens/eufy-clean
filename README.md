@@ -111,7 +111,7 @@ The vacuum entity also exposes `error_codes` and `warn_codes`, the lists from th
 | Total cleaning area / time / count | Lifetime stats |
 | Dock firmware version | Station FW |
 | Error code & description | Real-time |
-| Accessory life remaining | Filter, brushes, mop, tray; dust bag and sewage tank filter on models whose lifespan table lists them (hours) |
+| Accessory life remaining | Filter and brushes; sensors, mop, cleaning tray, dust bag and sewage tank filter on models whose lifespan table lists them (hours) |
 
 **Extended device info:** Serial number, MAC address, firmware version in the HA device panel.
 
@@ -133,7 +133,7 @@ until the robot moves and re-localizes.
 Dedicated reset buttons for each consumable (filter, side brush, rolling brush, sensors, mop, cleaning tray).
 
 > [!NOTE]
-> The Eufy app shows a "Replace" tab (replacement life) and a "Maintain" tab (cleaning intervals). **Sensor Remaining** and **Cleaning Tray Remaining** follow the Maintain tab, the other accessory sensors follow Replace; all are computed from the robot's own usage counters. The app's other Maintain values (e.g. cleaning the brushes or filter) aren't exposed.
+> The Eufy app shows a "Replace" tab (replacement life) and a "Maintain" tab (cleaning intervals). With the default lifespans and the Omni E35's, **Sensor Remaining** and **Cleaning Tray Remaining** follow the Maintain tab and the other accessory sensors follow Replace, so the app's other Maintain values (e.g. cleaning the brushes or filter) aren't exposed. The S1 Pro's lifespans come from its app accessory table and are mostly cleaning intervals; its Filter Remaining, for example, counts down a 60 h filter-cleaning interval. All are computed from the robot's own usage counters.
 
 ### Segment Change Detection
 When rooms are added, removed, or renamed, the integration raises a **Repair issue** under Settings → System → Repairs. Useful if you use [home-assistant-matter-hub](https://github.com/RiDDiX/home-assistant-matter-hub).
