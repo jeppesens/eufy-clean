@@ -487,6 +487,30 @@ def test_parse_dps_novel(mock_hass, mock_login):
     assert new_state.battery_level == 75
 
 
+@pytest.mark.parametrize(
+    ("connection_type", "has_p2p", "expected"),
+    [
+        ("mqtt", False, True),
+        ("local", True, True),
+        ("local", False, False),
+        ("cloud", False, False),
+    ],
+)
+def test_receives_map(mock_hass, mock_login, connection_type, has_p2p, expected):
+    """A map arrives over Eufy MQTT or the local P2P feed, never over Tuya Cloud polling."""
+    device_info = {
+        "deviceId": "dev1",
+        "deviceModel": "T2080A",
+        "deviceName": "Vac",
+        "apiType": "novel",
+    }
+    coordinator = EufyCleanCoordinator(mock_hass, mock_login, device_info)
+    coordinator.connection_type = connection_type
+    coordinator.p2p = MagicMock() if has_p2p else None
+
+    assert coordinator.receives_map is expected
+
+
 def test_build_device_command_legacy(mock_hass, mock_login):
     """build_device_command should use legacy builder for legacy api_type."""
     device_info = {

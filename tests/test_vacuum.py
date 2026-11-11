@@ -154,17 +154,20 @@ async def test_zone_clean_no_rects_noop(mock_coordinator, mock_config_entry):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("connection_type", "message"),
+    ("receives_map", "connection_type", "message"),
     [
-        ("mqtt", "no map available yet"),
-        ("cloud", r"Tuya \(cloud\) connection; use room_clean"),
+        (True, "mqtt", "no map available yet"),
+        (True, "local", "no map available yet"),
+        (False, "cloud", r"Tuya \(cloud\) connection; use room_clean"),
+        (False, "local", r"Tuya \(local\) connection; use room_clean"),
     ],
 )
 async def test_zone_clean_no_map_raises(
-    mock_coordinator, mock_config_entry, connection_type, message
+    mock_coordinator, mock_config_entry, receives_map, connection_type, message
 ):
     """zone_clean without a map (helper returns []) raises and dispatches nothing."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.receives_map = receives_map
     mock_coordinator.connection_type = connection_type
     mock_coordinator.normalized_rects_to_quads_cm = MagicMock(return_value=[])
 

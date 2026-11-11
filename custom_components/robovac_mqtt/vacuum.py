@@ -458,8 +458,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         quads_cm = self.coordinator.normalized_rects_to_quads_cm(rects)
         if not quads_cm:
-            connection_type = self.coordinator.connection_type
-            if connection_type != "mqtt":
+            if not self.coordinator.receives_map:
+                connection_type = self.coordinator.connection_type
                 raise HomeAssistantError(
                     f"zone_clean needs the map, which {self.coordinator.device_name} "
                     f"does not receive over its Tuya ({connection_type}) connection; "

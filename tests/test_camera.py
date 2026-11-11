@@ -1,4 +1,4 @@
-"""Unit tests for the map camera platform."""
+"""Unit tests for the camera platform setup."""
 
 from unittest.mock import MagicMock, patch
 
@@ -11,25 +11,25 @@ from custom_components.robovac_mqtt.models import VacuumState
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("api_type", "connection_type", "expected_unique_ids"),
+    ("api_type", "receives_map", "expected_unique_ids"),
     [
-        ("novel", "mqtt", ["dev_map"]),
-        ("novel", "cloud", []),
-        ("novel", "local", []),
-        ("legacy", "cloud", []),
-        ("scalar", "mqtt", []),
+        ("novel", True, ["dev_map"]),
+        ("novel", False, []),
+        ("legacy", False, []),
+        ("scalar", True, []),
     ],
 )
-async def test_map_camera_only_created_for_mqtt(
-    api_type, connection_type, expected_unique_ids
+async def test_map_camera_only_created_where_a_map_arrives(
+    api_type, receives_map, expected_unique_ids
 ):
-    """The map only arrives over MQTT, so Tuya transports get no map camera
-    (and the one an older build registered is pruned). Scalar devices get none
-    on any transport."""
+    """Without a map source (Tuya Cloud polling, or local Tuya without the P2P
+    feed) there is no map camera, and the one an older build registered is
+    pruned. The live camera is added later, once P2P is up, so it is never
+    pruned. Scalar devices get no map camera on any transport."""
     coordinator = MagicMock(spec=EufyCleanCoordinator)
     coordinator.device_id = "dev"
     coordinator.api_type = api_type
-    coordinator.connection_type = connection_type
+    coordinator.receives_map = receives_map
     coordinator.p2p = None
     coordinator.data = VacuumState()
 
@@ -47,6 +47,6 @@ async def test_map_camera_only_created_for_mqtt(
         hass,
         "entry",
         [coordinator],
-        added_unique_ids=set(expected_unique_ids),
+        added_unique_ids={*expected_unique_ids, "dev_camera"},
         platform="camera",
     )

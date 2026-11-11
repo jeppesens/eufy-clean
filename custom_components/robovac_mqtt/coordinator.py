@@ -266,6 +266,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
 
     @property
+    def receives_map(self) -> bool:
+        """True when a map can arrive: over Eufy MQTT or the local P2P feed.
+
+        Tuya Cloud polling never carries one, and on local Tuya the feed only
+        runs when _start_p2p_feed could start it (Tuya 3.3 and a cloud session).
+        """
+        return self.connection_type == "mqtt" or self.p2p is not None
+
+    @property
     def device_info(self) -> DeviceInfo:
         """Return device info."""
         info = DeviceInfo(
