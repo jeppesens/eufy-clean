@@ -31,7 +31,9 @@
     },
     "abort": {
       "already_configured": "Already configured",
-      "reauth_successful": "Re-authentication successful"
+      "already_in_progress": "Configuration already in progress",
+      "reauth_successful": "Re-authentication successful",
+      "reconfigure_successful": "Re-configuration was successful"
     }
   },
   "options": {

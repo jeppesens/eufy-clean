@@ -3,7 +3,11 @@ from unittest.mock import MagicMock
 import pytest
 from homeassistant.core import HomeAssistant
 
-from custom_components.robovac_mqtt.const import ACCESSORY_MAX_LIFE, DOMAIN
+from custom_components.robovac_mqtt.const import (
+    ACCESSORY_MAX_LIFE,
+    DOMAIN,
+    MODEL_ACCESSORY_MAX_LIFE,
+)
 from custom_components.robovac_mqtt.models import AccessoryState, VacuumState
 from custom_components.robovac_mqtt.sensor import async_setup_entry
 
@@ -178,3 +182,11 @@ async def test_accessory_sensors_default_table_has_no_per_model_parts(
         "Cleaning Tray Remaining",
         "Mopping Cloth Remaining",
     }
+
+
+def test_s1_pro_lifespans_come_from_the_model_table():
+    """S1 Pro lifespans come from the Eufy app's accessory table; no tray."""
+    s1 = MODEL_ACCESSORY_MAX_LIFE["T2080A"]
+    assert s1["filter_usage"] == 60 and s1["sensor_usage"] == 360
+    assert "scrape_usage" not in s1  # no cleaning tray on the S1 Pro
+    assert "T2080" not in MODEL_ACCESSORY_MAX_LIFE  # plain S1 is a different robot
