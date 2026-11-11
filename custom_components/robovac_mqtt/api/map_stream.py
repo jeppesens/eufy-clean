@@ -1,94 +1,26 @@
-"""Parse biz/ MQTT protocol-41 map stream messages and render PNG."""
+"""Parse biz/ MQTT protocol-41 map stream messages into ``MapData``.
+
+Rendering lives in :mod:`.map_render`.
+"""
 from __future__ import annotations
 
-import io
 import json
 import logging
 from dataclasses import dataclass, field
 from typing import Any
 
-from PIL import Image, ImageDraw, ImageFont
-
 from ..proto.cloud import stream_pb2
 from ..utils import decode_varint
+from .map_render import MAX_MAP_PIXELS, MAX_ROOM_ID
 
 _LOGGER = logging.getLogger(__name__)
 
-# 2bpp pixel value → RGB (fallback when RoomOutline not available)
-_PIXEL_COLORS: dict[int, tuple[int, int, int]] = {
-    0: (30, 30, 30),    # UNKNOWN / unexplored
-    1: (20, 20, 20),    # OBSTACLE / wall
-    2: (200, 200, 200), # FREE floor
-    3: (200, 200, 200), # CLEANED / carpet — same as free floor so it blends in
-}
-
-# Room ID → RGB.  Index 0 = wall/outside (unused in combined render); 1-N cycle.
-_ROOM_PALETTE: list[tuple[int, int, int]] = [
-    (45, 45, 45),
-    (100, 150, 200),
-    (150, 200, 130),
-    (200, 160, 130),
-    (180, 140, 200),
-    (200, 190, 110),
-    (140, 190, 200),
-    (200, 130, 150),
-    (160, 200, 180),
-]
 
 # Room scene type → fallback label when room.name is empty
 _ROOM_SCENE_NAMES: dict[int, str] = {
     1: "STUDY", 2: "BEDROOM", 3: "RESTROOM", 4: "KITCHEN",
     5: "LIVING RM", 6: "DINING RM", 7: "CORRIDOR",
 }
-
-# Robot status badge: (circle_color, dark_symbol_pixel_offsets_from_badge_centre)
-_STATUS_BADGE: dict[str, tuple[tuple[int, int, int], list[tuple[int, int]]]] = {
-    "charging": (
-        (255, 240, 0),  # bright yellow
-        # Compact Z-bolt sized for r=5 badge
-        [
-            (0,-3),(1,-3),
-            (-1,-2),(0,-2),
-            (-2,-1),(-1,-1),(0,-1),(1,-1),
-            (0,0),(1,0),
-            (-1,1),(0,1),
-            (-1,2),(-2,2),
-        ],
-    ),
-    "emptying": (
-        (160, 160, 160),  # grey
-        [(-1, -1), (1, -1), (0, 0), (-1, 1), (1, 1)],
-    ),
-    "drying": (
-        (135, 206, 235),  # sky blue
-        [(-1, -1), (0, -1), (-1, 0), (0, 0), (-1, 1), (0, 1)],
-    ),
-    "washing": (
-        (65, 105, 225),  # royal blue
-        [(0, -1), (-1, 0), (1, 0), (-1, 1), (1, 1), (0, 2)],
-    ),
-    "station": (
-        (180, 100, 210),  # purple
-        [(0, -1), (-1, 0), (0, 0), (1, 0), (0, 1)],
-    ),
-}
-
-# Dock icon — solid house pixel offsets (dx, dy) relative to dock centre.
-_HOUSE_FILL: frozenset[tuple[int, int]] = frozenset([
-    (0,-4),
-    (-1,-3),(0,-3),(1,-3),
-    (-2,-2),(-1,-2),(0,-2),(1,-2),(2,-2),
-    (-3,-1),(-2,-1),(-1,-1),(0,-1),(1,-1),(2,-1),(3,-1),
-    (-3,0),(-2,0),(-1,0),(0,0),(1,0),(2,0),(3,0),
-    (-3,1),(-2,1),(-1,1),(0,1),(1,1),(2,1),(3,1),
-    (-3,2),(-2,2),(2,2),(3,2),
-    (-3,3),(-2,3),(2,3),(3,3),
-])
-_HOUSE_DOOR: tuple[tuple[int, int], ...] = (
-    (-1,2),(0,2),(1,2),(-1,3),(0,3),(1,3),
-)
-
-_MAX_PNG_PX = 512
 
 
 @dataclass
@@ -110,19 +42,20 @@ class MapData:
     forbidden_zones: list[list[tuple[int, int]]] = field(default_factory=list)
     ban_mop_zones: list[list[tuple[int, int]]] = field(default_factory=list)
 
-    def room_id_at_normalized(self, nx: float, ny: float) -> int:
+    def room_id_at_normalized(self, nx: float, ny: float) -> int | None:
         """Return the room id under a normalized point on the *rendered* map image.
 
         ``(nx, ny)`` are fractions (0-1) of the rendered PNG, top-left origin (the
         HA camera-image convention — the same space the zone card draws in). This
-        is the exact inverse of ``render_map_png``'s room-mask lookup: map the point
+        is the exact inverse of the renderer's room-mask lookup: map the point
         back to a source grid pixel (undoing the baked-in Y-flip, exactly as
         ``normalized_rects_to_quads_cm`` does), then index ``room_pixels`` with the
-        same outline origin offset the renderer uses. Returns 0 when there is no
-        room mask, the point is outside any room, or no map has been decoded yet.
+        same outline origin offset the renderer uses. Returns ``None`` when there
+        is no room mask or the point is outside any room. Room ids are 0-31 (0 is
+        a real room on some robots); 60-63 mark background, gaps and obstacles.
         """
         if not self.room_pixels or not self.room_outline_width or not self.room_outline_height:
-            return 0
+            return None
         nx = min(max(float(nx), 0.0), 1.0)
         ny = min(max(float(ny), 0.0), 1.0)
         res = self.resolution or 5
@@ -131,15 +64,19 @@ class MapData:
         # so the displayed top edge is the source bottom row.
         px = min(max(round(nx * w), 0), max(w - 1, 0))
         py = min(max(round((h - 1) - ny * h), 0), max(h - 1, 0))
-        # the room mask has its own origin; this offset matches render_map_png's _ro_dx/_ro_dy.
+        # the room mask has its own origin; this offset matches render_map's _ro_dx/_ro_dy.
         ro_dx = round((self.origin_x - self.room_outline_origin_x) / res)
         ro_dy = round((self.origin_y - self.room_outline_origin_y) / res)
         rx, ry = px - ro_dx, py - ro_dy
         if 0 <= rx < self.room_outline_width and 0 <= ry < self.room_outline_height:
             idx = ry * self.room_outline_width + rx
             if 0 <= idx < len(self.room_pixels):
-                return self.room_pixels[idx] >> 2  # low 2 bits are sub-type, not id
-        return 0
+                rid = self.room_pixels[idx] >> 2  # low 2 bits are the pixel type
+                # With no room list byte 0 is empty space (X-series ids start at 1); with
+                # one, a room counts if listed (the S1 Pro numbers from 0).
+                if rid <= MAX_ROOM_ID and (rid in self.room_names if self.room_names else rid > 0):
+                    return rid
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -153,32 +90,46 @@ def _hex_to_proto_bytes(hex_data: str) -> bytes:
 
 
 def _lz4_block_decompress(data: bytes, uncompressed_size: int) -> bytes:
+    """Decode one LZ4 block, enforcing its declared size and valid backreferences."""
+    if not 0 <= uncompressed_size <= MAX_MAP_PIXELS:
+        raise ValueError("decompressed map exceeds the pixel limit")
     output = bytearray()
     pos = 0
-    n = len(data)
-    while pos < n:
-        token = data[pos]; pos += 1
-        lit_len = (token >> 4) & 0xF
-        if lit_len == 15:
-            while pos < n:
-                extra = data[pos]; pos += 1
-                lit_len += extra
+
+    def length(value: int) -> int:
+        nonlocal pos
+        if value == 15:
+            while True:
+                if pos >= len(data):
+                    raise ValueError("truncated LZ4 length")
+                extra = data[pos]
+                pos += 1
+                value += extra
                 if extra != 255:
                     break
-        output.extend(data[pos: pos + lit_len]); pos += lit_len
-        if pos >= n:
+        return value
+
+    while pos < len(data):
+        token = data[pos]
+        pos += 1
+        literal = length(token >> 4)
+        if pos + literal > len(data) or len(output) + literal > uncompressed_size:
+            raise ValueError("invalid LZ4 literal length")
+        output.extend(data[pos : pos + literal])
+        pos += literal
+        if pos == len(data):
             break
-        offset = data[pos] | (data[pos + 1] << 8); pos += 2
-        match_len = (token & 0xF) + 4
-        if (token & 0xF) == 15:
-            while pos < n:
-                extra = data[pos]; pos += 1
-                match_len += extra
-                if extra != 255:
-                    break
-        match_start = len(output) - offset
-        for i in range(match_len):
-            output.append(output[match_start + i])
+        if pos + 2 > len(data):
+            raise ValueError("truncated LZ4 offset")
+        offset = int.from_bytes(data[pos : pos + 2], "little")
+        pos += 2
+        match = length(token & 0xF) + 4
+        if not 0 < offset <= len(output) or len(output) + match > uncompressed_size:
+            raise ValueError("invalid LZ4 match")
+        for _ in range(match):
+            output.append(output[-offset])
+    if len(output) != uncompressed_size:
+        raise ValueError("LZ4 output does not match its declared size")
     return bytes(output)
 
 
@@ -188,239 +139,6 @@ def _lz4_block_decompress(data: bytes, uncompressed_size: int) -> bytes:
 
 def _quad_points(q: Any) -> list[tuple[int, int]]:
     return [(q.p0.x, q.p0.y), (q.p1.x, q.p1.y), (q.p2.x, q.p2.y), (q.p3.x, q.p3.y)]
-
-
-# ---------------------------------------------------------------------------
-# Main render
-# ---------------------------------------------------------------------------
-
-def render_map_png(
-    map_data: MapData,
-    robot_pixel: tuple[int, int] | None = None,
-    robot_trail: list[tuple[int, int]] | None = None,
-    dock_pixel: tuple[int, int] | None = None,
-    robot_status: str | None = None,
-    max_px: int = _MAX_PNG_PX,
-    robot_style: str = "googly",
-) -> bytes:
-    """Render a PNG from MapData using Pillow.
-
-    Pipeline:
-    1. Build flat color list from map pixels (room palette + lidar fallback).
-    2. putdata() into PIL Image, Y-flip, LANCZOS scale.
-    3. Draw restricted zones, room labels, dock icon, trail, robot marker.
-    4. Encode to PNG bytes via img.save().
-    """
-    width, height = map_data.width, map_data.height
-    if width * height > 4000 * 4000:
-        raise ValueError(f"Map dimensions {width}x{height} exceed safety limit (max 4000x4000)")
-    res = map_data.resolution or 5
-    room_px = map_data.room_pixels
-
-    # ------------------------------------------------------------------
-    # Step 1 — build pixel color list + accumulate room centroids
-    # ------------------------------------------------------------------
-    _ro_w = _ro_h = _ro_dx = _ro_dy = 0
-    raw = map_data.raw_pixels
-    colors: list[tuple[int, int, int]] = []
-    # rid → [sum_src_x, sum_src_y, count]  (source pixel space)
-    src_centroids: dict[int, list[int]] = {}
-    _has_room_names = bool(room_px is not None and map_data.room_outline_width and map_data.room_names)
-
-    if room_px is not None and map_data.room_outline_width and map_data.room_outline_height:
-        _ro_w = map_data.room_outline_width
-        _ro_h = map_data.room_outline_height
-        _ro_dx = round((map_data.origin_x - map_data.room_outline_origin_x) / res)
-        _ro_dy = round((map_data.origin_y - map_data.room_outline_origin_y) / res)
-        palette_len = len(_ROOM_PALETTE)
-        for py in range(height):
-            for px_x in range(width):
-                i = py * width + px_x
-                byte_pos = i >> 2
-                bit_pos = (i & 3) * 2
-                pv = (raw[byte_pos] >> bit_pos) & 3 if byte_pos < len(raw) else 0
-                rx, ry = px_x - _ro_dx, py - _ro_dy
-                if 0 <= rx < _ro_w and 0 <= ry < _ro_h:
-                    rpx = room_px[ry * _ro_w + rx]
-                    rid = rpx >> 2
-                    sub_type = rpx & 3
-                else:
-                    rid = sub_type = 0
-                if rid > 0:
-                    if sub_type == 0 or pv in (2, 3):
-                        color = _ROOM_PALETTE[1 + (rid - 1) % (palette_len - 1)]
-                    else:
-                        color = _PIXEL_COLORS.get(pv, (30, 30, 30))
-                else:
-                    color = _PIXEL_COLORS.get(pv, (30, 30, 30))
-                colors.append(color)
-                if _has_room_names and rid > 0 and rid in map_data.room_names:
-                    if rid not in src_centroids:
-                        src_centroids[rid] = [0, 0, 0]
-                    src_centroids[rid][0] += px_x
-                    src_centroids[rid][1] += py
-                    src_centroids[rid][2] += 1
-    else:
-        for i in range(width * height):
-            byte_pos = i >> 2
-            bit_pos = (i & 3) * 2
-            pv = (raw[byte_pos] >> bit_pos) & 3 if byte_pos < len(raw) else 0
-            colors.append(_PIXEL_COLORS.get(pv, (30, 30, 30)))
-
-    # ------------------------------------------------------------------
-    # Step 2 — create PIL image, Y-flip, scale
-    # ------------------------------------------------------------------
-    img: Image.Image = Image.new("RGB", (width, height))
-    img.putdata(colors)
-    img = img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-
-    scale = min(max_px / max(width, height), 1.0)
-    out_w = max(1, round(width * scale))
-    out_h = max(1, round(height * scale))
-    if scale < 1.0:
-        img = img.resize((out_w, out_h), Image.Resampling.LANCZOS)
-
-    draw = ImageDraw.Draw(img)
-
-    # Map pixel → output pixel (Y-flip baked in)
-    def _to_out(mx: int, my: int) -> tuple[int, int]:
-        return round(mx * scale), round((height - 1 - my) * scale)
-
-    # World cm → output pixel
-    def _world_to_out(wx: int, wy: int) -> tuple[int, int]:
-        return _to_out(
-            round((wx - map_data.origin_x) / res),
-            round((wy - map_data.origin_y) / res),
-        )
-
-    # Filled circle helper
-    def _circle(cx: float, cy: float, r: float, color: tuple[int, int, int]) -> None:
-        if r < 1.0:
-            draw.point((round(cx), round(cy)), fill=color)
-        else:
-            draw.ellipse([(cx - r, cy - r), (cx + r, cy + r)], fill=color)
-
-    # ------------------------------------------------------------------
-    # Step 3 — restricted zones
-    # ------------------------------------------------------------------
-    _BAN_MOP_COLOR = (255, 165, 0)
-    _ZONE_COLOR = (220, 50, 50)
-
-    for zone in map_data.ban_mop_zones:
-        pts = [_world_to_out(p[0], p[1]) for p in zone]
-        if len(pts) >= 2:
-            draw.polygon(pts, outline=_BAN_MOP_COLOR)
-
-    for zone in map_data.forbidden_zones:
-        pts = [_world_to_out(p[0], p[1]) for p in zone]
-        if len(pts) >= 2:
-            draw.polygon(pts, outline=_ZONE_COLOR)
-
-    for wall in map_data.virtual_walls:
-        draw.line(
-            [_world_to_out(wall[0][0], wall[0][1]), _world_to_out(wall[1][0], wall[1][1])],
-            fill=_ZONE_COLOR,
-        )
-
-    # ------------------------------------------------------------------
-    # Step 4 — dock icon (pixel-art house)
-    # (labels drawn after trail in step 6 so they render on top)
-    # ------------------------------------------------------------------
-    if dock_pixel is not None:
-        dx, dy = _to_out(dock_pixel[0], dock_pixel[1])
-        _house_border = {
-            (nx, ny)
-            for ox, oy in _HOUSE_FILL
-            for nx, ny in ((ox + ddx, oy + ddy) for ddx in (-1, 0, 1) for ddy in (-1, 0, 1))
-            if (nx, ny) not in _HOUSE_FILL
-        }
-        for ox, oy in _house_border:
-            bpx, bpy = dx + ox, dy + oy
-            if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(100, 75, 0))
-        for ox, oy in _HOUSE_FILL:
-            bpx, bpy = dx + ox, dy + oy
-            if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(255, 215, 0))
-        for ox, oy in _HOUSE_DOOR:
-            bpx, bpy = dx + ox, dy + oy
-            if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                draw.point((bpx, bpy), fill=(100, 75, 0))
-
-    # ------------------------------------------------------------------
-    # Step 5 — cleaning trail
-    # ------------------------------------------------------------------
-    _TRAIL = (255, 140, 0)
-    _MAX_TRAIL_JUMP_SQ = 400 * 400
-    if robot_trail:
-        raw_pts = list(robot_trail)
-        out_pts = [_to_out(tx, ty) for tx, ty in raw_pts]
-        for i in range(len(raw_pts) - 1):
-            ddx = raw_pts[i + 1][0] - raw_pts[i][0]
-            ddy = raw_pts[i + 1][1] - raw_pts[i][1]
-            if ddx * ddx + ddy * ddy <= _MAX_TRAIL_JUMP_SQ:
-                draw.line([out_pts[i], out_pts[i + 1]], fill=_TRAIL)
-        ox, oy = out_pts[-1]
-        if 0 <= ox < out_w and 0 <= oy < out_h:
-            draw.point((ox, oy), fill=_TRAIL)
-
-    # ------------------------------------------------------------------
-    # Step 6 — room name labels (after trail so labels render on top)
-    # ------------------------------------------------------------------
-    if src_centroids:
-        try:
-            font: ImageFont.ImageFont | ImageFont.FreeTypeFont = ImageFont.load_default(size=9)
-        except TypeError:
-            font = ImageFont.load_default()
-        _LABEL_COLOR = (30, 30, 30)
-        _LABEL_BG = (255, 255, 255)
-        for rid, vals in src_centroids.items():
-            if vals[2] == 0:
-                continue
-            label = map_data.room_names[rid].upper()
-            if not label:
-                continue
-            ox, oy = _to_out(vals[0] // vals[2], vals[1] // vals[2])
-            bbox = draw.textbbox((0, 0), label, font=font)
-            tw = bbox[2] - bbox[0]
-            th = bbox[3] - bbox[1]
-            draw.rectangle(
-                [(ox - tw // 2 - 2, oy - th // 2 - 1), (ox + tw // 2 + 2, oy + th // 2 + 1)],
-                fill=_LABEL_BG,
-            )
-            draw.text((ox - tw // 2 - bbox[0], oy - th // 2 - bbox[1]), label, fill=_LABEL_COLOR, font=font)
-
-    # ------------------------------------------------------------------
-    # Step 7 — robot marker + status badge
-    # ------------------------------------------------------------------
-    if robot_pixel is not None:
-        orx, ory = _to_out(robot_pixel[0], robot_pixel[1])
-        if robot_style == "dot":
-            _circle(orx, ory, 5.0, (20, 20, 20))
-            _circle(orx, ory, 4.0, (55, 55, 55))
-        else:  # "googly" (default)
-            _circle(orx, ory, 5.0, (160, 70, 0))
-            _circle(orx, ory, 4.0, (255, 140, 0))
-            for ex, ey in ((-1, -1), (2, -1)):
-                _circle(orx + ex, ory + ey, 1.5, (255, 255, 255))
-                _circle(orx + ex, ory + ey, 0.6, (20, 20, 20))
-
-        if robot_status and robot_status in _STATUS_BADGE:
-            badge_color, icon_offsets = _STATUS_BADGE[robot_status]
-            bx, by = orx + 6, ory - 6
-            _circle(bx, by, 6.0, (30, 30, 30))
-            _circle(bx, by, 5.0, badge_color)
-            for ox2, oy2 in icon_offsets:
-                bpx, bpy = bx + ox2, by + oy2
-                if 0 <= bpx < out_w and 0 <= bpy < out_h:
-                    draw.point((bpx, bpy), fill=(20, 20, 20))
-
-    # ------------------------------------------------------------------
-    # Step 8 — encode PNG
-    # ------------------------------------------------------------------
-    buf = io.BytesIO()
-    img.save(buf, format="PNG", optimize=False, compress_level=3)
-    return buf.getvalue()
 
 
 # ---------------------------------------------------------------------------

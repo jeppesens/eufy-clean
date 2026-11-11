@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import math
 import time
 from dataclasses import replace
 from datetime import timedelta
@@ -34,14 +35,16 @@ from .api.commands import build_command
 from .api.legacy_commands import build_legacy_command
 from .api.legacy_parser import update_state_legacy
 from .api.local_tuya import LocalTuyaClient, LocalTuyaError
+from .api.map_render import MapOverlay, render_map
 from .api.map_stream import (
     MapData,
     parse_biz_protocol41,
-    render_map_png,
     try_decode_as_dynamic_data,
     try_extract_map_data,
     try_extract_map_description,
 )
+from .api.p2p.mapdata import CHANGED_MAP, CHANGED_POSE, CHANGED_ROOMS, CHANGED_ZONES
+from .api.p2p.mapimage import build_map_data, build_overlay, world_to_grid
 from .api.parser import update_state
 from .const import (
     CONF_MAP_MAX_PX,
@@ -53,8 +56,13 @@ from .const import (
     DEFAULT_NOTIFY_MOBILE_SERVICE,
     DEFAULT_ROBOT_STYLE,
     DOMAIN,
+    WORK_STATE_REMOTE_CTRL,
+    is_s1_pro,
 )
+from .errors import screen_error_code
 from .models import VacuumState
+from .p2p_map import P2PMapFeed
+from .video_stream import RobotVideo
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -157,7 +165,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._map_data_chan_id: int | None = None
         self._map_data: MapData | None = None
         self._robot_pixel: tuple[int, int] | None = None
-        self._current_room: tuple[int, str | None] = (0, None)
+        self._current_room: tuple[int | None, str | None] = (None, None)
         self._robot_trail: list[tuple[int, int]] = []
         self._dock_pixel: tuple[int, int] | None = None
         self._dock_arrival_time: float | None = None
@@ -166,6 +174,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._render_task: asyncio.Task | None = None
         self._last_notified_error_code: int = 0
         self._last_map_save: float = 0.0
+        # Live map/rooms/path over the local P2P channel (local Tuya robots only).
+        self.p2p: P2PMapFeed | None = None
+        self.video: RobotVideo | None = None
+        self._p2p_render_cancel: CALLBACK_TYPE | None = None
+        self._last_p2p_render: float = 0.0
+        self._restore_p2p: dict[str, Any] | None = None
 
         if dps := device_info.get("dps"):
             self.data, _ = self._parse_dps(dps)
@@ -232,7 +246,24 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         """
         if self.api_type == "legacy":
             return build_legacy_command(command, **kwargs)
-        return build_command(command, api_type=self.api_type, **kwargs)
+        kwargs.setdefault("model", self.device_model)
+        return build_command(
+            command, api_type=self.api_type, tuya_transport=self.tuya_transport, **kwargs
+        )
+
+    @property
+    def tuya_transport(self) -> bool:
+        """True for S1 Pro robots reached over Tuya (local socket or Tuya Cloud).
+
+        Their Tuya DP schema types a few DPS differently from the MQTT robots:
+        suction (158) is an enum string and BoostIQ is its own boolean DPS (159).
+        Only verified on the S1 Pro, so other protobuf robots keep the MQTT format.
+        """
+        return (
+            self.api_type == "novel"
+            and self.connection_type in ("local", "cloud")
+            and is_s1_pro(self.device_model)
+        )
 
     @property
     def device_info(self) -> DeviceInfo:
@@ -305,6 +336,114 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             await self._fall_back_to_cloud()
             return
         await self.async_load_storage()
+        self._start_p2p_feed()
+
+    def _start_p2p_feed(self) -> None:
+        """Start the live P2P map feed (rooms, map, path, pose) for local Tuya robots.
+
+        Needs the RTC config (``device_password`` + ICE servers) from Tuya Cloud;
+        without a Tuya cloud session the feed is skipped and manual room
+        overrides still work.
+        """
+        if self.p2p is None:
+            if not self.eufy_login.tuya_client or not self._local_key or not self._local_host:
+                _LOGGER.debug("P2P map feed unavailable for %s (no Tuya session)", self.device_name)
+                return
+            if self._local_version != 3.3:
+                # The signalling only speaks Tuya 3.3 framing. On 3.4/3.5 every
+                # attempt would fetch an RTC config, reserve a session on the
+                # robot and then fail, and unused reservations make it refuse
+                # every session, the Eufy app's included.
+                _LOGGER.debug(
+                    "P2P map feed unavailable for %s (needs Tuya 3.3, configured %s)",
+                    self.device_name,
+                    self._local_version,
+                )
+                return
+            self.p2p = P2PMapFeed(
+                self.hass,
+                host=self._local_host,
+                local_key=self._local_key,
+                device_id=self.device_id,
+                rtc_config=lambda: self.eufy_login.get_rtc_config(self.device_id),
+                is_active=self._robot_is_moving,
+                on_change=self._on_p2p_change,
+                name=self.device_name,
+            )
+            if self._restore_p2p:
+                self.p2p.restore(self._restore_p2p)
+                self._restore_p2p = None
+        if self.p2p.state.has_map:
+            self._apply_p2p_map({CHANGED_MAP, CHANGED_ROOMS})
+        self.p2p.start()
+
+    def _robot_is_moving(self) -> bool:
+        # Manual control is reserved for camera viewing; do not keep reopening
+        # map sessions as though it were an automated clean.
+        return (
+            self.data.activity in ("cleaning", "returning")
+            and self.data.status_code != WORK_STATE_REMOTE_CTRL
+        )
+
+    @callback
+    def _on_p2p_change(self, changed: set[str]) -> None:
+        self._apply_p2p_map(changed)
+        if CHANGED_POSE in changed or CHANGED_MAP in changed:
+            self._update_current_room()
+
+    @callback
+    def _apply_p2p_map(self, changed: set[str]) -> None:
+        """Fold a P2P map update into coordinator state and schedule a render."""
+        assert self.p2p is not None
+        state = self.p2p.state
+        if changed & {CHANGED_MAP, CHANGED_ROOMS, CHANGED_ZONES}:
+            self._map_data = build_map_data(state)
+            if self._map_data is None:
+                self.map_image = None
+                async_dispatcher_send(self.hass, f"{DOMAIN}_{self.device_id}_map_updated")
+        if CHANGED_ROOMS in changed:
+            rooms = [{"id": r["id"], "name": r["name"] or f"Room {r['id'] + 1}"} for r in state.rooms]
+            if rooms != self.data.rooms or state.map_id != self.data.map_id:
+                self.async_set_updated_data(
+                    replace(
+                        self.data,
+                        rooms=rooms,
+                        map_id=state.map_id,
+                        received_fields=self.data.received_fields | {"rooms", "map_id"},
+                    )
+                )
+                if self._segment_update_cancel:
+                    self._segment_update_cancel()
+                self._segment_update_cancel = async_call_later(
+                    self.hass, 2.0, self._async_commit_segment_changes
+                )
+        self._schedule_p2p_render()
+
+    def _schedule_p2p_render(self) -> None:
+        """Render at most every 1.5 s; the robot streams every ~2 s while moving."""
+        if self._map_data is None or self._p2p_render_cancel is not None:
+            return
+        wait = max(0.0, 1.5 - (time.monotonic() - self._last_p2p_render))
+
+        @callback
+        def _fire(_now: Any) -> None:
+            self._p2p_render_cancel = None
+            self._last_p2p_render = time.monotonic()
+            self._rerender_map()
+
+        self._p2p_render_cancel = async_call_later(self.hass, wait, _fire)
+
+    async def async_stop_p2p(self) -> None:
+        if self.p2p is not None:
+            # Video's shutdown frees the session slot; the feed must not take it.
+            self.p2p.begin_stop()
+        if self.video is not None:
+            await self.video.stop()
+        if self._p2p_render_cancel:
+            self._p2p_render_cancel()
+            self._p2p_render_cancel = None
+        if self.p2p is not None:
+            await self.p2p.stop()
 
     async def _initialize_mqtt(self) -> None:
         """Initialize MQTT connection."""
@@ -373,6 +512,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                         self._clear_error_notification()
 
                 _rerender_after_update = False
+                # WorkStatus pushes always carry `activity`, so compare: at the
+                # station the raw state flips between wash and charge while the
+                # activity stays "docked", and each poke opens a session.
+                if (
+                    new_state.activity != prev_activity
+                    and self.p2p is not None
+                    and new_state.status_code != WORK_STATE_REMOTE_CTRL
+                ):
+                    self.p2p.poke()
                 if "activity" in changes:
                     # Clear trail when a new cleaning session starts, but preserve it
                     # when the robot briefly docks to empty its bin and then resumes
@@ -575,6 +723,28 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         self._map_data = map_data
         self._rerender_map()
 
+    def calibration_points(self) -> list[dict[str, dict[str, float]]] | None:
+        """Three world-cm <-> image-pixel pairs for the current map image.
+
+        The format map cards read (``calibration_source: camera``) to convert
+        between the PNG and the robot's coordinate frame. Mirrors the renderer:
+        the image spans the grid exactly, Y-flipped, sampled at cell centres.
+        """
+        md, png = self._map_data, self.map_image
+        if md is None or not png or len(png) < 24 or png[12:16] != b"IHDR":
+            return None
+        out_w = int.from_bytes(png[16:20], "big")
+        scale = out_w / md.width
+        res = md.resolution or 5
+
+        def to_image(wx: float, wy: float) -> dict[str, float]:
+            gx, gy = (wx - md.origin_x) / res, (wy - md.origin_y) / res
+            return {"x": round((gx + 0.5) * scale, 2), "y": round((md.height - 0.5 - gy) * scale, 2)}
+
+        span = 100 * res
+        points = ((md.origin_x, md.origin_y), (md.origin_x + span, md.origin_y), (md.origin_x, md.origin_y + span))
+        return [{"vacuum": {"x": x, "y": y}, "map": to_image(x, y)} for x, y in points]
+
     def _pose_to_pixel(self, x_cm: int, y_cm: int) -> tuple[int, int] | None:
         """Convert robot pose (cm) to map pixel coordinates."""
         if self._map_data is None:
@@ -597,7 +767,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         ready for ``build_zone_clean_command``.  Returns ``[]`` if no map has been
         received yet.
 
-        This is the exact inverse of ``render_map_png``'s forward transform.  The
+        This is the exact inverse of ``render_map``'s forward transform.  The
         render scale cancels out — normalized coords are already relative to the
         scaled output, so only the grid dimensions, resolution and the baked-in
         Y-flip remain::
@@ -637,33 +807,38 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             )
         return quads
 
-    def room_id_at_normalized(self, nx: float, ny: float) -> tuple[int, str | None]:
+    def room_id_at_normalized(self, nx: float, ny: float) -> tuple[int | None, str | None]:
         """Resolve the (room id, name) under a normalized point on the rendered map.
 
         ``(nx, ny)`` are fractions (0-1) of the rendered map image — the same
-        coordinates the bundled card taps with. Returns ``(0, None)`` when no map
-        has been decoded yet or the point falls outside any room.
+        coordinates the bundled card taps with. Returns ``(None, None)`` when no
+        map has been decoded yet or the point falls outside any room.
         """
         md = self._map_data
         if md is None:
-            return 0, None
+            return None, None
         rid = md.room_id_at_normalized(nx, ny)
-        if rid <= 0:
-            return 0, None
+        if rid is None:
+            return None, None
         return rid, md.room_names.get(rid)
 
-    def current_room(self) -> tuple[int, str | None]:
+    def current_room(self) -> tuple[int | None, str | None]:
         """Resolve the physical room from the live map pose, not DPS coordinates."""
         md = self._map_data
-        if md is None or self._robot_pixel is None or md.width <= 0 or md.height <= 0:
-            return 0, None
-        px, py = self._robot_pixel
+        pixel = self._robot_pixel
+        if pixel is None and self.p2p is not None and self.p2p.state.pose is not None and md is not None:
+            # Local-Tuya robots have no MQTT pose stream; use the P2P pose.
+            gx, gy = world_to_grid(md, self.p2p.state.pose.x, self.p2p.state.pose.y)
+            pixel = (math.floor(gx), math.floor(gy))
+        if md is None or pixel is None or md.width <= 0 or md.height <= 0:
+            return None, None
+        px, py = pixel
         if not (0 <= px < md.width and 0 <= py < md.height):
-            return 0, None
+            return None, None
         nx = px / md.width
         ny = (md.height - 1 - py) / md.height
         room_id, room_name = self.room_id_at_normalized(nx, ny)
-        if room_id and not room_name:
+        if room_id is not None and not room_name:
             room_name = next(
                 (room.get("name") for room in self.data.rooms if room.get("id") == room_id),
                 None,
@@ -713,36 +888,51 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         """Re-render the PNG in a thread executor so PIL does not block the event loop."""
         if self._map_data is None:
             return
-        # When docked/idle, show robot at the known dock pixel rather than last pose.
-        robot_px = (
-            self._dock_pixel
-            if self.data.activity in ("docked", "idle") and self._dock_pixel is not None
-            else self._robot_pixel
-        )
         entry = self.hass.config_entries.async_get_entry(self.entry_id)
         opts = entry.options if entry else {}
         max_px = int(opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
         robot_style = opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
-        # Snapshot mutable state before entering the thread.
         map_data = self._map_data
-        robot_trail = list(self._robot_trail) if self._robot_trail else None
-        dock_pixel = self._dock_pixel
         robot_status = self._get_robot_status()
+        at_dock = self.data.activity == "docked" or bool(self.data.charging)
+
+        if self.p2p is not None and self.p2p.state.has_map:
+            overlay = build_overlay(
+                map_data,
+                self.p2p.state,
+                robot_status=robot_status,
+                robot_style=robot_style,
+                docked=at_dock,
+                cleaning=self.data.activity == "cleaning",
+            )
+        else:
+            # MQTT pose stream: pixel-space robot + trail; when docked show the
+            # robot at the known dock pixel rather than its last pose.
+            robot_px = (
+                self._dock_pixel
+                if self.data.activity in ("docked", "idle") and self._dock_pixel is not None
+                else self._robot_pixel
+            )
+            overlay = MapOverlay(
+                robot=robot_px,
+                robot_status=robot_status,
+                robot_style=robot_style,
+                dock=self._dock_pixel,
+                path=[(x, y, 0) for x, y in self._robot_trail],
+                # Pose samples arrive every ~2 s, so steps are far longer than
+                # the P2P path's; keep joining them as the old renderer did.
+                max_path_step_cm=400 * (map_data.resolution or 5),
+            )
 
         def _render() -> bytes:
-            return render_map_png(
-                map_data,
-                robot_pixel=robot_px,
-                robot_trail=robot_trail,
-                dock_pixel=dock_pixel,
-                robot_status=robot_status,
-                max_px=max_px,
-                robot_style=robot_style,
-            )
+            return render_map(map_data, overlay, max_px=max_px)
 
         try:
             png = await self.hass.async_add_executor_job(_render)
         except asyncio.CancelledError:
+            return
+        except ValueError as err:  # e.g. an oversized or empty map
+            _LOGGER.warning("Could not render the map for %s: %s", self.device_name, err)
             return
         self.map_image = png
         _LOGGER.debug("Map image updated (%d bytes PNG) for %s", len(png), self.device_name)
@@ -780,7 +970,7 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         entry = self.hass.config_entries.async_get_entry(self.entry_id)
         opts = entry.options if entry else {}
         title = f"{self.device_name} Error"
-        msg = f"Error {code}: {message.title()}"
+        msg = f"Error {screen_error_code(code, self.device_model)}: {message}"
         if opts.get(CONF_NOTIFY_DESKTOP, DEFAULT_NOTIFY_DESKTOP):
             pn_async_create(
                 self.hass,
@@ -860,8 +1050,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
         self.async_set_updated_data(new_state)
 
-    async def async_send_command(self, command_dict: dict[str, Any]) -> None:
-        """Send command to device."""
+    async def async_send_command(
+        self, command_dict: dict[str, Any], *, wait: bool = True
+    ) -> None:
+        """Send command to device.
+
+        ``wait=False`` is honoured by the local Tuya transport only (see
+        ``LocalTuyaClient.send_command``); other transports always wait.
+        """
         if not command_dict:
             _LOGGER.debug("Ignoring empty command for %s", self.device_name)
             return
@@ -873,8 +1069,10 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             if self.connection_type == "cloud":
                 await self.eufy_login.sendCloudCommand(self.device_id, command_dict)
             elif self.client:
-                # Both LocalTuyaClient and EufyCleanClient expose send_command.
-                await self.client.send_command(command_dict)
+                if isinstance(self.client, LocalTuyaClient):
+                    await self.client.send_command(command_dict, wait=wait)
+                else:
+                    await self.client.send_command(command_dict)
             else:
                 raise HomeAssistantError(
                     f"Cannot send command to {self.device_name}: no connection available"
@@ -970,6 +1168,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 )
             if dp := data.get("dock_pixel"):
                 self._dock_pixel = tuple(dp)
+            if (p2p := data.get("p2p")) and self.p2p is None and self.connection_type == "local":
+                self._restore_p2p = p2p
             if md_raw := data.get("map_data"):
                 try:
                     self._map_data = MapData(
@@ -1006,6 +1206,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         data["robot_trail"] = list(self._robot_trail)
         if self._dock_pixel is not None:
             data["dock_pixel"] = list(self._dock_pixel)
+        if self.p2p is not None and self.p2p.state.has_map:
+            data["p2p"] = self.p2p.dump()
         if self._map_data is not None:
             md = self._map_data
             data["map_data"] = {

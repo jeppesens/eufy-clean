@@ -1,11 +1,13 @@
 """Unit tests for the MQTT client (api/client.py)."""
 
 import asyncio
+import logging
 import os
 import tempfile
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from paho.mqtt import client as mqtt
 
 from custom_components.robovac_mqtt.api.client import (
     EufyCleanClient,
@@ -36,12 +38,34 @@ def test_on_connect_thread_safe_event():
     client._loop = mock_loop
 
     mock_mqtt = MagicMock()
+    mock_mqtt.subscribe.return_value = (mqtt.MQTT_ERR_SUCCESS, 1)
     client._on_connect(mock_mqtt, None, {}, 0)
 
     mock_loop.call_soon_threadsafe.assert_called_once_with(client._connected_event.set)
     assert mock_mqtt.subscribe.call_count == 2
     mock_mqtt.subscribe.assert_any_call("cmd/eufy_home/T2320/TEST123/res")
     mock_mqtt.subscribe.assert_any_call("biz/eufy_home/T2320/TEST123/res")
+
+
+def test_on_subscribe_warns_only_for_refused_topic(caplog):
+    """A SUBACK of 128 logs a warning naming the refused topic; a grant doesn't."""
+    client = _make_client()
+    mids = {
+        "cmd/eufy_home/T2320/TEST123/res": 1,
+        "biz/eufy_home/T2320/TEST123/res": 2,
+    }
+    mock_mqtt = MagicMock()
+    mock_mqtt.subscribe.side_effect = lambda topic: (mqtt.MQTT_ERR_SUCCESS, mids[topic])
+    client._on_connect(mock_mqtt, None, {}, 0)
+
+    with caplog.at_level(logging.DEBUG):
+        client._on_subscribe(mock_mqtt, None, 1, (128,))
+        client._on_subscribe(mock_mqtt, None, 2, (0,))
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "refused the subscription to cmd/eufy_home/T2320/TEST123/res" in warnings[0]
+    assert "Subscribed to biz/eufy_home/T2320/TEST123/res (granted QoS 0)" in caplog.text
 
 
 def test_on_disconnect_thread_safe_event():

@@ -11,21 +11,29 @@ from ..const import (
     CLEAN_EXTENT_MAP,
     CLEAN_TYPE_MAP,
     DPS_MAP,
+    DPS_UNSETTING_HEIGHT_DETECTION_FIELD,
+    EUFY_CLEAN_CLEAN_SPEED,
     EUFY_CLEAN_CONTROL,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
+    HEIGHT_DETECTION_MODES,
     MOP_CORNER_MAP,
     MOP_LEVEL_MAP,
     SCALAR_CLEAN_PATTERN_NAMES,
     SCALAR_DPS,
     SCALAR_WORK_MODE_GO_HOME,
     SCALAR_WORK_MODE_START,
+    VIDEO_MGR_STATE_SET,
+    VIDEO_MGR_STREAM_CLOSE,
+    VIDEO_MGR_STREAM_OPEN,
     VOICE_CATALOG,
+    is_s1_pro,
 )
 from ..proto.cloud.clean_param_pb2 import CleanParam, CleanParamRequest, Fan
 from ..proto.cloud.common_pb2 import Point, Quadrangle
 from ..proto.cloud.consumable_pb2 import ConsumableRequest
 from ..proto.cloud.control_pb2 import (
     ModeCtrlRequest,
+    RemoteCtrl,
     SelectRoomsClean,
     SelectZonesClean,
 )
@@ -80,6 +88,62 @@ def _build_mode_ctrl(method: int, clean_times: int = 1) -> dict[str, str]:
 
     value = encode(ModeCtrlRequest, data)
     return {DPS_MAP["PLAY_PAUSE"]: value}
+
+
+REMOTE_DIRECTIONS: dict[str, RemoteCtrl.Direction] = {
+    "brake": RemoteCtrl.BRAKE,
+    "forward": RemoteCtrl.FORWARD,
+    "back": RemoteCtrl.BACK,
+    "left": RemoteCtrl.LEFT,
+    "right": RemoteCtrl.RIGHT,
+}
+
+
+def build_video_manager_command(method: int, *, pass_enable: bool | None = None) -> dict[str, str]:
+    """A DP 181 ``VideoMgrRequest{control{method, seq}, setting}`` for the S1 Pro's camera.
+
+    ``pass_enable`` adds ``setting{mgrState{passEn: Switch{value}}}``. There are
+    two message wrappers inside ``setting``; an extra wrapper silently leaves
+    the robot's passEn false even though it acknowledges the state-set.
+    """
+    control = bytes([0x08, method, 0x10, 0x01])  # method = 1, seq = 2
+    body = bytes([0x0A, len(control)]) + control  # control = 1
+    if pass_enable is not None:
+        mgr_state = bytes([0x0A, 0x02, 0x08, int(pass_enable)])  # passEn = 1: Switch{value}
+        setting = bytes([0x0A, len(mgr_state)]) + mgr_state  # setting.mgrState = 1
+        body += bytes([0x12, len(setting)]) + setting  # setting = 2
+    return {DPS_MAP["VIDEO_MANAGER"]: base64.b64encode(encode_varint(len(body)) + body).decode()}
+
+
+def build_set_height_detection_command(mode: str) -> dict[str, str]:
+    """Set the S1 Pro's height detection sensitivity (DPS 176 field 107)."""
+    for number, name in HEIGHT_DETECTION_MODES.items():
+        if name.lower() == mode.lower():
+            body = encode_varint(DPS_UNSETTING_HEIGHT_DETECTION_FIELD << 3) + encode_varint(number)
+            return {DPS_MAP["UNSETTING"]: base64.b64encode(encode_varint(len(body)) + body).decode()}
+    _LOGGER.warning("Invalid height detection mode '%s' ignored", mode)
+    return {}
+
+
+def build_remote_move_command(direction: str, *, v2: bool = False) -> dict[str, str]:
+    """Drive the robot by hand (DPS 155 ``RemoteCtrl``).
+
+    ``v2`` selects the S1 Pro normal-direction envelope; older models use RemoteCtrl.
+    Enable manual control before driving. The robot keeps moving only while
+    the command is repeated (the app resends every 500 ms), and ``brake`` stops
+    it without leaving the mode. Unknown directions build nothing.
+    """
+    value = REMOTE_DIRECTIONS.get(direction.lower())
+    if value is None:
+        _LOGGER.warning("Invalid remote direction '%s' ignored", direction)
+        return {}
+    if v2:
+        # S1 Pro: NewRemoteCtrlV2.method=NORMAL (0, omitted), normal (field 2)
+        # containing Normal.value (field 1). Keep normal present even for BRAKE.
+        normal = bytes([0x08, value]) if value else b""
+        body = _encode_proto_ldelim(2, normal)
+        return {DPS_MAP["DIRECTION"]: base64.b64encode(encode_varint(len(body)) + body).decode()}
+    return {DPS_MAP["DIRECTION"]: encode_message(RemoteCtrl(direction=value))}
 
 
 def _build_manual_cmd(cmd_name: str, active: bool = True) -> dict[str, str]:
@@ -142,9 +206,9 @@ def build_scene_clean_command(scene_id: int) -> dict[str, str]:
 
 
 def build_room_clean_command(
-    room_ids: list[int], map_id: int = 3, mode: str = "GENERAL"
+    room_ids: list[int], map_id: int = 3, mode: str = "GENERAL", *, model: str = ""
 ) -> dict[str, str]:
-    """Build command to clean specific rooms."""
+    """Build a room clean; the S1 Pro uses zero-based room-order slots."""
     if mode == "CUSTOMIZE":
         proto_mode = SelectRoomsClean.CUSTOMIZE
     else:
@@ -152,7 +216,8 @@ def build_room_clean_command(
 
     rooms_clean = SelectRoomsClean(
         rooms=[
-            SelectRoomsClean.Room(id=rid, order=i + 1) for i, rid in enumerate(room_ids)
+            SelectRoomsClean.Room(id=rid, order=i)
+            for i, rid in enumerate(room_ids, start=0 if is_s1_pro(model) else 1)
         ],
         mode=proto_mode,
         clean_times=1,
@@ -565,17 +630,36 @@ def build_set_undisturbed_command(
     return {DPS_MAP["UNDISTURBED"]: value}
 
 
+def build_tuya_suction_command(clean_speed: str) -> dict[str, Any]:
+    """Tuya-transport protobuf robots: suction (DPS 158) is the level's name."""
+    for level in EUFY_CLEAN_NOVEL_CLEAN_SPEED[:4]:
+        if level.value.lower() == clean_speed.lower():
+            return {DPS_MAP["CLEAN_SPEED"]: level.value}
+    if clean_speed.lower() == EUFY_CLEAN_CLEAN_SPEED.BOOST_IQ.value.lower():
+        return {DPS_MAP["BOOST_IQ"]: True}
+    return {}
+
+
 def build_command(
-    command: str, api_type: str = "novel", **kwargs: Any
+    command: str, api_type: str = "novel", tuya_transport: bool = False, **kwargs: Any
 ) -> dict[str, Any]:
     """Unified command builder.
 
     *api_type* ("novel" | "scalar") lets shared commands branch to scalar
     (Tuya-style int/JSON) writes for scalar-protocol devices (e.g. T2210/G50).
     Callers that omit it get the default novel (protobuf) behaviour.
+
+    *tuya_transport* marks a protobuf robot reached over Tuya (local socket or
+    Tuya Cloud); its schema types suction and BoostIQ differently.
     """
     cmd = command.lower()
     is_scalar = api_type == "scalar"
+
+    if tuya_transport and not is_scalar:
+        if cmd == "set_fan_speed":
+            return build_tuya_suction_command(kwargs.get("fan_speed", ""))
+        if cmd == "set_boost_iq":
+            return {DPS_MAP["BOOST_IQ"]: bool(kwargs.get("active", True))}
 
     if is_scalar:
         # Movement, captured verbatim from the app's /req (see FINDINGS.md):
@@ -648,6 +732,20 @@ def build_command(
         )
     if cmd == "set_fan_speed":
         return build_set_clean_speed_command(kwargs.get("fan_speed", ""))
+    if cmd == "video_pass_enable":
+        return build_video_manager_command(VIDEO_MGR_STATE_SET, pass_enable=True)
+    if cmd == "video_stream_open":
+        return build_video_manager_command(VIDEO_MGR_STREAM_OPEN)
+    if cmd == "video_stream_close":
+        return build_video_manager_command(VIDEO_MGR_STREAM_CLOSE)
+    if cmd == "set_height_detection":
+        return build_set_height_detection_command(kwargs.get("mode", ""))
+    if cmd == "start_remote":
+        return _build_mode_ctrl(EUFY_CLEAN_CONTROL.START_RC_CLEAN)
+    if cmd == "stop_remote":
+        return _build_mode_ctrl(EUFY_CLEAN_CONTROL.STOP_RC_CLEAN)
+    if cmd == "remote_move":
+        return build_remote_move_command(kwargs.get("direction", ""), v2=is_s1_pro(kwargs.get("model")))
     if cmd == "set_water_level":
         return build_set_water_level_command(kwargs.get("water_level", ""))
     if cmd == "scene_clean":
@@ -657,6 +755,7 @@ def build_command(
             kwargs.get("room_ids", []),
             kwargs.get("map_id", 3),
             kwargs.get("mode", "GENERAL"),
+            model=kwargs.get("model", ""),
         )
     if cmd == "zone_clean":
         return build_zone_clean_command(

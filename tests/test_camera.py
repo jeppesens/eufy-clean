@@ -30,6 +30,7 @@ async def test_map_camera_only_created_for_mqtt(
     coordinator.device_id = "dev"
     coordinator.api_type = api_type
     coordinator.connection_type = connection_type
+    coordinator.p2p = None
     coordinator.data = VacuumState()
 
     hass = MagicMock()
