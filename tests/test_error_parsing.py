@@ -1,15 +1,15 @@
 import pytest
 
-from custom_components.robovac_mqtt.api.parser import (_obstacle_type_name,
-                                                       update_state)
+from custom_components.robovac_mqtt.api.parser import _obstacle_type_name, update_state
 from custom_components.robovac_mqtt.const import DPS_MAP
-from custom_components.robovac_mqtt.errors import (error_attributes,
-                                                   error_sensor_value,
-                                                   screen_error_code)
+from custom_components.robovac_mqtt.errors import (
+    error_attributes,
+    error_sensor_value,
+    screen_error_code,
+)
 from custom_components.robovac_mqtt.models import VacuumState
 from custom_components.robovac_mqtt.proto.cloud.error_code_pb2 import ErrorCode
-from custom_components.robovac_mqtt.proto.cloud.work_status_pb2 import \
-    WorkStatus
+from custom_components.robovac_mqtt.proto.cloud.work_status_pb2 import WorkStatus
 from custom_components.robovac_mqtt.utils import encode_message
 
 

@@ -11,13 +11,13 @@ from PIL import Image
 
 from custom_components.robovac_mqtt.api.map_render import render_map
 from custom_components.robovac_mqtt.api.map_stream import MapData
-from custom_components.robovac_mqtt.const import (DPS_MAP,
-                                                  WORK_STATE_REMOTE_CTRL)
-from custom_components.robovac_mqtt.coordinator import (_ERROR_LOG_MAX,
-                                                        EufyCleanCoordinator)
+from custom_components.robovac_mqtt.const import DPS_MAP, WORK_STATE_REMOTE_CTRL
+from custom_components.robovac_mqtt.coordinator import (
+    _ERROR_LOG_MAX,
+    EufyCleanCoordinator,
+)
 from custom_components.robovac_mqtt.models import VacuumState
-from custom_components.robovac_mqtt.proto.cloud.control_pb2 import \
-    ModeCtrlRequest
+from custom_components.robovac_mqtt.proto.cloud.control_pb2 import ModeCtrlRequest
 from custom_components.robovac_mqtt.proto.cloud.error_code_pb2 import ErrorCode
 from custom_components.robovac_mqtt.utils import decode, encode_message
 
