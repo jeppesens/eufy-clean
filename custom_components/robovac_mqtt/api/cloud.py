@@ -339,6 +339,25 @@ class EufyLogin:
             return value
         return {}
 
+    async def get_rtc_config(self, device_id: str) -> dict[str, Any] | None:
+        """Fetch a device's P2P/RTC config, re-logging in once if the session died.
+
+        Reads ``tuya_client`` at call time: a re-login (here or in
+        ``getCloudDevice``) replaces the client, so a reference captured at
+        startup would keep a dead sid.
+        """
+        if not self.tuya_client:
+            raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session")
+        try:
+            return await self.tuya_client.get_rtc_config(device_id)
+        except TuyaCloudError as e:
+            _LOGGER.debug("Tuya RTC config for %s failed: %s; attempting re-login", device_id, e)
+            self.tuya_client.sid = None
+            await self.tuya_login()
+            if not self.tuya_client:
+                raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session after re-login") from e
+            return await self.tuya_client.get_rtc_config(device_id)
+
     async def getCloudDevice(self, device_id: str) -> dict[str, Any] | None:
         """Poll a cloud device's DPS via Tuya Cloud API.
 
@@ -491,6 +510,17 @@ class EufyLogin:
         tuya_device: dict | None = None,
     ):
         device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
+        # MQTT topics use the model resolved below ("Subscribing to ..." logs
+        # it); log the raw codes so a collapsed variant (e.g. a suffixed
+        # product code) is visible (#107).
+        _LOGGER.debug(
+            "Device %s: raw model codes: V2 product_code=%r, V2 device_model=%r, "
+            "AIOT device_model=%r",
+            deviceId,
+            ((device or {}).get("product") or {}).get("product_code"),
+            (device or {}).get("device_model"),
+            (aiot_device or {}).get("device_model"),
+        )
 
         if device:
             return {

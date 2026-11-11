@@ -13,7 +13,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
+from .const import DOMAIN, WORK_STATE_REMOTE_CTRL
 from .coordinator import EufyCleanCoordinator, VacuumState
 
 _LOGGER = logging.getLogger(__name__)
@@ -45,6 +45,31 @@ async def async_setup_entry(
                 device_class=BinarySensorDeviceClass.BATTERY_CHARGING,
             )
         )
+
+        if coordinator.api_type == "novel":
+            # Read-only: the camera is armed on the robot itself by holding
+            # Start/Pause + Recharge for 10 s, never over the network.
+            entities.append(
+                RoboVacBinarySensor(
+                    coordinator,
+                    "camera_enabled",
+                    "Camera Enabled",
+                    lambda s: bool(s.camera_enabled),
+                    availability_fn=lambda s: "camera_enabled" in s.received_fields,
+                )
+            )
+
+            # On while the robot is under manual control; the dashboard's drive
+            # pad is only useful (and only shown) then.
+            entities.append(
+                RoboVacBinarySensor(
+                    coordinator,
+                    "remote_mode",
+                    "Remote Mode",
+                    lambda s: s.status_code == WORK_STATE_REMOTE_CTRL,
+                    category=None,
+                )
+            )
 
     async_add_entities(entities)
 

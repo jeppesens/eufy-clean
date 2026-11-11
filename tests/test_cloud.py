@@ -1,5 +1,6 @@
 """Unit tests for the cloud login module."""
 
+import logging
 import unittest.mock
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -184,8 +185,11 @@ def test_find_model_aiot_fallback_invalid_without_model():
     assert result["invalid"] is True
 
 
-def test_find_model_v2_takes_precedence_over_aiot():
-    """When V2 has the device, its richer metadata wins over the AIOT fallback."""
+def test_find_model_v2_takes_precedence_over_aiot(caplog):
+    """When V2 has the device, its richer metadata wins over the AIOT fallback.
+
+    The raw model codes are debug-logged, so a collapsed variant shows (#107).
+    """
     login = _make_login(
         eufy_api_devices=[
             {
@@ -202,11 +206,16 @@ def test_find_model_v2_takes_precedence_over_aiot():
         "device_model": "T2081",
         "device_name": "From AIOT",
     }
-    result = login.findModel("DEV005", aiot_device=aiot_device)
+    with caplog.at_level(logging.DEBUG):
+        result = login.findModel("DEV005", aiot_device=aiot_device)
 
     assert result["deviceModel"] == "T2261"
     assert result["deviceName"] == "From V2"
     assert result["deviceModelName"] == "X8 Pro"
+    assert (
+        "Device DEV005: raw model codes: V2 product_code='T2261xx', "
+        "V2 device_model='T2261', AIOT device_model='T2081'"
+    ) in caplog.text
 
 
 def test_find_model_six_char_product_code():
@@ -1019,3 +1028,37 @@ async def test_ignored_tuya_product_placeholder_drop_keeps_safety_net():
 
     assert not login.mqtt_devices
     assert [d["deviceId"] for d in login.cloud_devices] == ["tuya_devid"]
+
+
+@pytest.mark.asyncio
+async def test_get_rtc_config_relogins_and_reads_the_new_client():
+    """The RTC fetch must follow a re-login: a client captured at startup keeps a dead sid."""
+    login = _make_login()
+    old = MagicMock()
+    old.sid = "old"
+    old.get_rtc_config = AsyncMock(side_effect=TuyaCloudError("EXPIRED", "Session expired"))
+    new = MagicMock()
+    new.get_rtc_config = AsyncMock(return_value={"device_password": "pw"})
+    login.tuya_client = old
+
+    async def relogin():
+        login.tuya_client = new
+
+    with patch.object(login, "tuya_login", AsyncMock(side_effect=relogin)) as mock_relogin:
+        assert await login.get_rtc_config("dev_123") == {"device_password": "pw"}
+
+    mock_relogin.assert_awaited_once()
+    assert old.sid is None
+    new.get_rtc_config.assert_awaited_once_with("dev_123")
+    # Later calls use the replacement without logging in again.
+    mock_relogin.reset_mock()
+    await login.get_rtc_config("dev_123")
+    mock_relogin.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_rtc_config_raises_when_there_is_no_session():
+    login = _make_login()
+    login.tuya_client = None
+    with pytest.raises(TuyaCloudError):
+        await login.get_rtc_config("dev_123")

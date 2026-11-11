@@ -14,6 +14,8 @@ from typing import Any
 
 from paho.mqtt import client as mqtt
 
+from ..const import MQTT_SUBACK_FAILURE
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -87,6 +89,7 @@ class EufyCleanClient:
         self._cert_path: str | None = None
         self._key_path: str | None = None
         self._client_id: str | None = None
+        self._pending_subscriptions: dict[int, str] = {}  # SUBSCRIBE mid -> topic
         self._on_message_callback: Callable[[bytes], None] | None = None
         self._on_biz_message_callback: Callable[[bytes], None] | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -179,6 +182,7 @@ class EufyCleanClient:
         self._mqtt_client, self._cert_path, self._key_path = result
 
         self._mqtt_client.on_connect = self._on_connect
+        self._mqtt_client.on_subscribe = self._on_subscribe
         self._mqtt_client.on_message = self._on_message
         self._mqtt_client.on_disconnect = self._on_disconnect
 
@@ -221,14 +225,36 @@ class EufyCleanClient:
             if self._loop:
                 self._loop.call_soon_threadsafe(self._connected_event.set)
             if self.device_id:
-                cmd_topic = f"cmd/eufy_home/{self.device_model}/{self.device_id}/res"
-                _LOGGER.debug("Subscribing to %s", cmd_topic)
-                client.subscribe(cmd_topic)
-                biz_topic = f"biz/eufy_home/{self.device_model}/{self.device_id}/res"
-                _LOGGER.debug("Subscribing to %s", biz_topic)
-                client.subscribe(biz_topic)
+                # A SUBSCRIBE left unanswered by an earlier connection never
+                # gets its SUBACK, so start each connection with an empty map.
+                self._pending_subscriptions.clear()
+                for topic in (
+                    f"cmd/eufy_home/{self.device_model}/{self.device_id}/res",
+                    f"biz/eufy_home/{self.device_model}/{self.device_id}/res",
+                ):
+                    _LOGGER.debug("Subscribing to %s", topic)
+                    _, mid = client.subscribe(topic)
+                    self._pending_subscriptions[mid] = topic
         else:
             _LOGGER.error("Failed to connect to MQTT, return code %d", rc)
+
+    def _on_subscribe(self, client, userdata, mid, granted_qos):
+        """Log the broker's SUBACK answer to a subscription made in _on_connect.
+
+        A refused subscription is otherwise silent: the connection stays up,
+        but nothing the robot publishes arrives.
+        """
+        topic = self._pending_subscriptions.pop(mid, "an unknown topic")
+        for qos in granted_qos:
+            if qos >= MQTT_SUBACK_FAILURE:
+                _LOGGER.warning(
+                    "MQTT broker refused the subscription to %s (SUBACK %s); the "
+                    "robot's updates on this topic will not reach Home Assistant",
+                    topic,
+                    qos,
+                )
+            else:
+                _LOGGER.debug("Subscribed to %s (granted QoS %s)", topic, qos)
 
     def _on_disconnect(self, client, userdata, rc):
         if rc == 0:

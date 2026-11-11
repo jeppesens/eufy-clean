@@ -4,10 +4,8 @@ import json
 import pytest
 
 from custom_components.robovac_mqtt.api.map_stream import (
-    MapData,
     _lz4_block_decompress,
     parse_biz_protocol41,
-    render_map_png,
     try_extract_map_data,
     try_extract_map_description,
 )
@@ -138,49 +136,6 @@ def test_try_extract_map_data_raw_pixels_correct():
 
 
 # ---------------------------------------------------------------------------
-# render_map_png
-# ---------------------------------------------------------------------------
-
-
-def test_render_map_png_smoke():
-    """render_map_png returns valid PNG bytes for a minimal map."""
-    n_pixels = 16 * 12
-    map_data = MapData(
-        raw_pixels=b"\xaa" * ((n_pixels + 3) // 4),
-        width=16,
-        height=12,
-        resolution=5,
-    )
-    result = render_map_png(map_data)
-    assert isinstance(result, bytes)
-    assert result[:4] == b"\x89PNG"
-
-
-def test_render_map_png_with_robot_and_dock():
-    """render_map_png does not crash with robot and dock positions supplied."""
-    n_pixels = 16 * 16
-    map_data = MapData(
-        raw_pixels=b"\xaa" * ((n_pixels + 3) // 4),
-        width=16,
-        height=16,
-        resolution=5,
-    )
-    result = render_map_png(map_data, robot_pixel=(8, 8), dock_pixel=(2, 2))
-    assert result[:4] == b"\x89PNG"
-
-
-def test_render_map_png_rejects_oversized():
-    """render_map_png raises ValueError for dimensions exceeding 4000x4000.
-
-    Regression for H2: without this guard, a crafted MQTT map message with
-    width=65535 and height=65535 triggers a ~17 GB PIL allocation.
-    """
-    map_data = MapData(raw_pixels=b"", width=5000, height=5000)
-    with pytest.raises(ValueError, match="exceed safety limit"):
-        render_map_png(map_data)
-
-
-# ---------------------------------------------------------------------------
 # try_extract_map_description — map id + name discovery
 # ---------------------------------------------------------------------------
 
@@ -225,3 +180,9 @@ def test_map_description_strips_whitespace():
         6,
         "The main floor",
     )
+
+
+@pytest.mark.parametrize(("data", "size"), [(b"\x50ABC", 5), (b"\x11Z\x00\x00", 6), (b"\x11Z\x01\x00", 5), (b"\xf0", 1), (b"", 1)])
+def test_lz4_rejects_truncation_invalid_offsets_and_size_mismatches(data, size):
+    with pytest.raises(ValueError):
+        _lz4_block_decompress(data, size)
