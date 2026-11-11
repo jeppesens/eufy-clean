@@ -145,14 +145,9 @@ async def async_setup_entry(
         if coordinator.connection_type == "mqtt":
             candidates.append(SceneSelectEntity(coordinator))
             candidates.append(MapSelectEntity(coordinator))
-        # The room list comes from MQTT, from the local P2P channel (Tuya
-        # devices, fetched by the coordinator), or from a manual
-        # {room_id: name} override supplied through the options flow.
-        if (
-            coordinator.connection_type == "mqtt"
-            or coordinator.p2p is not None
-            or coordinator.room_name_overrides
-        ):
+        # The room list comes with the map, or from a manual {room_id: name}
+        # override supplied through the options flow.
+        if coordinator.receives_map or coordinator.room_name_overrides:
             candidates.append(RoomSelectEntity(coordinator))
 
         entities.extend(filter_supported_entities(coordinator, candidates))
