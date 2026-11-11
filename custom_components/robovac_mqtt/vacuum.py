@@ -470,11 +470,17 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         quads_cm = self.coordinator.normalized_rects_to_quads_cm(rects)
         if not quads_cm:
-            _LOGGER.warning(
+            if not self.coordinator.receives_map:
+                connection_type = self.coordinator.connection_type
+                raise HomeAssistantError(
+                    f"zone_clean needs the map, which {self.coordinator.device_name} "
+                    f"does not receive over its Tuya ({connection_type}) connection; "
+                    "use room_clean instead"
+                )
+            raise HomeAssistantError(
                 "zone_clean: no map available yet (run a clean once so the map "
                 "populates) or all rectangles were invalid — nothing sent"
             )
-            return
 
         map_id = params.get("map_id") or self.coordinator.resolve_map_id()
         clean_times = int(params.get("clean_times", 1))

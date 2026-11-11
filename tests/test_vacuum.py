@@ -26,6 +26,7 @@ def mock_coordinator():
     coordinator.device_name = "Test Vac"
     coordinator.device_model = "T2118"
     coordinator.api_type = "novel"
+    coordinator.connection_type = "mqtt"
     coordinator.data = VacuumState()
     coordinator.async_send_command = AsyncMock()
     coordinator.build_device_command = MagicMock(return_value={"cmd": "val"})
@@ -152,14 +153,28 @@ async def test_zone_clean_no_rects_noop(mock_coordinator, mock_config_entry):
 
 
 @pytest.mark.asyncio
-async def test_zone_clean_no_map_noop(mock_coordinator, mock_config_entry):
-    """zone_clean before the map has loaded (helper returns []) dispatches nothing."""
+@pytest.mark.parametrize(
+    ("receives_map", "connection_type", "message"),
+    [
+        (True, "mqtt", "no map available yet"),
+        (True, "local", "no map available yet"),
+        (False, "cloud", r"Tuya \(cloud\) connection; use room_clean"),
+        (False, "local", r"Tuya \(local\) connection; use room_clean"),
+    ],
+)
+async def test_zone_clean_no_map_raises(
+    mock_coordinator, mock_config_entry, receives_map, connection_type, message
+):
+    """zone_clean without a map (helper returns []) raises and dispatches nothing."""
     entity = RoboVacMQTTEntity(mock_coordinator, mock_config_entry)
+    mock_coordinator.receives_map = receives_map
+    mock_coordinator.connection_type = connection_type
     mock_coordinator.normalized_rects_to_quads_cm = MagicMock(return_value=[])
 
-    await entity.async_send_command(
-        "zone_clean", {"zones": [[0.1, 0.2, 0.3, 0.4]]}
-    )
+    with pytest.raises(HomeAssistantError, match=message):
+        await entity.async_send_command(
+            "zone_clean", {"zones": [[0.1, 0.2, 0.3, 0.4]]}
+        )
 
     mock_coordinator.normalized_rects_to_quads_cm.assert_called_once()
     mock_coordinator.async_send_command.assert_not_called()

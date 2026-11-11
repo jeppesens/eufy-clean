@@ -12,6 +12,7 @@ from homeassistant.helpers.dispatcher import async_dispatcher_connect
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
+from ._orphan_cleanup import prune_orphan_entities
 from .const import DOMAIN, WORK_STATE_REMOTE_CTRL
 from .coordinator import EufyCleanCoordinator
 from .entity import API_TYPE_NOVEL, filter_supported_entities
@@ -30,9 +31,29 @@ async def async_setup_entry(
     coordinators: list[EufyCleanCoordinator] = data["coordinators"]
     entities = []
     for coordinator in coordinators:
-        entities.extend(filter_supported_entities(coordinator, [EufyMapCamera(coordinator)]))
+        # A map only arrives over Eufy MQTT or the local P2P feed.
+        if coordinator.receives_map:
+            entities.extend(
+                filter_supported_entities(coordinator, [EufyMapCamera(coordinator)])
+            )
         _add_video_camera_when_supported(config_entry, coordinator, async_add_entities)
+
+    # Prune the map camera that older builds registered where no map arrives.
+    # The live camera is added later, once P2P is up, so it is always kept.
+    prune_orphan_entities(
+        hass,
+        config_entry.entry_id,
+        coordinators,
+        added_unique_ids={e.unique_id for e in entities if e.unique_id}
+        | {_video_camera_unique_id(c) for c in coordinators},
+        platform="camera",
+    )
+
     async_add_entities(entities)
+
+
+def _video_camera_unique_id(coordinator: EufyCleanCoordinator) -> str:
+    return f"{coordinator.device_id}_camera"
 
 
 def _add_video_camera_when_supported(
@@ -157,7 +178,7 @@ class EufyVideoCamera(CoordinatorEntity[EufyCleanCoordinator], Camera):
         CoordinatorEntity.__init__(self, coordinator)
         Camera.__init__(self)
         self._video = video
-        self._attr_unique_id = f"{coordinator.device_id}_camera"
+        self._attr_unique_id = _video_camera_unique_id(coordinator)
         self._attr_device_info = coordinator.device_info
 
     @property
