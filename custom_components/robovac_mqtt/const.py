@@ -60,6 +60,9 @@ EUFY_API_DEVICE_LIST: Final = (
 EUFY_API_DEVICE_V2: Final = f"{EUFY_API_BASE_URL}/v1/device/v2"
 # Home-api device list fallback (unified Eufy app)
 EUFY_API_DEVICE_LIST_HOME: Final = f"{EUFY_HOME_API_BASE_URL}/v1/device/"
+# product.appliance of a robot vacuum in the cloud device list; the list also
+# holds the account's other eufy products, e.g. a smart scale (issue #121).
+EUFY_APPLIANCE_CLEANING: Final = "Cleaning"
 
 # Tuya productId/productKey -> Eufy model code.
 # Tuya Cloud devices (legacy transport) report a productId that does NOT match
@@ -69,6 +72,13 @@ EUFY_API_DEVICE_LIST_HOME: Final = f"{EUFY_HOME_API_BASE_URL}/v1/device/"
 # bearing device is an S1 Pro (see EufyLogin._resolve_tuya_model, issue #131).
 TUYA_PRODUCT_MODELS: Final[dict[str, str]] = {
     # "<tuya_product_id>": "T2080A",   # S1 Pro — fill in from a confirmed device
+}
+# Tuya productId -> reason, for non-vacuum eufy products that share the
+# account's Tuya home and carry a localKey. getCloudDevices() skips them, so
+# they never get a vacuum coordinator or replace a vacuum placeholder
+# (issue #148).
+TUYA_IGNORED_PRODUCT_IDS: Final[dict[str, str]] = {
+    "zv0iudtdybehgecu": 'eufy robot lawn mower (Tuya name "eufy S1200")',
 }
 EUFY_API_MQTT_INFO: Final = (
     f"{EUFY_AIOT_API_BASE_URL}/app/devicemanage/get_user_mqtt_info"
