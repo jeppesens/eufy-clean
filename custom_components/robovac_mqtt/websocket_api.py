@@ -115,6 +115,26 @@ def _resolve(
     return coordinator
 
 
+def _refuse_p2p_map(
+    connection: websocket_api.ActiveConnection,
+    msg: dict[str, Any],
+    coordinator: EufyCleanCoordinator,
+) -> bool:
+    """Refuse a robot on the local P2P map feed; True when refused.
+
+    The geometry payload describes the MQTT and legacy map formats only. The
+    P2P map has no geometry payload; clients show the camera image instead.
+    """
+    if coordinator.p2p is None:
+        return False
+    connection.send_error(
+        msg["id"],
+        websocket_api.const.ERR_NOT_SUPPORTED,
+        f"No map geometry for {coordinator.device_name}: use the camera image",
+    )
+    return True
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): "robovac_mqtt/map/geometry",
@@ -138,6 +158,8 @@ async def ws_map_geometry(
     """
     coordinator = _resolve(hass, connection, msg)
     if coordinator is None:
+        return
+    if _refuse_p2p_map(connection, msg, coordinator):
         return
 
     static = await coordinator.async_map_static_geometry()
@@ -198,6 +220,8 @@ def ws_map_subscribe(
     """Subscribe to live pose / trail / geometry events for one device."""
     coordinator = _resolve(hass, connection, msg)
     if coordinator is None:
+        return
+    if _refuse_p2p_map(connection, msg, coordinator):
         return
 
     msg_id = msg["id"]
