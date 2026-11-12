@@ -1260,6 +1260,59 @@ async def test_get_devices_constructs_from_cloud_when_aiot_empty():
     assert dev["apiType"] == "legacy"
 
 
+# The scale that became a vacuum in #121; its appliance, when sent, is "Scale".
+_SCALE_PRODUCT = {"product_code": "eufy T9149", "name": "Smart Scale P2 Pro"}
+
+
+@pytest.mark.parametrize(
+    ("scale_product", "vacuum_product"),
+    [
+        pytest.param(
+            {**_SCALE_PRODUCT, "appliance": "Scale"},
+            {"product_code": "T2351", "name": "X10 Pro Omni", "appliance": "Cleaning"},
+            id="appliance",
+        ),
+        pytest.param(
+            _SCALE_PRODUCT,
+            {"product_code": "T2351", "name": "X10 Pro Omni"},
+            id="no-appliance",
+        ),
+        # A cleaning appliance whose model code is not in EUFY_CLEAN_DEVICES.
+        pytest.param(
+            {**_SCALE_PRODUCT, "appliance": "Scale"},
+            {"product_code": "T2999", "name": "New Robovac", "appliance": "Cleaning"},
+            id="appliance-unknown-model",
+        ),
+        # A record with "product": null is skipped, not a crash.
+        pytest.param(
+            None,
+            {"product_code": "T2351", "name": "X10 Pro Omni", "appliance": "Cleaning"},
+            id="product-null",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_get_devices_reconstructs_only_vacuums(scale_product, vacuum_product):
+    """#121: the cloud list holds every eufy product on the account, so with an
+    empty AIOT list only the robot vacuum is reconstructed — a smart scale must
+    not become vacuum.smart_scale_p2_pro."""
+    login = _make_login()
+    cloud_list = [
+        {"id": "scale_dev", "product": scale_product, "alias_name": "Scale"},
+        {"id": "vacuum_dev", "product": vacuum_product, "alias_name": "Robovac"},
+    ]
+    login.eufyApi.get_cloud_device_list = AsyncMock(return_value=cloud_list)
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+
+    await login.getDevices()
+
+    assert [d["deviceId"] for d in login.mqtt_devices] == ["vacuum_dev"]
+    assert login.mqtt_devices[0]["deviceModel"] == vacuum_product["product_code"]
+    # Only the reconstruction is filtered: findModel() still matches Tuya
+    # records against the full cloud list by id.
+    assert login.eufy_api_devices == cloud_list
+
+
 # ── Tuya-discovered device model resolution (issue #131) ─────────────
 
 
@@ -1545,3 +1598,171 @@ async def test_tuya_supersedes_placeholder_on_id_mismatch_single_robot():
     assert len(login.cloud_devices) == 1
     assert login.cloud_devices[0]["deviceId"] == "tuya_devid"
     assert login.cloud_devices[0]["local_key"] == "k"
+
+
+# ── Non-vacuum Tuya products on the same account (issue #148) ────────
+
+# The Tuya record from #148: "eufy S1200", most likely eufy's robot lawn mower.
+_IGNORED_TUYA_RECORD = {
+    "devId": "mower_devid",
+    "productId": "zv0iudtdybehgecu",
+    "localKey": "k",
+    "name": "eufy S1200",
+    "dps": {"153": "CgIIAQ==", "173": 1, "176": 0, "177": 0},
+}
+# Its own Eufy cloud record (same id as the Tuya devId). Listed as a cleaning
+# appliance, it is reconstructed as a placeholder of its own.
+_IGNORED_CLOUD_RECORD = {
+    "id": "mower_devid",
+    "product": {"name": "eufy S1200", "appliance": "Cleaning"},
+}
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_devices_skips_ignored_tuya_product():
+    """#148: "eufy S1200" (most likely eufy's robot lawn mower) shares the Tuya
+    home and carries a localKey, but is not a vacuum: it must not get a
+    coordinator."""
+    login = _make_login(eufy_api_devices=[])
+    login.mqtt_devices = [
+        {"deviceId": "x10_dev", "deviceName": "X10", "reconstructed": False}
+    ]
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(return_value=[_IGNORED_TUYA_RECORD])
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert not login.cloud_devices
+    assert [d["deviceId"] for d in login.mqtt_devices] == ["x10_dev"]
+
+
+@pytest.mark.parametrize(
+    "ignored_cloud_record",
+    [
+        pytest.param(None, id="devid-mismatch"),
+        pytest.param(_IGNORED_CLOUD_RECORD, id="devid-match"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_ignored_tuya_product_does_not_replace_reconstructed_placeholder(
+    ignored_cloud_record,
+):
+    """#148: an ignored product must not count as "the single Tuya robot" and
+    make getCloudDevices drop the account's reconstructed vacuum placeholder.
+    A placeholder of its own is dropped instead."""
+    login = _make_login()
+    cloud_list = [
+        {
+            "id": "eufy_id",
+            "product": {"product_code": "T2351", "name": "X10 Pro Omni"},
+            "alias_name": "X10",
+            "device_model": "T2351",
+        }
+    ]
+    if ignored_cloud_record:
+        cloud_list.append(ignored_cloud_record)
+    login.eufyApi.get_cloud_device_list = AsyncMock(return_value=cloud_list)
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+    await login.getDevices()
+    assert [d["deviceId"] for d in login.mqtt_devices] == [r["id"] for r in cloud_list]
+    assert all(d["reconstructed"] for d in login.mqtt_devices)
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(return_value=[_IGNORED_TUYA_RECORD])
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert not login.cloud_devices
+    assert [d["deviceId"] for d in login.mqtt_devices] == ["eufy_id"]
+
+
+@pytest.mark.asyncio
+async def test_ignored_tuya_product_placeholder_drop_keeps_safety_net():
+    """#148: dropping an ignored product's own placeholder is not a supersede,
+    so the single-robot safety net still pairs the one vacuum placeholder with
+    its Tuya device when their ids differ (#131)."""
+    login = _make_login()
+    login.eufyApi.get_cloud_device_list = AsyncMock(
+        return_value=[
+            {
+                "id": "eufy_id",
+                "product": {"product_code": "T2080A", "name": "S1 Pro"},
+                "alias_name": "S1 Pro",
+                "device_model": "T2080A",
+            },
+            _IGNORED_CLOUD_RECORD,
+        ]
+    )
+    login.eufyApi.get_device_list = AsyncMock(return_value=[])  # AIOT empty
+    await login.getDevices()
+    assert len(login.mqtt_devices) == 2  # both reconstructed
+
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {"devId": "tuya_devid", "localKey": "k", "name": "S1 Pro", "dps": {}},
+            _IGNORED_TUYA_RECORD,
+        ]
+    )
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert not login.mqtt_devices
+    assert [d["deviceId"] for d in login.cloud_devices] == ["tuya_devid"]
+
+
+@pytest.mark.asyncio
+async def test_get_rtc_config_relogins_the_shared_client_on_a_session_error():
+    """A session error re-authenticates the shared client once, then retries."""
+    login = _make_login()
+    client = MagicMock()
+    client.sid = "old"
+    client.get_rtc_config = AsyncMock(
+        side_effect=[
+            TuyaCloudError("EXPIRED", "Session expired"),
+            {"device_password": "pw"},
+        ]
+    )
+    login.tuya_client = client
+
+    with (
+        patch.object(login, "_tuya_relogin", AsyncMock()) as mock_relogin,
+        patch.object(login, "tuya_login", AsyncMock()) as mock_login,
+    ):
+        assert await login.get_rtc_config("dev_123") == {"device_password": "pw"}
+
+    mock_relogin.assert_awaited_once_with("old")
+    mock_login.assert_not_awaited()
+    assert login.tuya_client is client
+
+
+@pytest.mark.asyncio
+async def test_get_rtc_config_does_not_relogin_on_other_errors():
+    """A request error is raised as is; only a session error spends a login."""
+    login = _make_login()
+    client = MagicMock()
+    client.sid = "old"
+    client.get_rtc_config = AsyncMock(
+        side_effect=TuyaCloudError("PARAM_ERROR", "bad device")
+    )
+    login.tuya_client = client
+
+    with (
+        patch.object(login, "_tuya_relogin", AsyncMock()) as mock_relogin,
+        pytest.raises(TuyaCloudError),
+    ):
+        await login.get_rtc_config("dev_123")
+
+    mock_relogin.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_rtc_config_raises_when_there_is_no_session():
+    login = _make_login()
+    login.tuya_client = None
+    with pytest.raises(TuyaCloudError):
+        await login.get_rtc_config("dev_123")

@@ -9,6 +9,7 @@ import logging
 import socket
 import threading
 from collections.abc import Callable
+from functools import partial
 from typing import Any
 
 try:
@@ -18,11 +19,14 @@ except ImportError:  # pragma: no cover - tinytuya is declared in manifest.json
 
 _LOGGER = logging.getLogger(__name__)
 
-# bound tinytuya's blocking receive() so the loop can react to cancellation
-_RECV_TIMEOUT = 5.0
-
-# tinytuya's TCP connect/socket timeout for ordinary use.
-_SOCKET_TIMEOUT = 10.0
+# receive() holds the device lock for the whole timeout, and send_command()
+# queues behind it, so this is also the worst-case latency of every command.
+# Short enough to feel instant, long enough not to spin.
+_RECV_TIMEOUT = 0.5
+# Everything else (waited writes, status(), reconnects) keeps tinytuya's usual
+# timeout. set_socketTimeout also sets the connect timeout, and on a timeout
+# tinytuya reconnects and re-sends, which would double-send a slow robot's writes.
+_COMMAND_TIMEOUT = 5.0
 _RECONNECT_BACKOFF_INITIAL = 5.0
 _RECONNECT_BACKOFF_MAX = 60.0
 
@@ -58,7 +62,7 @@ _BENIGN_RECV_ERRORS = frozenset(
 _PROTOCOL_VERSIONS: tuple[float, ...] = (3.3, 3.5, 3.4, 3.1)
 
 # probe only: the probe runs on the setup path, where three extra versions at the
-# full connect timeout would block setup for ~40 s
+# full connect timeout would block setup for ~20 s
 _PROBE_SOCKET_TIMEOUT = 3.0
 
 # tinytuya returns these only when the TCP socket never opened; a wrong protocol
@@ -187,7 +191,7 @@ class LocalTuyaClient:
                 if _is_unreachable(candidate):
                     break
         finally:
-            self._dev.set_socketTimeout(_SOCKET_TIMEOUT)  # type: ignore[union-attr]
+            self._dev.set_socketTimeout(_COMMAND_TIMEOUT)  # type: ignore[union-attr]
 
         # nothing worked: restore the configured version so reconnects are predictable
         self._dev.set_version(self.version)  # type: ignore[union-attr]
@@ -209,12 +213,12 @@ class LocalTuyaClient:
             address=self.host,
             local_key=self.local_key,
             version=self.version,
-            connection_timeout=_SOCKET_TIMEOUT,
             persist=True,
         )
         # we manage reconnect ourselves so failures reach the coordinator
         self._dev.set_socketRetryLimit(1)
         self._dev.set_socketRetryDelay(0)
+        self._dev.set_socketTimeout(_COMMAND_TIMEOUT)
 
     def _unblock_receive(self) -> None:
         """Wake a parked receive() from the event loop, best-effort.
@@ -285,8 +289,12 @@ class LocalTuyaClient:
                 pass
             self._listen_task = None
 
-    async def send_command(self, dps: dict[str, Any]) -> None:
+    async def send_command(self, dps: dict[str, Any], *, wait: bool = True) -> None:
         """Send a DPS write to the device.
+
+        ``wait=False`` skips waiting for the device's reply (which arrives as an
+        ordinary push for anything it acts on). Drive commands get no reply at all,
+        so waiting on them just stalls the next command by the socket timeout.
 
         ``dps`` maps DPS index to value, as for the MQTT and cloud transports:
         plain bool/int/str for legacy DPS, base64 protobuf for novel DPS.
@@ -302,9 +310,20 @@ class LocalTuyaClient:
         # {"Error": ..., "Err": ...}, so the result must be inspected below.
         try:
             async with self._dev_lock:
-                result = await self._loop.run_in_executor(
-                    None, self._dev.set_multiple_values, dps
+                write = self._loop.run_in_executor(
+                    None, partial(self._dev.set_multiple_values, dps, nowait=not wait)
                 )
+                try:
+                    result = await asyncio.shield(write)
+                except asyncio.CancelledError:
+                    # Cancelling an await cannot stop its executor thread. Keep
+                    # the socket lock until the write finishes before a brake,
+                    # receiver or disconnect can use the non-thread-safe device.
+                    try:
+                        await write
+                    except Exception:  # noqa: BLE001 - preserve cancellation
+                        pass
+                    raise
         except Exception as e:  # noqa: BLE001 - tinytuya raises broadly
             raise LocalTuyaError(
                 f"Failed to send local Tuya command to {self.device_id}: {e}"
@@ -314,8 +333,10 @@ class LocalTuyaClient:
                 f"Local Tuya {self.device_id} rejected DPS {list(dps.keys())}: "
                 f"{result.get('Err')} {result.get('Error')}"
             )
-        # accepted, but what it changed may never be announced — ask
-        self._schedule_status_refetch()
+        # accepted, but what it changed may never be announced — ask; a nowait
+        # write returns no result and its effect arrives as a push
+        if wait:
+            self._schedule_status_refetch()
 
     def _schedule_status_refetch(self) -> None:
         """Re-read status() shortly after a write, coalescing a burst into one."""
@@ -487,7 +508,11 @@ class LocalTuyaClient:
         if dev is None or self._stop.is_set():
             return None
         dev.set_socketTimeout(_RECV_TIMEOUT)
-        return dev.receive()
+        try:
+            return dev.receive()
+        finally:
+            # the device lock is held, so nothing else runs on this socket meanwhile
+            dev.set_socketTimeout(_COMMAND_TIMEOUT)
 
     def _dispatch(self, payload: Any) -> None:
         """Hand a DPS payload to the registered callback."""
@@ -496,6 +521,7 @@ class LocalTuyaClient:
         dps = payload.get("dps")
         if not isinstance(dps, dict) or not dps:
             return
+        _LOGGER.debug("Local Tuya %s: received DPS %s", self.device_id, sorted(dps, key=str))
         if self._on_dps is not None:
             self._on_dps(dps)
             return

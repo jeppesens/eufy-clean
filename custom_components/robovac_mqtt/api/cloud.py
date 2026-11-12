@@ -16,7 +16,14 @@ from ..auth_store import (
     trim_session,
     trim_user_info,
 )
-from ..const import DPS_MAP, EUFY_CLEAN_DEVICES, SCALAR_DPS, TUYA_PRODUCT_MODELS
+from ..const import (
+    DPS_MAP,
+    EUFY_APPLIANCE_CLEANING,
+    EUFY_CLEAN_DEVICES,
+    SCALAR_DPS,
+    TUYA_IGNORED_PRODUCT_IDS,
+    TUYA_PRODUCT_MODELS,
+)
 from ..utils import is_protobuf_dps_value
 from .client import Rejection
 from .errors import (
@@ -612,17 +619,34 @@ class EufyLogin:
         self.eufy_api_devices = await self.eufyApi.get_cloud_device_list()
         _LOGGER.debug("Eufy API returned %d devices from cloud list", len(self.eufy_api_devices))
         devices = await self.eufyApi.get_device_list()
-        # v2 accounts can return an empty AIOT list while the cloud list has
-        # entries; rebuild minimal entries so MQTT setup still works.
+        # Unified-app (v2) accounts often return an empty AIOT device list even
+        # though the cloud device list has entries. Reconstruct minimal AIOT
+        # entries from the cloud list so findModel (via aiot/v2 metadata) and
+        # MQTT setup still work. Only robot vacuums are reconstructed, since the
+        # cloud list holds every eufy product on the account (issue #121);
+        # eufy_api_devices keeps them all for findModel()'s id lookup.
         if not devices and self.eufy_api_devices:
             _LOGGER.info(
                 "AIOT device list empty — constructing device entries from cloud device list"
             )
-            devices = [
-                {"device_sn": d["id"], "dps": {}, "_reconstructed": True}
-                for d in self.eufy_api_devices
-                if d.get("id")
-            ]
+            devices = []
+            for record in self.eufy_api_devices:
+                if not record.get("id"):
+                    continue
+                if not self._is_vacuum_record(record):
+                    product = record.get("product") or {}
+                    _LOGGER.debug(
+                        "Cloud list device %s: skipping (not a robot vacuum; "
+                        "product=%s, model=%s, appliance=%s)",
+                        record["id"],
+                        product.get("name"),
+                        self._cloud_record_model(record),
+                        product.get("appliance"),
+                    )
+                    continue
+                devices.append(
+                    {"device_sn": record["id"], "dps": {}, "_reconstructed": True}
+                )
         devices = [
             {
                 **self.findModel(device.get("device_sn", ""), aiot_device=device),
@@ -675,6 +699,7 @@ class EufyLogin:
             d["deviceId"] for d in self.mqtt_devices if d.get("reconstructed")
         }
         superseded_ids: set[str] = set()
+        ignored_ids: set[str] = set()
         seen_cloud_ids: set[str] = set()
 
         for device in tuya_devices:
@@ -687,6 +712,18 @@ class EufyLogin:
                 continue
             if dev_id in seen_cloud_ids:
                 _LOGGER.debug("Cloud device %s: skipping (duplicate Tuya record)", dev_id)
+                continue
+            product_id = self._tuya_product_id(device)
+            if product_id in TUYA_IGNORED_PRODUCT_IDS:
+                _LOGGER.debug(
+                    "Cloud device %s: skipping (%s is not a robot vacuum)",
+                    dev_id,
+                    TUYA_IGNORED_PRODUCT_IDS[product_id],
+                )
+                # A reconstructed placeholder with this id is that same
+                # product, so it goes too (without counting as superseded).
+                if dev_id in reconstructed_ids:
+                    ignored_ids.add(dev_id)
                 continue
             if dev_id in confirmed_ids:
                 _LOGGER.debug(
@@ -712,9 +749,10 @@ class EufyLogin:
                 _LOGGER.warning(
                     "Cloud device %s kept with unknown model "
                     "(productId=%s, name=%s); report this so a "
-                    "TUYA_PRODUCT_MODELS mapping can be added",
+                    "TUYA_PRODUCT_MODELS mapping (or, if it is not a robot "
+                    "vacuum, a TUYA_IGNORED_PRODUCT_IDS entry) can be added",
                     dev_id,
-                    device.get("productId") or device.get("productKey"),
+                    product_id,
                     device.get("name"),
                 )
 
@@ -743,9 +781,12 @@ class EufyLogin:
             )
             seen_cloud_ids.add(dev_id)
 
-        if superseded_ids:
+        # Drop the reconstructed placeholders that a Tuya device superseded or
+        # that are an ignored non-vacuum product.
+        dropped_ids = superseded_ids | ignored_ids
+        if dropped_ids:
             self.mqtt_devices = [
-                d for d in self.mqtt_devices if d["deviceId"] not in superseded_ids
+                d for d in self.mqtt_devices if d["deviceId"] not in dropped_ids
             ]
 
         # One leftover placeholder plus one unmatched keyed Tuya device is the
@@ -787,6 +828,25 @@ class EufyLogin:
         if isinstance(value, dict):
             return value
         return {}
+
+    async def get_rtc_config(self, device_id: str) -> dict[str, Any] | None:
+        """Fetch a device's P2P/RTC config; on a session error re-login and retry once.
+
+        The re-login re-authenticates the shared client under the login lock,
+        so other holders of ``tuya_client`` see the new session.
+        """
+        client = self.tuya_client
+        if not client:
+            raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session")
+        sid = client.sid
+        try:
+            return await client.get_rtc_config(device_id)
+        except TuyaCloudError as e:
+            if not _is_tuya_session_error(e):
+                raise
+            _LOGGER.debug("Tuya RTC config for %s failed: %s; re-logging in", device_id, e)
+            await self._tuya_relogin(sid)
+            return await client.get_rtc_config(device_id)
 
     async def getCloudDevice(self, device_id: str) -> dict[str, Any] | None:
         """Poll a cloud device's DPS; on a session error re-login and retry once."""
@@ -877,16 +937,40 @@ class EufyLogin:
         return code
 
     @staticmethod
+    def _cloud_record_model(record: dict[str, Any]) -> str:
+        """Model code of an Eufy cloud device list record."""
+        raw_code = (
+            (record.get("product") or {}).get("product_code", "")
+            or record.get("device_model", "")
+        )
+        return EufyLogin._resolve_model(raw_code)
+
+    @staticmethod
+    def _is_vacuum_record(record: dict[str, Any]) -> bool:
+        """Is an Eufy cloud device list record a robot vacuum?
+
+        Yes when eufy marks it a cleaning appliance or its model is a known
+        robovac; no for the account's other eufy products, e.g. a smart scale
+        (issue #121).
+        """
+        product = record.get("product") or {}
+        return (
+            product.get("appliance") == EUFY_APPLIANCE_CLEANING
+            or EufyLogin._cloud_record_model(record) in EUFY_CLEAN_DEVICES
+        )
+
+    @staticmethod
+    def _tuya_product_id(tuya_device: dict[str, Any]) -> str:
+        """Tuya product id of a Tuya cloud device record."""
+        return tuya_device.get("productId") or tuya_device.get("productKey") or ""
+
+    @staticmethod
     def _resolve_tuya_model(tuya_device: dict[str, Any]) -> str:
         """Best-effort model code for a Tuya device with no Eufy v2 match.
 
         productId table first, then an exact model code in the name.
         """
-        product_id = (
-            tuya_device.get("productId")
-            or tuya_device.get("productKey")
-            or ""
-        )
+        product_id = EufyLogin._tuya_product_id(tuya_device)
         if product_id in TUYA_PRODUCT_MODELS:
             return TUYA_PRODUCT_MODELS[product_id]
         # EXACT model codes only: _resolve_model()'s 5-char truncation would
@@ -917,17 +1001,13 @@ class EufyLogin:
         )
 
         if device:
-            raw_code = (
-                device.get("product", {}).get("product_code", "")
-                or device.get("device_model", "")
-            )
             return {
                 "deviceId": deviceId,
-                "deviceModel": self._resolve_model(raw_code),
+                "deviceModel": self._cloud_record_model(device),
                 "deviceName": device.get("alias_name")
                 or device.get("device_name")
                 or device.get("name"),
-                "deviceModelName": device.get("product", {}).get("name"),
+                "deviceModelName": (device.get("product") or {}).get("name"),
                 "invalid": False,
             }
 

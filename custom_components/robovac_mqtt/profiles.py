@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from functools import lru_cache
 
 from .const import API_TYPE_LEGACY, API_TYPE_NOVEL, API_TYPE_SCALAR
@@ -23,6 +23,7 @@ class AccessorySpec:
     max_life_hours: int  # rated lifespan / maintenance interval, hours
     time_unit: str = "h"  # unit the device reports usage in: "h" novel/legacy, "m" scalar
     is_maintenance: bool = False  # clean-interval rather than wear replacement
+    resettable: bool = True  # False: sensor only, no reset button
 
     proto_type: int | None = None  # ConsumableRequest enum, novel DPS 168
     scalar_key: str | None = None  # key in scalar DPS 150 JSON
@@ -242,6 +243,29 @@ LEGACY_DUSTBAG_50H = AccessorySpec(
     legacy_key="DB",
 )
 
+# Omni E35 (T210M): the app's Replace tab; sensor-cleaning interval from its
+# Maintain tab. The Brush Guard (120 h) is left out until it is known which
+# counter it follows.
+NOVEL_ROLLING_BRUSH_180H = replace(NOVEL_ROLLING_BRUSH, max_life_hours=180)
+NOVEL_SENSOR_120H = replace(NOVEL_SENSOR, max_life_hours=120)
+NOVEL_MOP_60H = replace(NOVEL_MOP, max_life_hours=60)
+NOVEL_DIRTY_WATERFILTER_180H = AccessorySpec(
+    attr_name="dirty_waterfilter_usage",
+    sensor_id="dirty_waterfilter_remaining",
+    sensor_name="Sewage Tank Filter Remaining",
+    button_id="_reset_dirty_waterfilter",
+    button_name="Reset Sewage Tank Filter",
+    icon="mdi:filter-outline",
+    max_life_hours=180,
+    resettable=False,
+    proto_type=ConsumableRequest.DIRTY_WATERFILTER,
+    supported_api_types=(API_TYPE_NOVEL,),
+)
+
+# S1 Pro (T2080A): the eufy app's accessory table (hours).
+NOVEL_FILTER_60H = replace(NOVEL_FILTER, max_life_hours=60)
+NOVEL_SENSOR_360H = replace(NOVEL_SENSOR, max_life_hours=360)
+
 
 NOVEL_OMNI_ACCESSORIES: dict[str, AccessorySpec] = {
     "filter_usage": NOVEL_FILTER,
@@ -290,6 +314,24 @@ LEGACY_X8_PRO_ACCESSORIES: dict[str, AccessorySpec] = {
     "dustbag_usage": LEGACY_DUSTBAG_50H,
 }
 
+NOVEL_E35_ACCESSORIES: dict[str, AccessorySpec] = {
+    "filter_usage": NOVEL_FILTER,
+    "main_brush_usage": NOVEL_ROLLING_BRUSH_180H,
+    "side_brush_usage": NOVEL_SIDE_BRUSH,
+    "sensor_usage": NOVEL_SENSOR_120H,
+    "mop_usage": NOVEL_MOP_60H,
+    "dirty_waterfilter_usage": NOVEL_DIRTY_WATERFILTER_180H,
+}
+
+# S1 Pro: roller mop, no cleaning tray.
+NOVEL_S1_PRO_ACCESSORIES: dict[str, AccessorySpec] = {
+    "filter_usage": NOVEL_FILTER_60H,
+    "main_brush_usage": NOVEL_ROLLING_BRUSH_180H,
+    "side_brush_usage": NOVEL_SIDE_BRUSH,
+    "sensor_usage": NOVEL_SENSOR_360H,
+    "mop_usage": NOVEL_MOP_60H,
+}
+
 DEFAULT_NOVEL_ACCESSORIES = NOVEL_OMNI_ACCESSORIES
 DEFAULT_SCALAR_ACCESSORIES = SCALAR_ACCESSORIES
 
@@ -334,7 +376,12 @@ MODEL_PROFILES: dict[str, DeviceProfile] = {
     "T2080A": DeviceProfile(
         model="T2080A",
         api_type=API_TYPE_NOVEL,
-        accessories=NOVEL_OMNI_ACCESSORIES,
+        accessories=NOVEL_S1_PRO_ACCESSORIES,
+    ),
+    "T210M": DeviceProfile(
+        model="T210M",
+        api_type=API_TYPE_NOVEL,
+        accessories=NOVEL_E35_ACCESSORIES,
     ),
     "T2119": DeviceProfile(
         model="T2119",

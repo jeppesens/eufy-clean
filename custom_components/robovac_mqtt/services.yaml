@@ -2,8 +2,8 @@ room_at_point:
   name: Room at point
   description: >-
     Resolve which mapped room sits under a normalized point on the rendered map
-    image. Returns { room_id, room_name }; room_id is null when no room is there
-    (0 is a valid room id). Used by
+    image. Returns { room_id, room_name }; room_id is -1 when no room is there
+    (0 is a valid room id on some robots). Used by
     the bundled Eufy Clean card for tap-a-room-on-the-map selection.
   target:
     entity:
@@ -106,6 +106,36 @@ forget_map:
         number:
           min: 1
           mode: box
+
+remote_drive:
+  name: Remote drive
+  description: >-
+    Drive the robot by hand, like the app's Manual Controls. The command is
+    repeated every 500 ms for the duration, then the robot brakes. Start remote
+    mode with vacuum.send_command start_remote (and leave it with stop_remote).
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    direction:
+      name: Direction
+      description: Which way to move; brake stops without leaving remote mode.
+      required: true
+      example: forward
+      selector:
+        select:
+          options: [forward, back, left, right, brake]
+    duration:
+      name: Duration
+      description: Seconds to keep moving (maximum 10).
+      default: 1
+      selector:
+        number:
+          min: 0
+          max: 10
+          step: 0.5
+          unit_of_measurement: s
 
 set_room_config:
   name: Set room config

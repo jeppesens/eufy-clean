@@ -366,6 +366,36 @@ class TuyaCloudClient:
         )
         return schema
 
+    async def get_rtc_config(self, device_id: str) -> dict[str, Any] | None:
+        """Fetch the P2P/RTC config for one device.
+
+        Returns ``{"device_password", "ice_config", "session"}`` where
+        ``ice_config`` holds the offer's ``token`` (the ICE servers), ``tcp_token``
+        and ``log``. The conversation-0 credential is derived from
+        ``device_password``; the ICE servers are required for the device to gather
+        its host candidate.
+
+        ``session`` is the pre-session the cloud has just reserved on the robot
+        (``sessionId``, ICE credentials, AES key, ``uid``). **Every call reserves a
+        slot on the robot for about ten hours and it is only released by using it**:
+        a session that does not adopt it leaves the slot taken, and enough of those
+        make the robot refuse every session. So fetch only when a session is about
+        to be opened, and open it with this ``session``.
+        """
+        result = await self.request("m.ipc.v4.rtc.config.get", {"devId": device_id}, version="1.0")
+        if not result:
+            return None
+        p2p = result.get("p2pConfig", {}) or {}
+        return {
+            "device_password": result.get("password", ""),
+            "ice_config": {
+                "token": p2p.get("ices", []),
+                "tcp_token": p2p.get("tcpRelay", {}),
+                "log": p2p.get("log", {}),
+            },
+            "session": p2p.get("session") or {},
+        }
+
     async def get_device(self, device_id: str) -> dict[str, Any] | None:
         """Poll a single device's state (DPS) from Tuya Cloud."""
         devices = await self.get_device_list()

@@ -1,4 +1,5 @@
-"""Unit tests for the map camera entity and the lazy PNG render behind it.
+"""Unit tests for the camera platform setup, the map camera entity and the lazy
+PNG render behind it.
 
 The render is LAZY: ``render_map_png`` costs ~83 ms of largely GIL-holding Python
 for a ~208 KiB image, and a card in ``client_render`` mode never fetches it. So
@@ -15,7 +16,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from custom_components.robovac_mqtt.api.map_stream import MapData
-from custom_components.robovac_mqtt.camera import FRAME_WRITE_INTERVAL, EufyMapCamera
+from custom_components.robovac_mqtt.camera import (
+    FRAME_WRITE_INTERVAL,
+    EufyMapCamera,
+    async_setup_entry,
+)
 from custom_components.robovac_mqtt.coordinator import EufyCleanCoordinator
 from custom_components.robovac_mqtt.models import VacuumState
 
@@ -360,3 +365,51 @@ async def test_a_failed_render_leaves_the_frame_stale(live_hass, mock_login):
         assert await camera.async_camera_image() == b"PNG"
 
     assert calls == 2
+
+
+# ── Platform setup ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("api_type", "receives_map", "expected_unique_ids"),
+    [
+        ("novel", True, ["dev_map"]),
+        ("novel", False, []),
+        ("legacy", True, ["dev_map"]),
+        ("legacy", False, []),
+        ("scalar", True, []),
+    ],
+)
+async def test_map_camera_only_created_where_a_map_arrives(
+    api_type, receives_map, expected_unique_ids
+):
+    """Without a map source (Tuya Cloud polling, or local Tuya without the P2P
+    feed) there is no map camera, and the one an older build registered is
+    pruned. The live camera is added later, once P2P is up, so it is never
+    pruned. Scalar devices get no map camera on any transport."""
+    coordinator = MagicMock(spec=EufyCleanCoordinator)
+    coordinator.device_id = "dev"
+    coordinator.api_type = api_type
+    coordinator.receives_map = receives_map
+    coordinator.map_revision = 0
+    coordinator.p2p = None
+    coordinator.data = VacuumState()
+
+    hass = MagicMock()
+    config_entry = MagicMock()
+    config_entry.entry_id = "entry"
+    hass.data = {"robovac_mqtt": {"entry": {"coordinators": [coordinator]}}}
+
+    added_entities: list = []
+    with patch("custom_components.robovac_mqtt.camera.prune_orphan_entities") as prune:
+        await async_setup_entry(hass, config_entry, added_entities.extend)
+
+    assert [e.unique_id for e in added_entities] == expected_unique_ids
+    prune.assert_called_once_with(
+        hass,
+        "entry",
+        [coordinator],
+        added_unique_ids={*expected_unique_ids, "dev_camera"},
+        platform="camera",
+    )
