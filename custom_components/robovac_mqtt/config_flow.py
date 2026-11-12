@@ -2,11 +2,10 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import random
 import re
-import string
 from typing import Any
 
+import aiohttp
 import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant import config_entries
@@ -18,7 +17,8 @@ from voluptuous import In
 from voluptuous import Optional as VOptional
 from voluptuous import Required, Schema
 
-from .api.cloud import EufyLogin
+from .api.cloud import EufyLogin, EufyLoginError, EufyLoginTransientError
+from .auth_store import AuthCache, AuthStore
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
@@ -30,15 +30,20 @@ from .const import (
     CONF_NOTIFY_MOBILE_SERVICE,
     CONF_ROBOT_STYLE,
     CONF_ROOM_NAMES,
+    CONF_TRAIL_COLOR,
     DEFAULT_MAP_MAX_PX,
     DEFAULT_NOTIFY_DESKTOP,
     DEFAULT_NOTIFY_MOBILE_SERVICE,
     DEFAULT_ROBOT_STYLE,
+    DEFAULT_TRAIL_COLOR,
     DOMAIN,
     VACS,
 )
 
 _LOGGER = logging.getLogger(__name__)
+
+# Map image sizes offered in the options form; DEFAULT_MAP_MAX_PX is labelled "(default)".
+_MAP_SIZE_GRADES: dict[int, str] = {256: "low", 512: "medium", 1024: "high", 2048: "ultra"}
 
 USER_SCHEMA = Schema(
     {
@@ -106,11 +111,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         title = current_username
         username = user_input[CONF_USERNAME]
 
-        # Verify username matches existing entry (optional, but robust)
         if username != current_username:
             errors[CONF_USERNAME] = "username_mismatch"
         else:
-            title, errors = await self._login_and_get_title(username, user_input[CONF_PASSWORD])
+            title, errors = await self._login_existing_entry(
+                entry, username, user_input[CONF_PASSWORD]
+            )
 
         if not errors:
             return self.async_update_reload_and_abort(
@@ -150,8 +156,8 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
                 description_placeholders={"username": username},
             )
 
-        _title, errors = await self._login_and_get_title(
-            username, user_input[CONF_PASSWORD]
+        _title, errors = await self._login_existing_entry(
+            entry, username, user_input[CONF_PASSWORD]
         )
 
         if not errors:
@@ -168,21 +174,50 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
             description_placeholders={"username": username},
         )
 
-    async def _login_and_get_title(
-        self, username: str, password: str
+    async def _login_existing_entry(
+        self, entry: config_entries.ConfigEntry, username: str, password: str
     ) -> tuple[str, dict[str, str]]:
-        """Login and return (title, errors).
+        """Log in with the entry's stored openudid and keep the fresh tokens.
 
-        Title is the discovered device name(s) (MQTT + Tuya Cloud), falling
-        back to the username when no devices are found.
+        Rotating the openudid invalidates the account's tokens (auth_store.py);
+        the saved tokens let the reload skip a second login.
+        """
+        store = AuthStore(self.hass, entry.entry_id)
+        cached = await store.async_load()
+        # Identity and probe memos only: the old tokens are what failed.
+        cache = AuthCache(
+            openudid=cached.openudid,
+            login_label=cached.login_label,
+            tuya_region=cached.tuya_region,
+        )
+        title, errors = await self._login_and_get_title(username, password, cache)
+        if not errors:
+            await store.async_save(cache)
+        return title, errors
+
+    async def _login_and_get_title(
+        self,
+        username: str,
+        password: str,
+        auth_cache: AuthCache | None = None,
+    ) -> tuple[str, dict[str, str]]:
+        """Login and return (discovered device names or username, errors).
+
+        ``auth_cache`` supplies the openudid and receives the fresh tokens.
         """
         errors: dict[str, str] = {}
         title = username
+        cache = auth_cache or AuthCache()
         try:
-            openudid = "".join(random.choices(string.hexdigits, k=32))
-            _LOGGER.info("Trying to login with username: %s", username)
+            _LOGGER.debug("Trying to log in")
             session = async_get_clientsession(self.hass)
-            eufy_login = EufyLogin(username, password, openudid, websession=session)
+            eufy_login = EufyLogin(
+                username,
+                password,
+                cache.openudid,
+                websession=session,
+                auth_cache=cache if auth_cache is not None else None,
+            )
             await eufy_login.init()
             devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
             if devices:
@@ -191,20 +226,21 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
                 )
             else:
                 errors["base"] = "no_devices"
-        except Exception as e:
-            _LOGGER.exception("Unexpected exception: %s", e)
+        except EufyLoginError as e:
+            _LOGGER.debug("Eufy login rejected: %s", e)
             errors["base"] = "invalid_auth"
+        except (EufyLoginTransientError, aiohttp.ClientError, TimeoutError) as e:
+            _LOGGER.debug("Eufy login unavailable: %s", e)
+            errors["base"] = "cannot_connect"
+        except Exception:  # noqa: BLE001 - surfaced as a form error
+            _LOGGER.exception("Unexpected error during Eufy login")
+            errors["base"] = "unknown"
 
         return title, errors
 
 
 class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     """Eufy Robovac options: global settings + per-device local-Tuya overrides.
-
-    Global settings cover map rendering, robot style and notifications. The
-    per-device section lets a user opt a Tuya Cloud device into direct local
-    push by entering its LAN address (the local key is auto-supplied by the
-    Tuya Cloud login), plus manual room id->name overrides.
 
     Saving changed options reloads the entry (OptionsFlowWithReload), so the
     entry must not register an update listener: HA raises if it does.
@@ -213,7 +249,7 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
         # HA 2025+ deprecates assigning to self.config_entry; use a private ref.
         self._config_entry = config_entry
-        # Device id chosen in the "devices" step, configured in the "device" step.
+        # chosen in the "devices" step, configured in the "device" step
         self._selected_device: str | None = None
 
     async def async_step_init(
@@ -228,14 +264,10 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     async def async_step_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Global settings: map rendering, robot style, notifications.
-
-        Every field is optional (each has a current/default value), so any one
-        can be changed without re-entering the others.
-        """
+        """Global settings: map rendering, robot style, notifications."""
         if user_input is not None:
-            # An unselected mobile-service dropdown submits None; store "" so
-            # downstream consumers can rely on a plain string.
+            # an unselected dropdown submits None; store "" so consumers always
+            # get a plain string
             if user_input.get(CONF_NOTIFY_MOBILE_SERVICE) is None:
                 user_input[CONF_NOTIFY_MOBILE_SERVICE] = ""
             return self.async_create_entry(
@@ -245,12 +277,13 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
         opts = self._config_entry.options
         current_max_px = str(opts.get(CONF_MAP_MAX_PX, DEFAULT_MAP_MAX_PX))
         current_robot_style = opts.get(CONF_ROBOT_STYLE, DEFAULT_ROBOT_STYLE)
+        # ColorRGBSelector round-trips a JSON list, so seed it as a list
+        current_trail_color = list(opts.get(CONF_TRAIL_COLOR, DEFAULT_TRAIL_COLOR))
         current_notify_desktop = opts.get(CONF_NOTIFY_DESKTOP, DEFAULT_NOTIFY_DESKTOP)
         current_notify_mobile_service = opts.get(
             CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE
         )
 
-        # Discover available mobile app notify services
         all_notify = self.hass.services.async_services().get("notify", {})
         mobile_services = sorted(
             svc for svc in all_notify if svc.startswith("mobile_app_")
@@ -268,10 +301,13 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
                 VOptional(CONF_MAP_MAX_PX, default=current_max_px): selector.SelectSelector(
                     selector.SelectSelectorConfig(
                         options=[
-                            selector.SelectOptionDict(value="256", label="256 px (low)"),
-                            selector.SelectOptionDict(value="512", label="512 px (default)"),
-                            selector.SelectOptionDict(value="1024", label="1024 px (high)"),
-                            selector.SelectOptionDict(value="2048", label="2048 px (ultra)"),
+                            selector.SelectOptionDict(
+                                value=str(px),
+                                label=f"{px} px (default)"
+                                if px == DEFAULT_MAP_MAX_PX
+                                else f"{px} px ({grade})",
+                            )
+                            for px, grade in _MAP_SIZE_GRADES.items()
                         ],
                         mode=selector.SelectSelectorMode.LIST,
                     )
@@ -286,10 +322,12 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
                     )
                 ),
                 VOptional(
+                    CONF_TRAIL_COLOR, default=current_trail_color
+                ): selector.ColorRGBSelector(),
+                VOptional(
                     CONF_NOTIFY_DESKTOP, default=current_notify_desktop
                 ): selector.BooleanSelector(),
-                # vol.Maybe lets an unselected dropdown (which submits None) pass
-                # validation; the step normalises None back to "".
+                # vol.Maybe lets an unselected dropdown (None) pass validation
                 VOptional(
                     CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service
                 ): vol.Maybe(
@@ -347,8 +385,8 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     ) -> ConfigFlowResult:
         """Configure one device's local-Tuya host / protocol / room overrides.
 
-        Uses static field keys (host/version/rooms) so they get proper
-        translated labels, with the device name shown in the step description.
+        Field keys are static so they pick up translated labels; the device name
+        goes in the step description instead.
         """
         dev_id = self._selected_device
         devices = {d[0]: d for d in self._eligible_devices()}
@@ -356,7 +394,7 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
             return self.async_abort(reason="no_devices")
         _id, name, model, coord = devices[dev_id]
         has_local_key = bool(getattr(coord, "_local_key", None))
-        # Copy the full stored map so other devices' overrides are preserved.
+        # copy the whole map so other devices' overrides survive the write
         existing_all: dict[str, dict] = dict(
             self._config_entry.options.get(CONF_LOCAL_DEVICES, {})
         )
@@ -464,10 +502,8 @@ def _option_lines(text: str) -> list[str]:
 def _parse_rooms_text(text: str) -> dict[int, str]:
     """Parse a user-entered "id: name" multi-line string into a dict.
 
-    Lines starting with ``#`` are treated as comments. Whitespace and
-    duplicate IDs are tolerated; the LAST occurrence of an ID wins. Lines
-    that don't fit ``<int>: <text>`` are silently ignored — we'd rather
-    accept loose input than reject the whole form.
+    ``#`` lines are comments; unparsable lines are ignored rather than
+    rejecting the whole form, and the last occurrence of an id wins.
     """
     rooms: dict[int, str] = {}
     for line in _option_lines(text):
@@ -484,17 +520,15 @@ def _parse_rooms_text(text: str) -> dict[int, str]:
     return rooms
 
 
-# A single hostname label: alphanumeric, may contain hyphens internally,
-# 1-63 chars. The full hostname is one or more such labels joined by dots.
+# one hostname label: 1-63 chars, hyphens allowed but not at either end
 _HOSTNAME_LABEL = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
 
 
 def _is_valid_host(host: str) -> bool:
     """Return True if ``host`` is a bare IP address or plausible hostname.
 
-    Rejects values carrying a scheme or port (e.g. ``http://x`` or
-    ``1.2.3.4:6668``) since the local-Tuya client expects a bare host. An
-    empty string is *not* validated here (empty = "stay on cloud").
+    The local-Tuya client wants a bare host, so a scheme or port (``1.2.3.4:6668``)
+    is rejected; empty means "stay on cloud" and is rejected here too.
     """
     if not host:
         return False
@@ -503,7 +537,6 @@ def _is_valid_host(host: str) -> bool:
         return True
     except ValueError:
         pass
-    # Not an IP — accept a plausible hostname (no scheme, no port, no spaces).
     if len(host) > 253:
         return False
     return all(_HOSTNAME_LABEL.match(label) for label in host.split("."))
@@ -512,9 +545,8 @@ def _is_valid_host(host: str) -> bool:
 def _format_rooms_text(rooms: dict[int, str]) -> str:
     """Render the saved override dict back as the textarea default.
 
-    Room ids are sorted numerically (not lexically) so that e.g. room 10
-    comes after room 9 even when keys arrive as strings (JSON storage
-    stringifies int keys).
+    Sort numerically: JSON storage stringifies the int keys, so a lexical sort
+    would put room 10 before room 9.
     """
     if not rooms:
         return ""

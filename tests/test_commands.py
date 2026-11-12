@@ -431,6 +431,52 @@ def test_set_room_custom_keeps_room_zero():
     assert [r.id for r in decoded.rooms_custom.rooms_parm.rooms] == [0, 2]
 
 
+def test_zone_clean_clamps_clean_times_to_the_service_range():
+    """The service caps passes at 1-3; the builder enforces the same range."""
+    for asked, sent in ((0, 1), (-4, 1), (2, 2), (99, 3), ("x", 1)):
+        quad = [(0, 0), (100, 0), (100, 100), (0, 100)]
+        result = build_zone_clean_command([quad], map_id=3, clean_times=asked)
+        req = decode(ModeCtrlRequest, result[DPS_MAP["PLAY_PAUSE"]])
+        assert req.select_zones_clean.zones[0].clean_times == sent
+
+
+def test_room_custom_clamps_clean_times():
+    result = build_set_room_custom_command([{"id": 1, "clean_times": 50}], map_id=3)
+    req = decode(MapEditRequest, next(iter(result.values())))
+    assert req.rooms_custom.rooms_parm.rooms[0].custom.clean_times == 3
+
+
+def test_non_string_levels_are_ignored_not_raised():
+    """A non-str fan/water/intensity value is an invalid choice, not a crash."""
+    assert build_command("set_fan_speed", fan_speed=3) == {}
+    assert not build_set_water_level_command(3)
+    assert not build_set_cleaning_intensity_command(None)
+    assert build_set_room_custom_command(
+        [{"id": 1, "fan_speed": 3, "water_level": 2, "clean_intensity": 1}], map_id=3
+    )
+
+
+def test_out_of_range_times_are_refused(caplog):
+    """Hours 0-23 and minutes 0-59 only; bad windows send nothing and warn."""
+    for api_type in ("novel", "scalar"):
+        assert build_command(
+            "set_do_not_disturb", api_type=api_type, begin_hour=24, begin_minute=0,
+            end_hour=8, end_minute=0,
+        ) == {}
+        assert build_command(
+            "set_do_not_disturb", api_type=api_type, begin_hour=22, begin_minute=-1,
+            end_hour=8, end_minute=0,
+        ) == {}
+    assert build_command(
+        "set_off_peak_charging", begin_hour=21, begin_minute=60, end_hour=7, end_minute=0
+    ) == {}
+    assert "out of range" in caplog.text
+    assert build_command(
+        "set_do_not_disturb", api_type="scalar", begin_hour=23, begin_minute=59,
+        end_hour=0, end_minute=0,
+    )
+
+
 def test_tuya_transport_suction_is_the_level_name():
     """Over Tuya (S1 Pro) DPS 158 is an enum string, not the MQTT index."""
     assert build_command("set_fan_speed", tuya_transport=True, fan_speed="quiet") == {"158": "Quiet"}

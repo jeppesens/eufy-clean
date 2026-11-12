@@ -21,6 +21,8 @@
     "paho.mqtt"
   ],
   "requirements": [
+    "paho-mqtt>=2.1.0,<3",
+    "protobuf>=4.21.0,<8",
     "tinytuya>=1.18.0,<2.0.0"
   ],
   "version": "1.13.1"

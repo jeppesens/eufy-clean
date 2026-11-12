@@ -177,7 +177,7 @@ Room segments with guaranteed unique names (duplicates auto-suffixed, e.g. `Kitc
 
 | Setting | Default | Notes |
 |---------|---------|-------|
-| Map image size | 512 px | 256 / 512 / 1024 / 2048 px |
+| Map image size | 1024 px | 256 / 512 / 1024 / 2048 px |
 | Robot marker style | Googly Eyes | Googly Eyes / Dot |
 | Desktop notification | Off | HA bell icon on robot errors |
 | Mobile notification service | *(blank)* | Select phone or type `mobile_app_name`; blank = disabled |
@@ -223,11 +223,18 @@ unavailable just because the LAN address has shifted.
 > integration debug logs that might contain it into public issues.
 
 > [!NOTE]
-> On Tuya-transport devices the map, rooms and cleaning path are not on any DPS;
-> they ride an encrypted local P2P channel. On the local Tuya transport the
-> integration keeps a P2P session open on the LAN (streaming while the robot
-> moves, refreshing while it rests) and decodes it, so you get the same
-> experience as on MQTT robots:
+> On Tuya-transport devices the map, rooms and cleaning path are not on any DPS.
+> They come from one of two sources:
+>
+> - **Tuya cloud map** (legacy robots such as the T2266): the map is downloaded
+>   from Tuya cloud storage, and the live position and cleaning trail arrive on a
+>   separate Tuya channel. Both need cloud access, with or without the LAN
+>   transport.
+> - **Local P2P channel**: on the local Tuya transport the integration keeps a
+>   P2P session open on the LAN (streaming while the robot moves, refreshing
+>   while it rests) and decodes it.
+>
+> Either way you get the same experience as on MQTT robots:
 >
 > - the room list with the names set in the app (room cleaning, HA areas/segments,
 >   the room select, tap-a-room on the bundled card);
@@ -236,16 +243,17 @@ unavailable just because the LAN address has shifted.
 >   being cleaned;
 > - the active map id, so room and zone commands target the right map.
 >
-> Verified end to end on the S1 Pro (T2080A). Other robots on local Tuya 3.3
-> start the feed too and so get the map camera, but only the S1 Pro is verified
-> to send a map over it. The channel is documented in `docs/P2P_MAP_CHANNEL.md`.
-> The P2P password comes from your Tuya Cloud session, so each new P2P connection
-> needs a fresh cloud-issued session. The feed needs Tuya protocol 3.3 and a Tuya
-> Cloud session. Without them, and over Tuya Cloud polling, no map arrives: the
-> map camera isn't created, and `zone_clean` fails with an error unless a map
-> from an earlier session with the feed is still stored. Everything else
-> (vacuum/mop mode, water level, spot and room commands, station, consumables,
-> lifetime stats) works over both transports.
+> The P2P feed is verified end to end on the S1 Pro (T2080A). Other robots on
+> local Tuya 3.3 start the feed too and so get the map camera, but only the S1
+> Pro is verified to send a map over it. The channel is documented in
+> `docs/P2P_MAP_CHANNEL.md`. The P2P password comes from your Tuya Cloud session,
+> so each new P2P connection needs a fresh cloud-issued session. The feed needs
+> Tuya protocol 3.3 and a Tuya Cloud session. On a robot without the Tuya cloud
+> map, without them and over Tuya Cloud polling no map arrives: the map camera
+> isn't created, and `zone_clean` fails with an error unless a map from an
+> earlier session with the feed is still stored. Everything else (vacuum/mop
+> mode, water level, spot and room commands, station, consumables, lifetime
+> stats) works over both transports.
 
 ### Optional: Manual room name overrides
 
@@ -399,6 +407,13 @@ has cleaned once (or you've edited the map in the app).
 ---
 
 ## Development
+
+### Documentation
+
+| Document | Contents |
+|----------|----------|
+| [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) | layers, transports, datapoint map, state model, entity platforms |
+| [`docs/MAP.md`](docs/MAP.md) | how the floor map, live pose and cleaning trail are obtained and drawn |
 
 ### Local Testing
 A `docker-compose.yml` is included for local development:
