@@ -26,6 +26,7 @@ from .const import (
     EUFY_CLEAN_CLEANING_MODES,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     EUFY_CLEAN_WATER_LEVELS,
+    HEIGHT_DETECTION_MODES,
     LEGACY_ROOM_FAN_LEVELS,
     LEGACY_ROOM_WATER_LEVELS,
     SCALAR_CLEAN_PATTERN_NAMES,
@@ -104,18 +105,15 @@ async def async_setup_entry(
                 WaterLevelSelectEntity(coordinator),
                 MopIntensitySelectEntity(coordinator),
                 CleaningIntensitySelectEntity(coordinator),
+                HeightDetectionSelectEntity(coordinator),
                 DockSelectEntity(
                     coordinator,
                     "wash_frequency_mode",
                     "Wash Frequency Mode",
-                    ["ByRoom", "ByTime"],
-                    lambda cfg: (
-                        "ByRoom"
-                        if cfg.get("wash", {})
-                        .get("wash_freq", {})
-                        .get("mode", "ByPartition")
-                        == "ByPartition"
-                        else "ByTime"
+                    list(_WASH_FREQ_MODES),
+                    lambda cfg: _WASH_FREQ_MODES_BY_PROTO.get(
+                        cfg.get("wash", {}).get("wash_freq", {}).get("mode", "ByPartition"),
+                        "ByRoom",
                     ),
                     _set_wash_freq_mode,
                     icon="mdi:calendar-sync",
@@ -145,16 +143,12 @@ async def async_setup_entry(
         if coordinator.connection_type == "mqtt":
             candidates.append(SceneSelectEntity(coordinator))
             candidates.append(MapSelectEntity(coordinator))
-        # Legacy devices get the entity whether or not the map blob fetch worked:
-        # the prune below deletes any entity this setup did not add, so one failed
-        # download would destroy the registry entry for good. An empty option list
-        # self-heals instead — `options` is computed live.
-        if (
-            coordinator.connection_type == "mqtt"
-            or coordinator.api_type == API_TYPE_LEGACY
-            or coordinator.room_name_overrides
-            or coordinator.data.rooms
-        ):
+        # The room list comes with the map, or from a manual {room_id: name}
+        # override supplied through the options flow. A legacy robot whose map
+        # download failed still gets the entity (receives_map does not wait for
+        # the download): the prune below would delete it for good, while an
+        # empty option list self-heals, as `options` is computed live.
+        if coordinator.receives_map or coordinator.room_name_overrides:
             candidates.append(RoomSelectEntity(coordinator))
 
         entities.extend(filter_supported_entities(coordinator, candidates))
@@ -171,13 +165,18 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+# Wash-frequency option -> WashCfg.BackwashFreq.Mode. The S1 Pro washes by area.
+_WASH_FREQ_MODES = {"ByRoom": "ByPartition", "ByTime": "ByTime", "ByArea": "ByArea"}
+_WASH_FREQ_MODES_BY_PROTO = {proto: option for option, proto in _WASH_FREQ_MODES.items()}
+
+
 def _set_wash_freq_mode(cfg: dict[str, Any], val: str) -> None:
     """Helper to set wash freq mode."""
     if "wash" not in cfg:
         cfg["wash"] = {}
     if "wash_freq" not in cfg["wash"]:
         cfg["wash"]["wash_freq"] = {}
-    cfg["wash"]["wash_freq"]["mode"] = "ByPartition" if val == "ByRoom" else "ByTime"
+    cfg["wash"]["wash_freq"]["mode"] = _WASH_FREQ_MODES[val]
 
 
 def _get_dry_duration(cfg: dict[str, Any]) -> str:
@@ -636,8 +635,10 @@ class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize suction level select."""
         super().__init__(coordinator, "suction_level")
-        # On scalar, BoostIQ is a separate switch (DPS 118), not a 5th level.
-        if coordinator.api_type == API_TYPE_SCALAR:
+        # Scalar devices (DPS 118) and Tuya-transport protobuf robots (DPS 159)
+        # expose BoostIQ as a separate switch, not a 5th level. Legacy devices
+        # use the speeds their Tuya schema lists.
+        if coordinator.api_type == API_TYPE_SCALAR or coordinator.tuya_transport:
             self._attr_options = SCALAR_SUCTION_LEVELS
         elif coordinator.api_type == API_TYPE_LEGACY:
             self._attr_options = coordinator.legacy_fan_speeds
@@ -771,6 +772,26 @@ class CleaningIntensitySelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize cleaning intensity select."""
         super().__init__(coordinator, "cleaning_intensity")
+
+
+class HeightDetectionSelectEntity(_StateBackedSelectEntity):
+    """How readily the robot treats low furniture edges as obstacles (S1 Pro)."""
+
+    supported_api_types = (API_TYPE_NOVEL,)
+
+    _attr_has_entity_name = True
+    _attr_name = "Height Detection"
+    _attr_icon = "mdi:arrow-collapse-vertical"
+    _attr_options = list(HEIGHT_DETECTION_MODES.values())
+    _command_name = "set_height_detection"
+    _command_arg_name = "mode"
+    _state_field = "height_detection"
+    _available_field = "height_detection"
+    _log_label = "Height detection"
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize height detection select."""
+        super().__init__(coordinator, "height_detection")
 
 
 _VOICE_OPTIONS = [label for label, _ in VOICE_CATALOG.values()]

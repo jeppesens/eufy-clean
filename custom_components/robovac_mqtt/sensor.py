@@ -25,6 +25,7 @@ from ._orphan_cleanup import prune_orphan_entities
 from .const import API_TYPE_LEGACY, API_TYPE_NOVEL, API_TYPE_SCALAR, DOMAIN
 from .coordinator import EufyCleanCoordinator, VacuumState
 from .entity import filter_supported_entities
+from .errors import error_attributes, error_sensor_value
 from .profiles import AccessorySpec, DeviceProfile, get_device_profile
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,6 +62,15 @@ async def async_setup_entry(
 
         sensors: list[SensorEntity] = [
             BatterySensorEntity(coordinator),
+            RoboVacSensor(
+                coordinator,
+                "error_code",
+                "Error Code",
+                error_sensor_value,
+                icon="mdi:alert-circle-outline",
+                category=EntityCategory.DIAGNOSTIC,
+                extra_state_attributes_fn=error_attributes,
+            ),
             RoboVacSensor(
                 coordinator,
                 "error_message",
@@ -193,6 +203,17 @@ async def async_setup_entry(
                 availability_fn=lambda s: "station_dirty_water" in s.received_fields,
                 supported_api_types=(API_TYPE_NOVEL,),
             ),
+            RoboVacSensor(
+                coordinator,
+                "clean_water_level",
+                "Clean Water Level",
+                lambda s: s.station_clean_water_level,
+                device_class=None,
+                unit=None,
+                state_class=None,
+                availability_fn=lambda s: "station_clean_water_level" in s.received_fields,
+                supported_api_types=(API_TYPE_NOVEL,),
+            ),
             # Dock status sensor
             RoboVacSensor(
                 coordinator,
@@ -297,6 +318,8 @@ async def async_setup_entry(
             ),
         ]
 
+        # Accessory sensors follow the model's profile (profiles.py): a model only
+        # gets the accessories its profile lists.
         profile = (
             coordinator.profile
             if isinstance(getattr(coordinator, "profile", None), DeviceProfile)
@@ -354,9 +377,9 @@ async def async_setup_entry(
                 )
             )
 
-        # Only the MQTT transport carries MultiMapsManageResponse; on Tuya the id
-        # never arrives, so skip the entity rather than leave it `unavailable`.
-        if coordinator.connection_type == "mqtt":
+        # The active map id and the current room come with the map, so skip
+        # them where no map arrives to avoid a permanent `unavailable`.
+        if coordinator.receives_map:
             novel_sensors.append(CurrentRoomSensorEntity(coordinator))
             novel_sensors.append(
                 RoboVacSensor(
@@ -500,11 +523,9 @@ class CurrentRoomSensorEntity(RoboVacSensor):
         )
 
     def _room_value(self) -> str | None:
-        room = self.coordinator.current_room()
-        if room is None:
-            return None
-        room_id, room_name = room
-        return room_name or f"Room {room_id}"
+        # Legacy rooms number from 0, so only None means outside any room.
+        room_id, room_name = self.coordinator.current_room() or (None, None)
+        return (room_name or f"Room {room_id}") if room_id is not None else None
 
     def _room_attributes(self) -> dict[str, Any]:
         room_id, room_name = self.coordinator.current_room() or (None, None)

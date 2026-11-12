@@ -1,6 +1,9 @@
 {
   "domain": "robovac_mqtt",
   "name": "Eufy Robovac MQTT",
+  "after_dependencies": [
+    "ffmpeg"
+  ],
   "codeowners": [
     "@jeppesens",
     "@m11tch"

@@ -46,6 +46,12 @@ const TAP_FRAC = 0.03; // a press that moves less than this counts as a tap (roo
 // genuine move clears the post-switch draw pause; a docked robot stays paused.
 const POSE_MOVE_THRESHOLD = 5;
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
+// The card can be loaded twice (the integration's auto-registration plus a manual
+// Lovelace resource, or two cache-busting versions); redefining an element throws
+// and would abort the whole module, so register each tag only once.
+const defineOnce = (tag, cls) => {
+  if (!customElements.get(tag)) customElements.define(tag, cls);
+};
 
 // --- per-room setting vocabularies: [display label, command value] -------------------------
 // Values are the EXACT keys the integration's set_room_custom builder accepts (see
@@ -687,15 +693,16 @@ class EufyCleanCard extends HTMLElement {
         resp[this._config.vacuum] ||
         (resp.room_id !== undefined ? resp : Object.values(resp)[0]) ||
         {};
-      // A miss is null; 0 is a real room id (legacy robots number rooms from 0).
+      // A miss is null, -1 or absent; 0 is a real room id on some robots.
       const raw = entry.room_id;
-      rid = raw === null || raw === undefined || raw === "" ? null : Number(raw);
+      const n = raw === null || raw === undefined || raw === "" ? NaN : Number(raw);
+      rid = Number.isInteger(n) && n >= 0 ? n : null;
     } catch (err) {
       this._setStatus(`Tap lookup failed: ${err && err.message ? err.message : err}`);
       return;
     }
     // Only real, listed rooms are selectable; a miss or an unlisted id resolves to nothing.
-    const room = Number.isFinite(rid) ? this._lastRooms.find((r) => r.id === rid) : null;
+    const room = rid === null ? null : this._lastRooms.find((r) => r.id === rid);
     if (!room) {
       this._setStatus("No room there — tap inside a room.");
       return;
@@ -1133,7 +1140,7 @@ class EufyCleanCard extends HTMLElement {
   }
 }
 
-customElements.define("eufy-clean-card", EufyCleanCard);
+defineOnce("eufy-clean-card", EufyCleanCard);
 
 // Backward-compat alias: existing `type: custom:zone-clean-card` dashboards keep working and open
 // in ZONES mode. Same card, different default — a distinct subclass is required because a custom
@@ -1143,7 +1150,7 @@ class ZoneCleanCard extends EufyCleanCard {
     return "zones";
   }
 }
-customElements.define("zone-clean-card", ZoneCleanCard);
+defineOnce("zone-clean-card", ZoneCleanCard);
 
 /* ------------------------------------------------------------------------------------------
  * Visual config editor — vanilla, no Lit, no dependencies.
@@ -1250,7 +1257,7 @@ class EufyCleanCardEditor extends HTMLElement {
     this._emitting = false;
   }
 }
-customElements.define("eufy-clean-card-editor", EufyCleanCardEditor);
+defineOnce("eufy-clean-card-editor", EufyCleanCardEditor);
 
 // True when `entityId` is a robovac_mqtt vacuum — used to auto-suggest this card in HA
 // 2026.6+'s entity-first card picker. Prefer the frontend entity registry's platform;
@@ -1266,7 +1273,7 @@ function isForkVacuum(hass, entityId) {
 }
 
 window.customCards = window.customCards || [];
-window.customCards.push({
+if (!window.customCards.some((c) => c.type === "eufy-clean-card")) window.customCards.push({
   type: "eufy-clean-card",
   name: "Eufy Clean Card",
   description: "Clean rooms with per-room settings (tap them on the map), or draw zones (Eufy — jeppesens/eufy-clean).",
