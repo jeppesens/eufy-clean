@@ -1083,7 +1083,9 @@ class EufyCleanCard extends HTMLElement {
   // socket dropped mid-request), retry with backoff instead.
   _clientRenderFailed(err) {
     const code = err && err.code;
-    if (this._crRecovering || code === "not_found" || code === "unknown_command" || code === 3) {
+    // The server has no geometry for this robot's map (the P2P feed): final, show the PNG.
+    const final = code === "not_supported";
+    if (!final && (this._crRecovering || code === "not_found" || code === "unknown_command" || code === 3)) {
       // One warning per streak: the retries repeat every 30 s while the integration is down.
       if (!this._crRetryWarned) console.warn("[eufy-clean-card] map commands failed; retrying", err);
       this._crRetryWarned = true;
@@ -1092,7 +1094,7 @@ class EufyCleanCard extends HTMLElement {
       this._scheduleResubscribe(`map commands unavailable (${code || (err && err.message) || err})`);
       return;
     }
-    if (this._crActive && !this._crStarting) {
+    if (!final && this._crActive && !this._crStarting) {
       console.warn("[eufy-clean-card] client map render error; keeping the last frame", err);
       return;
     }

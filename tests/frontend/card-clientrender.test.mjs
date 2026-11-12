@@ -1816,5 +1816,55 @@ console.log("[24] a configured No-go mode reads the stored shapes without a mode
   }
 }
 
+// ---- 25. `not_supported` is final ------------------------------------------------------------
+// A robot on the P2P map feed has no geometry payload; the server answers `not_supported`.
+console.log("[25] not_supported falls back to the camera image");
+{
+  // a geometry re-fetch while drawing
+  const r = makeRendererModule();
+  const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod));
+  ok(card._crActive === true, "drawing before the refusal");
+  conn.geometry = async () => {
+    const err = new Error("No map geometry");
+    err.code = "not_supported";
+    throw err;
+  };
+  conn.subs[0].cb({ t: "geometry", revision: 99 });
+  await settle();
+  expectPng(card, conn, "not_supported while drawing");
+  card.remove();
+}
+{
+  // a resubscribe after the entry reloaded
+  const realSet = window.setTimeout;
+  const realClear = window.clearTimeout;
+  let timers = [];
+  window.setTimeout = (fn, ms) => {
+    const t = { fn, ms, id: timers.length + 1000 };
+    timers.push(t);
+    return t.id;
+  };
+  window.clearTimeout = (id) => {
+    timers = timers.filter((t) => t.id !== id);
+  };
+  try {
+    const r = makeRendererModule();
+    const { card, conn } = await mount({ client_render: true }, () => Promise.resolve(r.mod));
+    conn.subs[0].cb({ t: "gone" });
+    conn.subscribeError = { code: "not_supported", message: "No map geometry" };
+    const pending = timers.find((t) => t.id === card._crRetryTimer);
+    ok(pending !== undefined, "a resubscribe is scheduled");
+    timers = timers.filter((t) => t !== pending);
+    pending.fn();
+    await settle();
+    expectPng(card, conn, "not_supported on resubscribe");
+    ok(!timers.some((t) => t.id === card._crRetryTimer), "no further resubscribe is scheduled");
+    card.remove();
+  } finally {
+    window.setTimeout = realSet;
+    window.clearTimeout = realClear;
+  }
+}
+
 console.log(fail === 0 ? "\nALL PASSED" : `\n${fail} FAILURES`);
 process.exit(fail === 0 ? 0 : 1);
