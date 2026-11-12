@@ -32,6 +32,7 @@ repos:
         additional_dependencies:
           - types-protobuf
           - types-requests
+          - types-PyYAML
   - repo: local
     hooks:
       - id: pylint

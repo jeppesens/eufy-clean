@@ -117,7 +117,8 @@ received.
 
 Errors: `invalid_format` when neither address is given, `not_found` when no loaded
 device matches (or its entry is unloading), and `no_map` when the device has no decoded
-map: not yet, or never on a scalar device, which has no map.
+map: not yet, or never on a scalar device, which has no map. A robot on the local P2P
+map feed answers `not_supported` to both commands: its map has no geometry payload.
 
 ### `room_polygons`
 
@@ -255,6 +256,7 @@ until the entry is set up again.
   the integration is not loaded yet, not a reason to fall back to the PNG.
 - Treat `no_map` from the geometry command as "no decoded map yet": keep the subscription
   and fetch the geometry again on the next `geometry` event.
+- Treat `not_supported` from either command as final: show the camera image.
 - Hit-test rooms client-side: sample `rooms_grid`, subtract 1, send the **id**.
 - Zone rectangles keep the existing contract: send **normalized** coordinates via
   `vacuum.send_command` and let the server convert. Do not reimplement

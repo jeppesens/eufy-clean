@@ -424,6 +424,26 @@ def test_subscribe_unknown_device_errors(mock_hass, mock_login):
     assert not connection.results
 
 
+async def test_p2p_map_robot_gets_no_geometry(mock_hass, mock_login):
+    """A robot on the P2P map feed is refused, so the card shows the camera image."""
+    coordinator = _make_coordinator(mock_hass, mock_login)
+    coordinator._map_data = _make_map()
+    coordinator.p2p = MagicMock()
+    _register(mock_hass, coordinator)
+
+    connection = FakeConnection()
+    await _ws_map_geometry(mock_hass, connection, {"id": 5, "device_id": "dev1"})
+    ws_map_subscribe(mock_hass, connection, {"id": 6, "device_id": "dev1"})
+
+    assert not connection.results
+    assert not connection.subscriptions
+    assert [(i, c) for i, c, _ in connection.errors] == [
+        (5, websocket_api.const.ERR_NOT_SUPPORTED),
+        (6, websocket_api.const.ERR_NOT_SUPPORTED),
+    ]
+    assert not coordinator._map_listeners
+
+
 def test_subscribe_does_not_need_a_map(mock_hass, mock_login):
     """Subscribing before the first map decode is legal — geometry tells it when."""
     coordinator = _make_coordinator(mock_hass, mock_login)

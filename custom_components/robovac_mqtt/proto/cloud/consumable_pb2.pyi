@@ -32,10 +32,12 @@ class ConsumableResponse(_message.Message):
 class ConsumableRuntime(_message.Message):
     __slots__ = ["dirty_waterfilter", "dirty_watertank", "dustbag", "filter_mesh", "last_time", "mop", "rolling_brush", "scrape", "sensor", "side_brush"]
     class Duration(_message.Message):
-        __slots__ = ["duration"]
+        __slots__ = ["duration", "duration_min"]
         DURATION_FIELD_NUMBER: _ClassVar[int]
+        DURATION_MIN_FIELD_NUMBER: _ClassVar[int]
         duration: int
-        def __init__(self, duration: _Optional[int] = ...) -> None: ...
+        duration_min: int
+        def __init__(self, duration: _Optional[int] = ..., duration_min: _Optional[int] = ...) -> None: ...
     DIRTY_WATERFILTER_FIELD_NUMBER: _ClassVar[int]
     DIRTY_WATERTANK_FIELD_NUMBER: _ClassVar[int]
     DUSTBAG_FIELD_NUMBER: _ClassVar[int]

@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from custom_components.robovac_mqtt.api import local_tuya as lt
+from custom_components.robovac_mqtt.api import local_tuya
 from custom_components.robovac_mqtt.api.local_tuya import (
     LocalTuyaClient,
     LocalTuyaError,
@@ -82,8 +82,21 @@ async def test_send_command_calls_set_multiple(patch_tinytuya, fake_dev):
     finally:
         await client.disconnect()
     fake_dev.set_multiple_values.assert_called_once_with(
-        {"154": "BgoEIgIIAg=="}
+        {"154": "BgoEIgIIAg=="}, nowait=False
     )
+
+
+@pytest.mark.asyncio
+async def test_send_command_can_skip_the_reply_wait(patch_tinytuya, fake_dev):
+    """Drive commands get no reply; waiting on one stalls the next by the socket timeout."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client.set_on_message(lambda _b: None)
+    await client.connect()
+    try:
+        await client.send_command({"155": "AggB"}, wait=False)
+    finally:
+        await client.disconnect()
+    fake_dev.set_multiple_values.assert_called_once_with({"155": "AggB"}, nowait=True)
 
 
 @pytest.mark.asyncio
@@ -457,7 +470,7 @@ async def test_write_is_followed_by_a_status_re_read(patch_tinytuya, fake_dev):
     await client.connect()
     try:
         fake_dev.status.return_value = {"dps": {"116": "eyJyZXNldCI6MH0="}}
-        with patch.object(lt, "_POST_WRITE_REFETCH_DELAY", 0):
+        with patch.object(local_tuya, "_POST_WRITE_REFETCH_DELAY", 0):
             await client.send_command({"116": "eyJjb25zdW1hYmxlIjp7fX0="})
             await asyncio.sleep(0.05)
     finally:
@@ -475,7 +488,7 @@ async def test_a_burst_of_writes_costs_one_re_read(patch_tinytuya, fake_dev):
     await client.connect()
     fake_dev.status.reset_mock()
     try:
-        with patch.object(lt, "_POST_WRITE_REFETCH_DELAY", 0.02):
+        with patch.object(local_tuya, "_POST_WRITE_REFETCH_DELAY", 0.02):
             await client.send_command({"102": "Quiet"})
             await client.send_command({"103": True})
             await client.send_command({"105": "Mid"})
@@ -492,7 +505,7 @@ async def test_teardown_cancels_a_pending_re_read(patch_tinytuya, fake_dev):
     client.set_on_message(lambda _b: None)
     await client.connect()
     fake_dev.status.reset_mock()
-    with patch.object(lt, "_POST_WRITE_REFETCH_DELAY", 5):
+    with patch.object(local_tuya, "_POST_WRITE_REFETCH_DELAY", 5):
         await client.send_command({"102": "Quiet"})
     await client.disconnect()
     await asyncio.sleep(0.05)
@@ -642,7 +655,8 @@ async def test_unreachable_device_raises_instead_of_pretending_to_connect(
     await client.disconnect()
 
     # ...and no protocol version was probed: no version can open a socket, and
-    # at 10 s a try that turned one dead device into ~40 s of blocked setup.
+    # at the full timeout a try per version turned one dead device into ~20 s of
+    # blocked setup.
     assert fake_dev.status.call_count == 1
     assert fake_dev.set_version.call_count == 0
 
@@ -666,4 +680,38 @@ async def test_a_wrong_protocol_version_is_still_probed(patch_tinytuya, fake_dev
 
     assert client.version == 3.5
     # Probed with the short timeout, and the ordinary one restored afterwards.
-    assert [c.args[0] for c in fake_dev.set_socketTimeout.call_args_list] == [3.0, 10.0]
+    assert [c.args[0] for c in fake_dev.set_socketTimeout.call_args_list] == [
+        local_tuya._COMMAND_TIMEOUT,  # set when the device is opened
+        local_tuya._PROBE_SOCKET_TIMEOUT,
+        local_tuya._COMMAND_TIMEOUT,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_write_holds_socket_lock_until_executor_finishes(patch_tinytuya, fake_dev):
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    client._dev = fake_dev
+    pending = asyncio.get_running_loop().create_future()
+    client._loop = MagicMock()
+    client._loop.run_in_executor.return_value = pending
+    write = asyncio.create_task(client.send_command({"155": "brake"}, wait=False))
+    await asyncio.sleep(0)
+    write.cancel()
+    await asyncio.sleep(0)
+    assert client._dev_lock.locked() and not pending.cancelled()
+    pending.set_result(None)
+    with pytest.raises(asyncio.CancelledError):
+        await write
+    assert not client._dev_lock.locked()
+
+
+@pytest.mark.asyncio
+async def test_only_the_listen_receive_uses_the_short_socket_timeout(patch_tinytuya, fake_dev):
+    """A short timeout elsewhere makes tinytuya reconnect and re-send slow robots' writes."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    await client.connect()
+    fake_dev.receive.side_effect = lambda: fake_dev.set_socketTimeout.call_args_list[-1].args[0]
+    assert client._receive_with_timeout() == local_tuya._RECV_TIMEOUT
+    assert fake_dev.set_socketTimeout.call_args_list[-1].args[0] == local_tuya._COMMAND_TIMEOUT
+    assert local_tuya._COMMAND_TIMEOUT > local_tuya._RECV_TIMEOUT
+    await client.disconnect()

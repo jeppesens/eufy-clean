@@ -32,6 +32,25 @@ const CR_RESUB_MAX_MS = 30000;
 // Raw-pose delta (device units) beyond which the robot counts as re-localized after a switch.
 const POSE_MOVE_THRESHOLD = 5;
 const clamp01 = (v) => Math.min(Math.max(v, 0), 1);
+// The card can be loaded twice (the integration's auto-registration plus a manual
+// Lovelace resource, or two cache-busting versions); redefining an element throws
+// and would abort the whole module, so register each tag only once.
+function defineOnce(tag, cls) {
+  if (customElements.get(tag)) {
+    if (!defineOnce._warned) {
+      defineOnce._warned = true;
+      console.warn(
+        `[eufy-clean-card] "${tag}" was already registered, so this copy of the card ` +
+          "was ignored. The card still works, but it is being loaded twice — check for " +
+          "a duplicate Lovelace resource pointing at /robovac_mqtt/eufy-clean-card.js " +
+          "(Settings > Dashboards > Resources); the integration registers it for you."
+      );
+    }
+    return false;
+  }
+  customElements.define(tag, cls);
+  return true;
+}
 
 // [display label, command value]. Values are the exact keys set_room_custom accepts (see
 // const.py CLEAN_TYPE_MAP / MOP_LEVEL_MAP / CLEAN_EXTENT_MAP); "" omits the key entirely.
@@ -2221,10 +2240,10 @@ class EufyCleanCard extends HTMLElement {
         resp[this._config.vacuum] ||
         (resp.room_id !== undefined ? resp : Object.values(resp)[0]) ||
         {};
-      // "No room there" is null/"" from the service; room id 0 is a real room.
+      // A miss is null, -1 or absent; 0 is a real room id on some robots.
       const raw = entry.room_id;
-      rid = raw == null || raw === "" ? null : Number(raw);
-      if (!Number.isFinite(rid)) rid = null;
+      const n = raw === null || raw === undefined || raw === "" ? NaN : Number(raw);
+      rid = Number.isInteger(n) && n >= 0 ? n : null;
     } catch (err) {
       this._setStatus(`Tap lookup failed: ${err && err.message ? err.message : err}`);
       return;
@@ -3302,27 +3321,7 @@ class EufyCleanCard extends HTMLElement {
   }
 }
 
-// Each distinct URL is a separate module, so this file can be evaluated twice in one page
-// (a stale `?v=` alongside the current one). A bare define() would throw and abort the rest
-// of the module, so register defensively: first definition wins, later ones no-op.
-function defineCard(tag, cls) {
-  if (customElements.get(tag)) {
-    if (!defineCard._warned) {
-      defineCard._warned = true;
-      console.warn(
-        `[eufy-clean-card] "${tag}" was already registered, so this copy of the card ` +
-          "was ignored. The card still works, but it is being loaded twice — check for " +
-          "a duplicate Lovelace resource pointing at /robovac_mqtt/eufy-clean-card.js " +
-          "(Settings > Dashboards > Resources); the integration registers it for you."
-      );
-    }
-    return false;
-  }
-  customElements.define(tag, cls);
-  return true;
-}
-
-defineCard("eufy-clean-card", EufyCleanCard);
+defineOnce("eufy-clean-card", EufyCleanCard);
 
 // `custom:zone-clean-card` alias: a distinct subclass, since one constructor takes one tag name.
 class ZoneCleanCard extends EufyCleanCard {
@@ -3330,7 +3329,7 @@ class ZoneCleanCard extends EufyCleanCard {
     return "zones";
   }
 }
-defineCard("zone-clean-card", ZoneCleanCard);
+defineOnce("zone-clean-card", ZoneCleanCard);
 
 /* Visual config editor — vanilla, no Lit, no dependencies. */
 class EufyCleanCardEditor extends HTMLElement {
@@ -3445,7 +3444,7 @@ class EufyCleanCardEditor extends HTMLElement {
     this._emitting = false;
   }
 }
-defineCard("eufy-clean-card-editor", EufyCleanCardEditor);
+defineOnce("eufy-clean-card-editor", EufyCleanCardEditor);
 
 // True for a robovac_mqtt vacuum: registry platform, else companion entities on the same slug.
 function isForkVacuum(hass, entityId) {

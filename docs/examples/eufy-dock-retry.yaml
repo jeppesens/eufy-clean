@@ -1,0 +1,152 @@
+# Requires input_text.eufy_dock_retry_history (max: 255, no initial value).
+alias: 'Eufy: retry failed docking (ten in 30 minutes)'
+description: Only E74/E75/E76. Resume an interrupted task; E76 has ended the task,
+  so use native return-to-base. Persistent rolling limit, three-minute spacing, stop
+  on recovery or any other fault.
+mode: single
+max_exceeded: silent
+triggers:
+- trigger: template
+  value_template: "{% set codes = state_attr('vacuum.robovac', 'error_codes') or [state_attr('vacuum.robovac',\
+    \ 'error_code')] %}\n{{ is_state('vacuum.robovac', 'error') and codes | count\
+    \ > 0\n   and codes | reject('in', ['E74', 'E75', 'E76']) | list | count == 0\
+    \ }}"
+  for:
+    seconds: 30
+- trigger: homeassistant
+  event: start
+conditions:
+- condition: template
+  value_template: "{% set codes = state_attr('vacuum.robovac', 'error_codes') or [state_attr('vacuum.robovac',\
+    \ 'error_code')] %}\n{{ is_state('vacuum.robovac', 'error') and codes | count\
+    \ > 0\n   and codes | reject('in', ['E74', 'E75', 'E76']) | list | count == 0\
+    \ }}"
+actions:
+- if:
+  - condition: template
+    value_template: '{{ trigger is defined and trigger.platform == ''homeassistant''
+      }}'
+  then:
+  - delay:
+      seconds: 30
+- repeat:
+    count: 10
+    sequence:
+    - condition: template
+      value_template: "{% set codes = state_attr('vacuum.robovac', 'error_codes')\
+        \ or [state_attr('vacuum.robovac', 'error_code')] %}\n{{ is_state('vacuum.robovac',\
+        \ 'error') and codes | count > 0\n   and codes | reject('in', ['E74', 'E75',\
+        \ 'E76']) | list | count == 0 }}"
+    - variables:
+        stored_attempts: '{{ states(''input_text.eufy_dock_retry_history'') | from_json(none)
+          }}'
+    - variables:
+        history_valid: '{% set ns = namespace(valid=stored_attempts is sequence and
+          stored_attempts is not string and stored_attempts is not mapping, previous=-1)
+          %}
+
+          {% if ns.valid %}{% for item in stored_attempts %}
+
+          {% if item is not integer or item < 0 or item > as_timestamp(now()) + 5
+          or item < ns.previous %}
+
+          {% set ns.valid = false %}{% else %}{% set ns.previous = item %}{% endif
+          %}
+
+          {% endfor %}{% endif %}
+
+          {{ ns.valid and stored_attempts | count <= 10 }}'
+    - if:
+      - condition: template
+        value_template: '{{ not history_valid }}'
+      then:
+      - action: persistent_notification.create
+        data:
+          notification_id: eufy_dock_retry
+          title: Eufy docking recovery
+          message: Retry history is unavailable or invalid; no robot command was sent.
+            Check input_text.eufy_dock_retry_history.
+      - stop: Invalid retry history
+    - variables:
+        attempts: '{{ stored_attempts | select(''gt'', as_timestamp(now()) - 1800)
+          | list }}'
+    - if:
+      - condition: template
+        value_template: '{{ attempts | count >= 10 }}'
+      then:
+      - action: persistent_notification.create
+        data:
+          notification_id: eufy_dock_retry
+          title: Eufy docking recovery
+          message: 'Eufy docking recovery stopped: ten retry commands have been
+            attempted in the last 30 minutes. The robot still needs attention.'
+      - stop: Ten retries in 30 minutes already attempted
+    - variables:
+        wait_seconds: '{{ ([0, attempts[-1] + 180 - as_timestamp(now())] | max | round(0,
+          ''ceil'') | int) if attempts else 0 }}'
+    - if:
+      - condition: template
+        value_template: '{{ wait_seconds > 0 }}'
+      then:
+      - wait_template: "{% set codes = state_attr('vacuum.robovac', 'error_codes')\
+          \ or [state_attr('vacuum.robovac', 'error_code')] %}\n{{ not (is_state('vacuum.robovac',\
+          \ 'error') and codes | count > 0\n   and codes | reject('in', ['E74', 'E75',\
+          \ 'E76']) | list | count == 0) }}"
+        timeout:
+          seconds: '{{ wait_seconds }}'
+        continue_on_timeout: true
+    - condition: template
+      value_template: "{% set codes = state_attr('vacuum.robovac', 'error_codes')\
+        \ or [state_attr('vacuum.robovac', 'error_code')] %}\n{{ is_state('vacuum.robovac',\
+        \ 'error') and codes | count > 0\n   and codes | reject('in', ['E74', 'E75',\
+        \ 'E76']) | list | count == 0 }}"
+    - variables:
+        attempts: '{{ stored_attempts | select(''gt'', as_timestamp(now()) - 1800)
+          | list }}'
+    - action: input_text.set_value
+      target:
+        entity_id: input_text.eufy_dock_retry_history
+      data:
+        value: '{{ (attempts + [as_timestamp(now()) | int]) | to_json }}'
+    - choose:
+      - conditions:
+        - condition: template
+          value_template: '{{ state_attr(''vacuum.robovac'', ''error_code'') == ''E76''
+            }}'
+        sequence:
+        - action: vacuum.return_to_base
+          target:
+            entity_id: vacuum.robovac
+          continue_on_error: true
+      default:
+      - action: vacuum.send_command
+        target:
+          entity_id: vacuum.robovac
+        data:
+          command: resume
+        continue_on_error: true
+    - wait_template: "{% set codes = state_attr('vacuum.robovac', 'error_codes') or\
+        \ [state_attr('vacuum.robovac', 'error_code')] %}\n{{ not (is_state('vacuum.robovac',\
+        \ 'error') and codes | count > 0\n   and codes | reject('in', ['E74', 'E75',\
+        \ 'E76']) | list | count == 0) }}"
+      timeout:
+        seconds: 30
+      continue_on_timeout: true
+    - if:
+      - condition: template
+        value_template: '{{ wait.completed }}'
+      then:
+      - stop: Robot recovered or changed to another fault
+- if:
+  - condition: template
+    value_template: "{% set codes = state_attr('vacuum.robovac', 'error_codes') or\
+      \ [state_attr('vacuum.robovac', 'error_code')] %}\n{{ is_state('vacuum.robovac',\
+      \ 'error') and codes | count > 0\n   and codes | reject('in', ['E74', 'E75',\
+      \ 'E76']) | list | count == 0 }}"
+  then:
+  - action: persistent_notification.create
+    data:
+      notification_id: eufy_dock_retry
+      title: Eufy docking recovery
+      message: 'Eufy docking recovery stopped: ten retry commands have been attempted
+        in the last 30 minutes. The robot still needs attention.'

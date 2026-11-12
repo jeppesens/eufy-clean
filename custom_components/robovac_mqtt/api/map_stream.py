@@ -1,4 +1,8 @@
-"""Parse biz/ MQTT protocol-41 map stream messages and render PNG."""
+"""Parse biz/ MQTT protocol-41 map stream messages into ``MapData``.
+
+``render_map_png`` renders MQTT and legacy Tuya maps; P2P maps render in
+:mod:`.map_render`.
+"""
 from __future__ import annotations
 
 import io
@@ -13,6 +17,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFont
 from ..const import DEFAULT_TRAIL_COLOR
 from ..proto.cloud import stream_pb2
 from ..utils import decode_varint, lz4_block_decompress
+from .map_render import MAX_MAP_PIXELS, MAX_ROOM_ID
 from .tuya_map import (
     _MAX_MAP_DIMENSION,
     CELL_OBSTACLE,
@@ -182,8 +187,9 @@ class MapData:
         """Return the room id at a normalized point on the rendered map, or None.
 
         ``(nx, ny)`` are 0-1 fractions of the rendered PNG with a top-left origin
-        (the HA camera-image convention); this is the exact inverse of
-        ``render_map_png``'s room-mask lookup.
+        (the HA camera-image convention); this is the exact inverse of the
+        renderer's room-mask lookup. Room ids are 0-31 (0 is a real room on some
+        robots); 60-63 mark background, gaps and obstacles.
         """
         if not self.room_pixels or not self.room_outline_width or not self.room_outline_height:
             return None
@@ -192,19 +198,26 @@ class MapData:
         res = self.resolution or 5
         w, h = self.width, self.height
         # normalized (rendered, top-left) -> source grid pixel; the render Y-flips.
-        # FLOOR, not round: the card hit-tests the same grid with `Math.floor`.
+        # FLOOR, not round: a cell owns the half-open span of its width in both
+        # renderers, and the card hit-tests the same grid with `Math.floor`.
         px = min(max(int(nx * w), 0), max(w - 1, 0))
         py = min(max(int((1.0 - ny) * h), 0), max(h - 1, 0))
-        # the room mask has its own origin; matches render_map_png's _ro_dx/_ro_dy.
+        # the room mask has its own origin; matches the renderer's _ro_dx/_ro_dy.
         ro_dx = round((self.origin_x - self.room_outline_origin_x) / res)
         ro_dy = round((self.origin_y - self.room_outline_origin_y) / res)
         rx, ry = px - ro_dx, py - ro_dy
         if 0 <= rx < self.room_outline_width and 0 <= ry < self.room_outline_height:
             idx = ry * self.room_outline_width + rx
             if 0 <= idx < len(self.room_pixels):
-                stored = self.room_pixels[idx] >> 2  # low 2 bits are sub-type
-                if stored > 0:
-                    return stored - self.room_id_offset
+                stored = self.room_pixels[idx] >> 2  # low 2 bits are the pixel type
+                if self.room_id_offset:
+                    # ids stored offset (Tuya): a stored 0 is no room
+                    return stored - self.room_id_offset if stored > 0 else None
+                rid = stored
+                # With no room list byte 0 is empty space (X-series ids start at 1); with
+                # one, a room counts if listed (the S1 Pro numbers from 0).
+                if rid <= MAX_ROOM_ID and (rid in self.room_names if self.room_names else rid > 0):
+                    return rid
         return None
 
 
@@ -327,6 +340,50 @@ def _check_map_dimensions(width: int, height: int) -> None:
             f"Map dimensions {width}x{height} exceed safety limit "
             f"(max {_MAX_MAP_DIMENSION}x{_MAX_MAP_DIMENSION})"
         )
+
+
+def _lz4_block_decompress(data: bytes, uncompressed_size: int) -> bytes:
+    """Decode one LZ4 block, enforcing its declared size and valid backreferences."""
+    if not 0 <= uncompressed_size <= MAX_MAP_PIXELS:
+        raise ValueError("decompressed map exceeds the pixel limit")
+    output = bytearray()
+    pos = 0
+
+    def length(value: int) -> int:
+        nonlocal pos
+        if value == 15:
+            while True:
+                if pos >= len(data):
+                    raise ValueError("truncated LZ4 length")
+                extra = data[pos]
+                pos += 1
+                value += extra
+                if extra != 255:
+                    break
+        return value
+
+    while pos < len(data):
+        token = data[pos]
+        pos += 1
+        literal = length(token >> 4)
+        if pos + literal > len(data) or len(output) + literal > uncompressed_size:
+            raise ValueError("invalid LZ4 literal length")
+        output.extend(data[pos : pos + literal])
+        pos += literal
+        if pos == len(data):
+            break
+        if pos + 2 > len(data):
+            raise ValueError("truncated LZ4 offset")
+        offset = int.from_bytes(data[pos : pos + 2], "little")
+        pos += 2
+        match = length(token & 0xF) + 4
+        if not 0 < offset <= len(output) or len(output) + match > uncompressed_size:
+            raise ValueError("invalid LZ4 match")
+        for _ in range(match):
+            output.append(output[-offset])
+    if len(output) != uncompressed_size:
+        raise ValueError("LZ4 output does not match its declared size")
+    return bytes(output)
 
 
 def _pixel_plane(raw: bytes, cells: int) -> bytes:
