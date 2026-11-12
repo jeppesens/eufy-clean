@@ -834,12 +834,12 @@ def test_receives_map(mock_hass, mock_login, connection_type, has_p2p, expected)
 
 @pytest.mark.parametrize(
     ("connection_type", "has_tuya_session", "expected"),
-    [("cloud", True, True), ("local", True, True), ("cloud", False, False)],
+    [("cloud", True, True), ("local", True, True), ("cloud", False, True)],
 )
 def test_receives_map_legacy_tuya(
     mock_hass, mock_login, connection_type, has_tuya_session, expected
 ):
-    """A legacy robot's map comes from Tuya cloud storage, which needs a Tuya session."""
+    """A legacy robot keeps its map entities whether or not the Tuya login worked."""
     device_info = {
         "deviceId": "dev1",
         "deviceModel": "T2266",

@@ -719,23 +719,23 @@ class EufyLogin:
         return {}
 
     async def get_rtc_config(self, device_id: str) -> dict[str, Any] | None:
-        """Fetch a device's P2P/RTC config, re-logging in once if the session died.
+        """Fetch a device's P2P/RTC config; on a session error re-login and retry once.
 
-        Reads ``tuya_client`` at call time: a re-login (here or in
-        ``getCloudDevice``) replaces the client, so a reference captured at
-        startup would keep a dead sid.
+        The re-login re-authenticates the shared client under the login lock,
+        so other holders of ``tuya_client`` see the new session.
         """
-        if not self.tuya_client:
+        client = self.tuya_client
+        if not client:
             raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session")
+        sid = client.sid
         try:
-            return await self.tuya_client.get_rtc_config(device_id)
+            return await client.get_rtc_config(device_id)
         except TuyaCloudError as e:
-            _LOGGER.debug("Tuya RTC config for %s failed: %s; attempting re-login", device_id, e)
-            self.tuya_client.sid = None
-            await self.tuya_login()
-            if not self.tuya_client:
-                raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session after re-login") from e
-            return await self.tuya_client.get_rtc_config(device_id)
+            if not _is_tuya_session_error(e):
+                raise
+            _LOGGER.debug("Tuya RTC config for %s failed: %s; re-logging in", device_id, e)
+            await self._tuya_relogin(sid)
+            return await client.get_rtc_config(device_id)
 
     async def getCloudDevice(self, device_id: str) -> dict[str, Any] | None:
         """Poll a cloud device's DPS; on a session error re-login and retry once."""

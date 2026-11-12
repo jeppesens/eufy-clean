@@ -1641,28 +1641,47 @@ async def test_ignored_tuya_product_placeholder_drop_keeps_safety_net():
 
 
 @pytest.mark.asyncio
-async def test_get_rtc_config_relogins_and_reads_the_new_client():
-    """The RTC fetch must follow a re-login: a client captured at startup keeps a dead sid."""
+async def test_get_rtc_config_relogins_the_shared_client_on_a_session_error():
+    """A session error re-authenticates the shared client once, then retries."""
     login = _make_login()
-    old = MagicMock()
-    old.sid = "old"
-    old.get_rtc_config = AsyncMock(side_effect=TuyaCloudError("EXPIRED", "Session expired"))
-    new = MagicMock()
-    new.get_rtc_config = AsyncMock(return_value={"device_password": "pw"})
-    login.tuya_client = old
+    client = MagicMock()
+    client.sid = "old"
+    client.get_rtc_config = AsyncMock(
+        side_effect=[
+            TuyaCloudError("EXPIRED", "Session expired"),
+            {"device_password": "pw"},
+        ]
+    )
+    login.tuya_client = client
 
-    async def relogin():
-        login.tuya_client = new
-
-    with patch.object(login, "tuya_login", AsyncMock(side_effect=relogin)) as mock_relogin:
+    with (
+        patch.object(login, "_tuya_relogin", AsyncMock()) as mock_relogin,
+        patch.object(login, "tuya_login", AsyncMock()) as mock_login,
+    ):
         assert await login.get_rtc_config("dev_123") == {"device_password": "pw"}
 
-    mock_relogin.assert_awaited_once()
-    assert old.sid is None
-    new.get_rtc_config.assert_awaited_once_with("dev_123")
-    # Later calls use the replacement without logging in again.
-    mock_relogin.reset_mock()
-    await login.get_rtc_config("dev_123")
+    mock_relogin.assert_awaited_once_with("old")
+    mock_login.assert_not_awaited()
+    assert login.tuya_client is client
+
+
+@pytest.mark.asyncio
+async def test_get_rtc_config_does_not_relogin_on_other_errors():
+    """A request error is raised as is; only a session error spends a login."""
+    login = _make_login()
+    client = MagicMock()
+    client.sid = "old"
+    client.get_rtc_config = AsyncMock(
+        side_effect=TuyaCloudError("PARAM_ERROR", "bad device")
+    )
+    login.tuya_client = client
+
+    with (
+        patch.object(login, "_tuya_relogin", AsyncMock()) as mock_relogin,
+        pytest.raises(TuyaCloudError),
+    ):
+        await login.get_rtc_config("dev_123")
+
     mock_relogin.assert_not_awaited()
 
 

@@ -693,12 +693,14 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
 
         Tuya Cloud polling of a protobuf robot never carries one, and on local
         Tuya the feed only runs when _start_p2p_feed could start it (Tuya 3.3 and
-        a cloud session). Legacy robots download it from Tuya cloud storage.
+        a cloud session). Legacy robots download it from Tuya cloud storage;
+        that holds without a Tuya session at setup too, so a failed login does
+        not remove their map entities.
         """
         return (
             self.connection_type == "mqtt"
             or self.p2p is not None
-            or self._legacy_map_client() is not None
+            or self.api_type == "legacy"
         )
 
     def _zone_quads_to_blob_units(
