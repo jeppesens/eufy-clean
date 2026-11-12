@@ -33,22 +33,16 @@ class AccessoryState:
 class VacuumState:
     """Represent the complete state of a Eufy vacuum."""
 
-    # Device identity (used for the HA device registry).
     device_model: str = ""
 
-    # DPS protocol variant, classified cloud-side by EufyLogin.checkApiType and
-    # seeded by the coordinator at init:
-    #   "novel"  -> Anker protobuf DPS (X-series, default)
-    #   "scalar" -> plain int/JSON Tuya-style DPS over MQTT (e.g. T2210/G50)
-    #   "legacy" -> pure Tuya cloud devices (PR #110; no parser here yet)
+    # DPS protocol variant, classified by EufyLogin.checkApiType: "novel" = Anker
+    # protobuf, "scalar" = plain int/JSON Tuya DPS over MQTT, "legacy" = Tuya cloud.
     api_type: str = "novel"
 
-    # Basic
     activity: str = "idle"  # cleaning, docked, error, etc.
     battery_level: int = 0
     fan_speed: str = "Standard"
 
-    # Error state
     error_code: int = 0
     error_message: str = ""
     error_codes: list[int] = field(default_factory=list)
@@ -57,27 +51,23 @@ class VacuumState:
     last_error_message: str = ""
     charging: bool = False
 
-    # Cleaning Stats
     cleaning_time: int = 0  # seconds
     cleaning_area: int = 0  # m2
     total_cleaning_area: int = 0  # m2, user total (resets on user change)
     total_cleaning_time: int = 0  # seconds, user total
-    total_cleaning_count: int = 0  # number of cleans, user total
+    total_cleaning_count: int = 0  # user total
 
-    # Advanced Status
     task_status: str = "idle"
     find_robot: bool = False
 
-    # Map
     map_id: int = 0
     map_url: str | None = None
     rooms: list[dict[str, Any]] = field(default_factory=list)
     scenes: list[dict[str, Any]] = field(default_factory=list)
 
-    # Detailed Status
-    status_code: int = 0  # Raw status value if needed
-    dock_status: str | None = None  # Text description (debounced in coordinator)
-    station_clean_water: int = 0  # Percentage?
+    status_code: int = 0
+    dock_status: str | None = None  # debounced in the coordinator
+    station_clean_water: int = 0  # percent?
     station_dirty_water: str = "Unknown"  # Station dirty-water tank level (WaterLevel name)
     station_clean_water_level: str = "Unknown"  # Station clean-water tank band (S1 Pro, WaterLevel name)
     station_waste_water: int = 0
@@ -87,85 +77,83 @@ class VacuumState:
     current_scene_id: int = 0
     current_scene_name: str | None = None
 
-    # Active cleaning targets (from DPS 152 echo)
+    # Active cleaning targets, echoed on DPS 152
     active_room_ids: list[int] = field(default_factory=list)
-    active_room_names: str = ""  # Comma-separated resolved names
+    active_room_names: str = ""  # comma-separated
     active_zone_count: int = 0
 
-    # Accessories
     accessories: AccessoryState = field(default_factory=AccessoryState)
 
-    # Preferences
     preferences: CleaningPreferences = field(default_factory=CleaningPreferences)
-    cleaning_mode: str = "Vacuum"  # Matter-compatible cleaning mode preference
-    mop_water_level: str = "Medium"  # Global mop water level from DPS 154
+    cleaning_mode: str = "Vacuum"  # Matter vocabulary
+    mop_water_level: str = "Medium"  # DPS 154
 
-    # Additional DPS 154 fields for enhanced functionality
-    cleaning_intensity: str = "Normal"  # Clean extent from DPS 154
-    carpet_strategy: str = "Auto Raise"  # Clean carpet strategy from DPS 154
-    corner_cleaning: str = "Normal"  # Mop corner cleaning from DPS 154
-    smart_mode: bool = False  # Smart mode switch from DPS 154
+    cleaning_intensity: str = "Normal"  # DPS 154 clean extent
+    carpet_strategy: str = "Auto Raise"  # DPS 154
+    corner_cleaning: str = "Normal"  # DPS 154
+    smart_mode: bool = False  # DPS 154
 
-    # Voice language (DPS 162 LanguageResponse, novel-protocol)
-    voice_set_id: int = 1201  # current voice pack set_id (default = English Female)
+    voice_set_id: int = 1201  # DPS 162 voice pack set_id; 1201 = English (Female)
 
-    # scalar-protocol fields (e.g. T2210/G50)
-    boost_iq: bool = False  # BoostIQ auto-carpet-boost (scalar DPS 118 / Tuya-transport DPS 159)
-    volume: int = 0  # Voice volume 0-100% (novel: DPS 161; scalar: DPS 111 0-10 *10)
+    # scalar-protocol fields
+    boost_iq: bool = False  # scalar DPS 118, Tuya-transport DPS 159
+    volume: int = 0  # percent (novel: DPS 161; scalar: DPS 111 0-10, x10)
     cleaning_pattern: str = (
-        "Arranged"  # Path pattern Arranged/Random (scalar-protocol DPS 154)
+        "Arranged"  # scalar DPS 154: Arranged/Random
     )
-    auto_return: bool = False  # "Auto-Return Cleaning" toggle (DPS 135)
-    activity_log_upload: bool = False  # Activity-log upload toggle (DPS 142)
-    schedules: list[dict[str, Any]] = field(default_factory=list)  # DPS 151 (read-only)
+    auto_return: bool = False  # DPS 135
+    activity_log_upload: bool = False  # DPS 142
+    # Scalar from DPS 151, legacy from the et=3 Tuya cloud timer list.
+    schedules: list[dict[str, Any]] = field(default_factory=list)
 
-    # Device settings (from DPS 176 UnisettingResponse)
-    wifi_signal: float = -100.0  # AP signal strength in dBm (converted from 0-100%)
-    child_lock: bool = False  # Children lock switch
+    # Device settings, DPS 176 UnisettingResponse
+    wifi_signal: float = -100.0  # dBm, converted from the reported 0-100%
+    child_lock: bool = False
     height_detection: str | None = None  # S1 Pro height detection sensitivity
     camera_enabled: bool | None = None  # S1 Pro video switch (read-only)
     # Last DP 181 video-manager reply as (method, result, monotonic time received).
     video_response: tuple[int, int, float] | None = None
-    dnd_enabled: bool = False  # Do Not Disturb switch
-    dnd_start_hour: int = 22  # Do Not Disturb start hour
-    dnd_start_minute: int = 0  # Do Not Disturb start minute
-    dnd_end_hour: int = 8  # Do Not Disturb end hour
-    dnd_end_minute: int = 0  # Do Not Disturb end minute
-    off_peak_enabled: bool = False  # Off-peak charging switch (field 23)
-    off_peak_start_hour: int = 21  # Off-peak charging start hour
-    off_peak_start_minute: int = 0  # Off-peak charging start minute
-    off_peak_end_hour: int = 7  # Off-peak charging end hour
-    off_peak_end_minute: int = 0  # Off-peak charging end minute
+    dnd_enabled: bool = False
+    dnd_start_hour: int = 22
+    dnd_start_minute: int = 0
+    dnd_end_hour: int = 8
+    dnd_end_minute: int = 0
+    off_peak_enabled: bool = False
+    off_peak_start_hour: int = 21
+    off_peak_start_minute: int = 0
+    off_peak_end_hour: int = 7
+    off_peak_end_minute: int = 0
 
-    # Device network info (from DPS 169, DeviceInfo proto)
-    device_mac: str = ""  # Device MAC address
-    wifi_ssid: str = ""  # Connected WiFi network name
-    wifi_ip: str = ""  # Device IP address
-    dock_firmware_version: str = ""  # Dock station firmware version
-    product_name: str = ""  # Human-readable product name (e.g. "eufy Omni C28")
+    # Device network info, DPS 169 DeviceInfo proto
+    device_mac: str = ""
+    wifi_ssid: str = ""
+    wifi_ip: str = ""
+    dock_firmware_version: str = ""
+    product_name: str = ""
 
-    # Robot telemetry (from DPS 179, no known proto definition)
-    robot_position_x: int = 0  # Raw map X coordinate (firmware-internal grid)
-    robot_position_y: int = 0  # Raw map Y coordinate (firmware-internal grid)
+    # DPS 179, no known proto definition; raw firmware-internal grid coordinates
+    robot_position_x: int = 0
+    robot_position_y: int = 0
 
-    # Raw data for fallback/diagnostics
+    installed_version: str = ""
+    latest_version: str = ""
+    release_summary: str = ""
+    release_url: str = ""
+    update_in_progress: bool = False
+    auto_update_enabled: bool = False
+    firmware_modules: list[dict[str, Any]] = field(default_factory=list)
+
     raw_dps: dict[str, Any] = field(default_factory=dict)
 
-    # Track which optional fields have ever been received from the device
-    # Used by sensors to determine availability (e.g., water level on C20)
+    # Optional fields ever seen from the device; sensors use it for availability.
     received_fields: set[str] = field(default_factory=set)
 
 
 def track_received_field(
     state: VacuumState, changes: dict[str, Any], field_name: str
 ) -> None:
-    """Record in *changes* that a field has been received from the device.
-
-    This feeds VacuumState.received_fields, which sensors use to determine
-    availability. Only updates if the field isn't already tracked.
-    """
+    """Record in *changes* that a field has been received from the device."""
     if field_name not in state.received_fields:
-        # Get current set from changes if already modified, else from state
         current = changes.get("received_fields", state.received_fields).copy()
         current.add(field_name)
         changes["received_fields"] = current

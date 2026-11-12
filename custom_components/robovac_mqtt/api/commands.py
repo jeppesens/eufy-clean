@@ -42,14 +42,28 @@ from ..proto.cloud.multi_maps_pb2 import MultiMapsManageRequest
 from ..proto.cloud.station_pb2 import StationRequest
 from ..proto.cloud.undisturbed_pb2 import UndisturbedRequest
 from ..proto.cloud.unisetting_pb2 import UnisettingRequest
-from ..utils import encode, encode_message, encode_varint
+from ..utils import (
+    clamp_clean_times,
+    encode,
+    encode_message,
+    encode_varint,
+    valid_time_window,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def _normalize_clean_mode(clean_mode: str) -> str:
     """Normalize a cleaning mode label into a map lookup key."""
-    return clean_mode.strip().lower().replace("_", " ")
+    return str(clean_mode).strip().lower().replace("_", " ")
+
+
+def _time_window_ok(label: str, *hours_minutes: int) -> bool:
+    """Warn and return False unless the window is two real clock times."""
+    if valid_time_window(*hours_minutes):
+        return True
+    _LOGGER.warning("%s: time %02d:%02d-%02d:%02d out of range; ignored", label, *hours_minutes)
+    return False
 
 
 def build_set_cleaning_mode_command(clean_mode: str) -> dict[str, str]:
@@ -69,9 +83,8 @@ def _build_mode_ctrl(method: int, clean_times: int = 1) -> dict[str, str]:
     """Helper for ModeCtrlRequest commands."""
     data: dict[str, Any] = {"method": int(method)}
 
-    # Special handling for methods that require a parameter in the "oneof Param"
+    # these methods need their Param oneof filled in
     if method == EUFY_CLEAN_CONTROL.START_AUTO_CLEAN:
-        # AutoClean message: configurable clean_times, force_mapping=False
         passes = min(max(clean_times, AUTO_CLEAN_TIMES_MIN), AUTO_CLEAN_TIMES_MAX)
         if passes != clean_times:
             _LOGGER.warning(
@@ -83,7 +96,6 @@ def _build_mode_ctrl(method: int, clean_times: int = 1) -> dict[str, str]:
             )
         data["auto_clean"] = {"clean_times": passes, "force_mapping": False}
     elif method == EUFY_CLEAN_CONTROL.START_SPOT_CLEAN:
-        # SpotClean message: clean_times=1
         data["spot_clean"] = {"clean_times": 1}
 
     value = encode(ModeCtrlRequest, data)
@@ -154,23 +166,16 @@ def _build_manual_cmd(cmd_name: str, active: bool = True) -> dict[str, str]:
 
 def build_set_clean_speed_command(clean_speed: str) -> dict[str, int]:
     """Build command to set fan speed."""
-    try:
-        speed_lower = clean_speed.lower()
-        variants = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED]
-
-        if speed_lower in variants:
-            idx = variants.index(speed_lower)
-            return {DPS_MAP["CLEAN_SPEED"]: idx}
-
-    except ValueError:
-        pass
-
+    speed_lower = str(clean_speed).lower()
+    variants = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED]
+    if speed_lower in variants:
+        return {DPS_MAP["CLEAN_SPEED"]: variants.index(speed_lower)}
     return {}
 
 
 def build_set_water_level_command(water_level: str) -> dict[str, str]:
     """Build command to set mop water level for both auto and room/area cleans."""
-    level_val = MOP_LEVEL_MAP.get(water_level.lower())
+    level_val = MOP_LEVEL_MAP.get(str(water_level).lower())
     if level_val is None:
         _LOGGER.warning("Invalid water_level '%s' ignored", water_level)
         return {}
@@ -182,7 +187,7 @@ def build_set_water_level_command(water_level: str) -> dict[str, str]:
 
 def build_set_cleaning_intensity_command(cleaning_intensity: str) -> dict[str, str]:
     """Build command to set cleaning intensity for both auto and room/area cleans."""
-    extent_val = CLEAN_EXTENT_MAP.get(cleaning_intensity.lower())
+    extent_val = CLEAN_EXTENT_MAP.get(str(cleaning_intensity).lower())
     if extent_val is None:
         _LOGGER.warning("Invalid cleaning_intensity '%s' ignored", cleaning_intensity)
         return {}
@@ -239,16 +244,10 @@ def build_zone_clean_command(
     map_id: int = 3,
     clean_times: int = 1,
 ) -> dict[str, str]:
-    """Build command to clean one or more free-form zones (select-zones clean).
+    """Build a select-zones clean.
 
-    *zones_cm* is a list of quadrilaterals; each quad is a list of four
-    ``(x, y)`` corner points in centimetres (the device's world frame, where
-    1 unit = 1 cm = metres * 100), ordered around the rectangle.  Callers
-    convert from screen/normalized coordinates before reaching this builder
-    (see ``EufyCleanCoordinator.normalized_rects_to_quads_cm``).
-
-    Dispatch is identical to ``build_room_clean_command`` — a ``ModeCtrlRequest``
-    with method ``START_SELECT_ZONES_CLEAN`` carried on DPS 152.
+    *zones_cm* is a list of quads, each four ``(x, y)`` corners in cm in the
+    device's world frame, ordered around the rectangle.
     """
     proto_zones: list[SelectZonesClean.Zone] = []
     for quad in zones_cm:
@@ -261,7 +260,7 @@ def build_zone_clean_command(
         proto_zones.append(
             SelectZonesClean.Zone(
                 quadrangle=Quadrangle(p0=pts[0], p1=pts[1], p2=pts[2], p3=pts[3]),
-                clean_times=max(1, int(clean_times)),
+                clean_times=clamp_clean_times(clean_times),
             )
         )
 
@@ -283,23 +282,12 @@ def build_zone_clean_command(
 
 
 def build_map_load_command(cloud_mapid: int, seq: int = 1) -> dict[str, str]:
-    """Build a command to switch the active map to a saved multi-map by id.
+    """Switch the active map to a saved multi-map by id (DPS 172).
 
-    Sends ``MultiMapsManageRequest{method=MAP_LOAD, common.cloud_mapid=<id>}`` on
-    the multi-map-manage DP (172). *cloud_mapid* is the saved map's id as reported
-    by the device (the ``map_id`` carried in incoming MAP_DATA); *seq* is an
-    arbitrary request sequence number the device echoes back in its ack.
-
-    NOTE — the robot pose does NOT switch automatically. Loading a map switches
-    the active map and its room list right away, but the robot's pose / coordinate
-    frame stays on the previous map until the vacuum RE-LOCALIZES, which only
-    happens once it MOVES. To ground the new map immediately after a switch, run a
-    small movement — a single-room clean (``room_clean`` / ``clean_segments``) is
-    the most reliable, since it targets a stable room id. Prefer starting it from a
-    script or the room LIST in the card; avoid coordinate-based targeting
-    (tap-a-room-on-the-map or zone drawing) until the frame re-grounds — the
-    transform is stale right after a switch. Once the robot moves, the reported
-    position snaps onto the loaded map.
+    *cloud_mapid* is the ``map_id`` from incoming MAP_DATA; *seq* is echoed in the
+    ack. The map and room list switch at once, but the robot's coordinate frame
+    stays on the old map until it moves and re-localizes — so coordinate-based
+    targeting (zones, tap-a-point) is stale until then; use a room id instead.
     """
     if int(cloud_mapid) <= 0:
         _LOGGER.warning("map_load ignored: cloud_mapid must be a positive map id")
@@ -315,7 +303,7 @@ def build_map_load_command(cloud_mapid: int, seq: int = 1) -> dict[str, str]:
 def build_set_room_custom_command(
     room_config: list[dict[str, Any]] | list[int],
     map_id: int = 3,
-    # Legacy arguments for backward compatibility (used if room_config is list[int])
+    # only used when room_config is list[int]
     fan_speed: str | None = None,
     water_level: str | None = None,
     clean_times: int | None = None,
@@ -323,19 +311,16 @@ def build_set_room_custom_command(
     clean_intensity: str | None = None,
     edge_mopping: bool | None = None,
 ) -> dict[str, str]:
-    """Build command to set custom cleaning parameters for specific rooms.
+    """Set custom cleaning parameters for specific rooms.
 
-    Supports two formats for `room_config`:
-    1. list[int]: Simple list of room IDs. Applies global params (fan_speed, etc.) to all.
-    2. list[dict]: List of room objects {id: 1, fan_speed: "Turbo", ...}.
+    ``room_config`` is either list[int] room ids (the global params below apply to
+    all of them) or list[dict] ``{id: 1, fan_speed: "Turbo", ...}`` per room.
     """
     rooms_parm = MapEditRequest.RoomsCustom.Parm()
 
-    # Normalize input to list of dicts
     normalized_rooms: list[dict[str, Any]] = []
 
     if room_config and isinstance(room_config[0], int):
-        # Legacy format: [1, 2] + global params
         for r_id in room_config:
             normalized_rooms.append(
                 {
@@ -349,7 +334,6 @@ def build_set_room_custom_command(
                 }
             )
     elif room_config:
-        # New format: [{id: 1, fan_speed: ...}, ...]
         normalized_rooms = cast(list[dict[str, Any]], room_config)
 
     for room_data in normalized_rooms:
@@ -362,7 +346,6 @@ def build_set_room_custom_command(
 
         custom_cfg = MapEditRequest.RoomsCustom.Parm.Room.Custom()
 
-        # Extract per-room params
         r_fan_speed = room_data.get("fan_speed")
         r_water_level = room_data.get("water_level")
         r_clean_times = room_data.get("clean_times")
@@ -370,7 +353,6 @@ def build_set_room_custom_command(
         r_clean_intensity = room_data.get("clean_intensity")
         r_edge_mopping = room_data.get("edge_mopping")
 
-        # Clean Mode
         if r_clean_mode:
             clean_type_val = CLEAN_TYPE_MAP.get(_normalize_clean_mode(r_clean_mode))
             if clean_type_val is not None:
@@ -378,55 +360,43 @@ def build_set_room_custom_command(
             else:
                 _LOGGER.warning("Invalid clean_mode '%s' ignored", r_clean_mode)
 
-        # Clean Times (Repeats)
         if r_clean_times:
-            custom_cfg.clean_times = int(r_clean_times)
+            custom_cfg.clean_times = clamp_clean_times(r_clean_times)
 
-        # Clean Intensity (Extent)
         if r_clean_intensity:
-            if r_clean_intensity.lower() in CLEAN_EXTENT_MAP:
-                custom_cfg.clean_extent.value = CLEAN_EXTENT_MAP[
-                    r_clean_intensity.lower()
-                ]
+            if (extent := str(r_clean_intensity).lower()) in CLEAN_EXTENT_MAP:
+                custom_cfg.clean_extent.value = CLEAN_EXTENT_MAP[extent]
             else:
                 _LOGGER.warning(
                     "Invalid clean_intensity '%s' ignored", r_clean_intensity
                 )
 
-        # Edge Mopping (Corner Clean)
         if r_edge_mopping is not None:
             if r_edge_mopping in MOP_CORNER_MAP:
                 custom_cfg.mop_mode.corner_clean = MOP_CORNER_MAP[r_edge_mopping]
             else:
                 _LOGGER.warning("Invalid edge_mopping '%s' ignored", r_edge_mopping)
 
-        # Fan Speed (Suction)
         if r_fan_speed:
-            try:
-                speed_lower = r_fan_speed.lower()
-                variants = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED]
-                if speed_lower in variants:
-                    val = variants.index(speed_lower)
-                    custom_cfg.fan.suction = cast(Fan.Suction, val)
-                else:
-                    _LOGGER.warning("Invalid fan_speed '%s' ignored", r_fan_speed)
-            except ValueError:
-                _LOGGER.warning("Error processing fan_speed '%s'", r_fan_speed)
+            speed_lower = str(r_fan_speed).lower()
+            variants = [s.lower() for s in EUFY_CLEAN_NOVEL_CLEAN_SPEED]
+            if speed_lower in variants:
+                val = variants.index(speed_lower)
+                custom_cfg.fan.suction = cast(Fan.Suction, val)
+            else:
+                _LOGGER.warning("Invalid fan_speed '%s' ignored", r_fan_speed)
 
-        # Water Level (Mop Mode)
         if r_water_level:
-            if r_water_level.lower() in MOP_LEVEL_MAP:
-                custom_cfg.mop_mode.level = MOP_LEVEL_MAP[r_water_level.lower()]
+            if (level := str(r_water_level).lower()) in MOP_LEVEL_MAP:
+                custom_cfg.mop_mode.level = MOP_LEVEL_MAP[level]
             else:
                 _LOGGER.warning("Invalid water_level '%s' ignored", r_water_level)
 
-        # Create Room Message
         room_msg = MapEditRequest.RoomsCustom.Parm.Room()
         room_msg.id = int(room_id)
         room_msg.custom.CopyFrom(custom_cfg)
         rooms_parm.rooms.append(room_msg)
 
-    # Wrap in MapEditRequest
     req = MapEditRequest(
         map_id=int(map_id),
         method=MapEditRequest.SET_ROOMS_CUSTOM,
@@ -453,13 +423,10 @@ def build_set_auto_action_cfg_command(cfg_dict: dict[str, Any]) -> dict[str, str
 
 def build_find_robot_command(active: bool) -> dict[str, Any]:
     """Build command to find robot."""
-    # false = stop finding, true = start finding
     return {DPS_MAP["FIND_ROBOT"]: active}
 
 
-# --- scalar command builders (e.g. T2210/G50) ----------------------
-# These DPS are scalar-protocol-only plain-int writes (no protobuf), so they are
-# model-agnostic. Verified live against a real G50 (see docs/g50_capture/FINDINGS.md).
+# scalar-protocol builders: plain int/JSON DPS writes, no protobuf.
 
 
 def build_set_boost_iq_command(active: bool) -> dict[str, Any]:
@@ -504,10 +471,9 @@ def build_set_activity_log_command(active: bool) -> dict[str, Any]:
 
 
 def build_scalar_reset_accessory_command(accessory_key: str) -> dict[str, Any]:
-    """scalar-protocol: reset an accessory's life counter to 0 (DPS 150 JSON).
+    """scalar-protocol: reset an accessory life counter to 0 (DPS 150 JSON).
 
-    accessory_key is the DPS 150 field, e.g. "sensors", "dust_filter",
-    "side_brush", "roller_brush". Captured from the app's /req.
+    accessory_key is the DPS 150 field: "sensors", "dust_filter", "side_brush", ...
     """
     if not accessory_key:
         return {}
@@ -536,6 +502,10 @@ def build_scalar_undisturbed_command(
     active: bool, begin_hour: int, begin_minute: int, end_hour: int, end_minute: int
 ) -> dict[str, Any]:
     """scalar-protocol: set DND (DPS 107 JSON {en, start_t:"HHMM", end_t:"HHMM"})."""
+    if not _time_window_ok(
+        "set_do_not_disturb", begin_hour, begin_minute, end_hour, end_minute
+    ):
+        return {}
     payload = {
         "en": bool(active),
         "start_t": f"{begin_hour:02d}{begin_minute:02d}",
@@ -557,7 +527,7 @@ def _encode_proto_varint_field(field_num: int, value: int) -> bytes:
     return encode_varint((field_num << 3) | 0) + encode_varint(value)
 
 
-_OFF_PEAK_REQUEST_FIELD_NUM = 22  # Field 22 in UnisettingRequest = OffPeakCharging (field 23 in Response)
+_OFF_PEAK_REQUEST_FIELD_NUM = 22  # UnisettingRequest field 22 = OffPeakCharging (23 in the Response)
 
 
 def _build_off_peak_sub_bytes(
@@ -587,19 +557,21 @@ def build_set_off_peak_charging_command(
     end_hour: int,
     end_minute: int,
 ) -> dict[str, str]:
-    """Build command to set off-peak charging schedule (DPS 176 field 23).
+    """Set the off-peak charging schedule (DPS 176).
 
-    Sends only field 23 — the off-peak charging sub-message.  Including any
-    other UnisettingRequest field (e.g. children_lock) risks overwriting device
-    state with stale coordinator values, so we keep this minimal.
+    Sends only the off-peak sub-message: any other UnisettingRequest field would
+    overwrite device state with stale coordinator values.
     """
+    if not _time_window_ok(
+        "set_off_peak_charging", begin_hour, begin_minute, end_hour, end_minute
+    ):
+        return {}
     off_peak_bytes = _encode_proto_ldelim(
         _OFF_PEAK_REQUEST_FIELD_NUM,
         _build_off_peak_sub_bytes(enabled, begin_hour, begin_minute, end_hour, end_minute),
     )
     prefixed = encode_varint(len(off_peak_bytes)) + off_peak_bytes
     value = base64.b64encode(prefixed).decode()
-    _LOGGER.debug("Off-peak command DPS 176 field 22: %s", value)
     return {DPS_MAP["UNSETTING"]: value}
 
 
@@ -617,6 +589,10 @@ def build_set_undisturbed_command(
     end_minute: int,
 ) -> dict[str, str]:
     """Build command to update the Do Not Disturb schedule."""
+    if not _time_window_ok(
+        "set_do_not_disturb", begin_hour, begin_minute, end_hour, end_minute
+    ):
+        return {}
     value = encode(
         UndisturbedRequest,
         {
@@ -662,11 +638,8 @@ def build_command(
             return {DPS_MAP["BOOST_IQ"]: bool(kwargs.get("active", True))}
 
     if is_scalar:
-        # Movement, captured verbatim from the app's /req (see FINDINGS.md):
-        #   start/clean -> {"5": 1};  go home -> {"5": 3};
-        #   pause -> {"122": 1};  resume -> {"122": 0}.
-        # (DPS 2/101 — the Tuya-canonical movement DPs — are ACKed but ignored by
-        # the G50 firmware; the app drives DPS 5 + 122 instead.)
+        # movement rides DPS 5 (work mode) + 122 (pause); DPS 2/101, the
+        # Tuya-canonical movement DPs, are ACKed but ignored by this firmware
         if cmd == "start_auto":
             return {SCALAR_DPS["WORK_MODE"]: SCALAR_WORK_MODE_START}
         if cmd in ("play", "resume"):
@@ -695,7 +668,6 @@ def build_command(
         if cmd == "reset_accessory":
             return build_scalar_reset_accessory_command(kwargs.get("scalar_key", ""))
 
-    # Mode Control
     if cmd == "start_auto":
         return _build_mode_ctrl(
             EUFY_CLEAN_CONTROL.START_AUTO_CLEAN, int(kwargs.get("clean_times", 1))
@@ -713,7 +685,6 @@ def build_command(
     if cmd in ("locate", "find_robot"):
         return build_find_robot_command(kwargs.get("active", True))
 
-    # Manual Control
     if cmd == "go_dry":
         return _build_manual_cmd("go_dry", True)
     if cmd == "stop_dry":
@@ -723,7 +694,6 @@ def build_command(
     if cmd == "collect_dust":
         return _build_manual_cmd("go_collect_dust", True)
 
-    # Complex
     if cmd == "set_cleaning_mode":
         return build_set_cleaning_mode_command(kwargs.get("clean_mode", ""))
     if cmd == "set_cleaning_intensity":
@@ -761,7 +731,7 @@ def build_command(
         return build_zone_clean_command(
             kwargs.get("zones_cm", []),
             kwargs.get("map_id", 3),
-            int(kwargs.get("clean_times", 1)),
+            kwargs.get("clean_times", 1),
         )
     if cmd == "map_load":
         return build_map_load_command(
@@ -802,7 +772,6 @@ def build_command(
             int(kwargs.get("end_minute", 0)),
         )
 
-    # scalar commands
     if cmd == "set_boost_iq":
         return build_set_boost_iq_command(bool(kwargs.get("active", True)))
     if cmd == "set_cleaning_pattern":

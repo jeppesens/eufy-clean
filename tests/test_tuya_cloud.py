@@ -266,18 +266,24 @@ async def test_request_api_error():
 
 
 @pytest.mark.asyncio
-async def test_send_command_calls_request():
-    """send_command should call request with correct action and data."""
+async def test_send_command_calls_request(caplog):
+    """send_command publishes the DPS and logs only their keys."""
     client = TuyaCloudClient("EU", websession=MagicMock())
     client.sid = "test_sid"
+    dps = {"2": True, "124": "c2VjcmV0LXJvb20tbmFtZQ=="}
 
-    with patch.object(client, "request", new_callable=AsyncMock) as mock_req:
-        await client.send_command("device123", {"2": True})
+    with patch.object(client, "request", new_callable=AsyncMock) as mock_req, \
+            caplog.at_level(
+                logging.DEBUG, logger="custom_components.robovac_mqtt.api.tuya_cloud"
+            ):
+        await client.send_command("device123", dps)
 
     mock_req.assert_called_once_with(
         "tuya.m.device.dp.publish",
-        data={"dps": {"2": True}, "devId": "device123", "gwId": "device123"},
+        data={"dps": dps, "devId": "device123", "gwId": "device123"},
     )
+    assert "['124', '2']" in caplog.text
+    assert dps["124"] not in caplog.text
 
 
 # ── Get device ──────────────────────────────────────────────────────
@@ -417,6 +423,68 @@ async def test_login_does_not_log_credentials(caplog):
     assert passwd not in caplog.text
     assert login_response["sid"] not in caplog.text
     assert "Tuya login starting for region EU" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_relogin_after_redirect_keeps_the_probed_country_code():
+    """A second login on the same client sends the probed countryCode, not
+    the redirect's regionCode, and keeps the device id."""
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    device_id = client._device_id
+    sent: list[str] = []
+
+    async def mock_request(action, data=None, *, requires_sid=True, **kwargs):
+        assert data is not None
+        sent.append(data["countryCode"])
+        if "token.create" in action:
+            return {"publicKey": "00b3510a2e6c4fa1e339a0703e64444c", "exponent": "3", "token": "t"}
+        return {"sid": "s", "domain": {"mobileApiUrl": "https://a1.tuyacn.com", "regionCode": "AY"}}
+
+    with patch.object(client, "request", side_effect=mock_request):
+        await client.login("user_id_123")
+        await client.login("user_id_123")
+
+    assert sent == ["EU"] * 4
+    assert client._device_id == device_id
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "token_result, login_result",
+    [
+        (None, None),
+        ({"publicKey": "ab"}, None),
+        ({"publicKey": "00b3510a2e6c4fa1", "exponent": "3", "token": "t"}, None),
+        ({"publicKey": "00b3510a2e6c4fa1", "exponent": "3", "token": "t"}, {"domain": {}}),
+    ],
+)
+async def test_login_malformed_answer_raises_tuya_error(token_result, login_result):
+    """A malformed login answer is a TuyaCloudError, so region probing goes on."""
+    client = TuyaCloudClient("EU", websession=MagicMock())
+
+    async def mock_request(action, data=None, *, requires_sid=True, **kwargs):
+        return token_result if "token.create" in action else login_result
+
+    with patch.object(client, "request", side_effect=mock_request):
+        with pytest.raises(TuyaCloudError):
+            await client.login("user_id_123")
+
+
+@pytest.mark.asyncio
+async def test_request_non_object_body_raises_tuya_error():
+    """A JSON body that is not an object is a TuyaCloudError, not AttributeError."""
+    resp = MagicMock()
+    resp.url = "https://a1.tuyaeu.com/api.json"
+    resp.json = AsyncMock(return_value=None)
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=resp)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    session = MagicMock()
+    session.get.return_value = ctx
+    client = TuyaCloudClient("EU", websession=session)
+
+    with pytest.raises(TuyaCloudError):
+        await client.request("tuya.m.location.list", requires_sid=False)
 
 
 # ── Cross-implementation signing (Python vs upstream JS) ──────────

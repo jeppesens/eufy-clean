@@ -1,23 +1,61 @@
 """Test component setup."""
 
 import hashlib
+import json
+import logging
+import re
+import time
 import unittest
+from pathlib import Path
+from ssl import SSLEOFError, SSLError
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
+import homeassistant
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.setup import async_setup_component
+from packaging.requirements import Requirement
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.robovac_mqtt import _FRONTEND_DIR, _int_keyed
-from custom_components.robovac_mqtt.api.cloud import EufyLoginError
+import custom_components.robovac_mqtt as robovac_init
+from custom_components.robovac_mqtt import (
+    _FRONTEND_DIR,
+    _int_keyed,
+    async_remove_config_entry_device,
+)
+from custom_components.robovac_mqtt.api import cloud as cloud_mod
+from custom_components.robovac_mqtt.api.cloud import (
+    EufyLogin,
+    EufyLoginChallengeError,
+    EufyLoginError,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+    EufySessionReplacedError,
+)
+from custom_components.robovac_mqtt.api.throttle import (
+    KIND_LOGIN,
+    LOGIN_BUDGET,
+    LOGIN_BUDGET_WINDOW,
+    REQUEST_HOLD_OFF,
+    SESSION_REPLACED_WINDOW,
+    CloudThrottle,
+)
+from custom_components.robovac_mqtt.auth_store import AuthCache, AuthStore
 from custom_components.robovac_mqtt.const import (
     CONF_LOCAL_DEVICES,
+    CONF_LOCAL_HOST,
     CONF_MAP_ID,
     CONF_MAP_IDS,
     DOMAIN,
 )
+
+_COMPONENT_DIR = Path(__file__).parent.parent / "custom_components" / "robovac_mqtt"
 
 
 async def test_load_unload_entry(hass: HomeAssistant):
@@ -54,6 +92,8 @@ async def test_load_unload_entry(hass: HomeAssistant):
         # Setup Coordinator mock
         mock_coord = mock_coord_cls.return_value
         mock_coord.initialize = AsyncMock()
+        # Unloading the entry awaits the coordinator's teardown.
+        mock_coord.async_teardown = AsyncMock()
         mock_coord.device_id = "test_device_id"
         mock_coord.device_name = "Test Vac"
         mock_coord.device_model = "T2118"
@@ -81,7 +121,11 @@ async def test_load_unload_entry(hass: HomeAssistant):
 
         # Verify calls
         mock_login_cls.assert_called_with(
-            "test_user", "test_password", unittest.mock.ANY, websession=unittest.mock.ANY
+            "test_user",
+            "test_password",
+            unittest.mock.ANY,
+            websession=unittest.mock.ANY,
+            auth_cache=unittest.mock.ANY,
         )
         mock_login.init.assert_called_once()
         mock_coord_cls.assert_called_once()
@@ -139,6 +183,8 @@ async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
 
         mock_coord = mock_coord_cls.return_value
         mock_coord.initialize = AsyncMock()
+        # Unloading the entry awaits the coordinator's teardown.
+        mock_coord.async_teardown = AsyncMock()
         mock_coord.device_id = "card_device_id"
         mock_coord.device_name = "Card Vac"
         mock_coord.device_model = "T2118"
@@ -160,14 +206,36 @@ async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
         mock_add_js.assert_not_called()  # nothing registered until frontend is up
 
         # Frontend becomes ready -> the card registers once, with a cache-bust URL.
-        await register_cb(hass, "frontend")
+        with patch.object(
+            hass.http, "async_register_static_paths", AsyncMock()
+        ) as mock_static, patch(
+            "custom_components.robovac_mqtt._card_cache_key",
+            wraps=robovac_init._card_cache_key,
+        ) as mock_key:
+            await register_cb(hass, "frontend")
         assert hass.data[DOMAIN]["card_registered"] is True
+        # The renderer the card imports is served from the card's URL directory,
+        # and an edit to it changes the card's cache key.
+        assert {cfg.url_path for cfg in mock_static.call_args.args[0]} == {
+            "/robovac_mqtt/eufy-clean-card.js",
+            "/robovac_mqtt/eufy-map-renderer.js",
+        }
+        assert {path.name for path in mock_key.call_args.args[0]} == {
+            "eufy-clean-card.js",
+            "eufy-map-renderer.js",
+        }
         mock_add_js.assert_called_once()
         registered_url = mock_add_js.call_args.args[1]
-        assert registered_url.startswith("/robovac_mqtt/eufy-clean-card.js?v=")
-        # The cache-buster tracks the card's content, not the integration version.
-        card = (_FRONTEND_DIR / "eufy-clean-card.js").read_bytes()
-        assert registered_url.endswith(hashlib.sha256(card).hexdigest()[:12])
+        # A content hash, not the bare version a missing frontend file falls back to.
+        assert re.fullmatch(
+            r"/robovac_mqtt/eufy-clean-card\.js\?v=.+-[0-9a-f]{12}", registered_url
+        ), registered_url
+        # The hash covers the card and the renderer it imports.
+        digest = hashlib.sha256()
+        for name in ("eufy-clean-card.js", "eufy-map-renderer.js"):
+            digest.update((_FRONTEND_DIR / name).read_bytes())
+            digest.update(b"\0")
+        assert registered_url.endswith(digest.hexdigest()[:12])
 
         # Idempotent: a second frontend-ready callback does nothing.
         await register_cb(hass, "frontend")
@@ -219,6 +287,7 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
         def make_coordinator(*args, **kwargs):
             coord = MagicMock()
             coord.initialize = AsyncMock()
+            coord.async_teardown = AsyncMock()
             device_info = args[2] if len(args) > 2 else kwargs.get("device_info", {})
             coord.device_id = device_info["deviceId"]
             coord.device_name = device_info["deviceName"]
@@ -247,23 +316,44 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
             coord.initialize.assert_called_once()
 
 
-async def test_setup_auth_failure_raises_config_entry_auth_failed(hass: HomeAssistant):
-    """Login failure with EufyLoginError should result in SETUP_ERROR (auth failed)."""
+@pytest.mark.parametrize(
+    ("error", "keeps_tokens"),
+    [
+        (EufyLoginError("Invalid credentials"), False),
+        (EufyLoginChallengeError("captcha", code=100032), True),
+    ],
+    ids=["rejected", "challenge"],
+)
+async def test_setup_auth_failure_raises_config_entry_auth_failed(
+    hass: HomeAssistant, error, keeps_tokens
+):
+    """A refused login asks for reauth. Rejected credentials drop the stored
+    tokens; a verification code or captcha says nothing about them."""
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_USERNAME: "bad_user", CONF_PASSWORD: "bad_pass"},
         entry_id="test_auth_fail",
     )
     config_entry.add_to_hass(hass)
+    await AuthStore(hass, config_entry.entry_id).async_save(
+        AuthCache(openudid="0123456789abcdef", session={"access_token": "old"})
+    )
 
     with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
         mock_login = mock_login_cls.return_value
-        mock_login.init = AsyncMock(side_effect=EufyLoginError("Invalid credentials"))
+        mock_login.init = AsyncMock(side_effect=error)
 
         await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
 
     assert config_entry.state == ConfigEntryState.SETUP_ERROR
+    assert any(
+        flow["context"]["source"] == "reauth"
+        for flow in hass.config_entries.flow.async_progress()
+    )
+    stored = await AuthStore(hass, config_entry.entry_id).async_load()
+    assert (stored.session is not None) is keeps_tokens
+    assert stored.openudid == "0123456789abcdef"
 
 
 async def test_setup_network_failure_raises_config_entry_not_ready(hass: HomeAssistant):
@@ -319,6 +409,7 @@ async def test_setup_passes_map_id_overrides_to_coordinator(hass: HomeAssistant)
 
         mock_coord = mock_coord_cls.return_value
         mock_coord.initialize = AsyncMock()
+        mock_coord.async_teardown = AsyncMock()
         mock_coord.device_id = "test_device_id"
         mock_coord.device_name = "Test Vac"
         mock_coord.device_model = "T2118"
@@ -335,6 +426,35 @@ async def test_setup_passes_map_id_overrides_to_coordinator(hass: HomeAssistant)
     assert device_info["map_id_overrides"] == {2154: 2}
 
 
+async def test_setup_logs_carry_no_local_host(hass: HomeAssistant, caplog):
+    """A local-Tuya override's LAN address stays out of the setup log."""
+    caplog.set_level(logging.DEBUG, logger="custom_components.robovac_mqtt")
+    host = "192.168.1.50"
+    config_entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "test_user", CONF_PASSWORD: "test_password"},
+        options={CONF_LOCAL_DEVICES: {"tuya_dev": {CONF_LOCAL_HOST: host}}},
+        entry_id="local_host_entry",
+    )
+    config_entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator",
+        return_value=_mock_coordinator("tuya_dev"),
+    ) as mock_coord_cls:
+        mock_login = mock_login_cls.return_value
+        mock_login.init = AsyncMock()
+        mock_login.mqtt_devices = []
+        mock_login.cloud_devices = [
+            {"deviceId": "tuya_dev", "deviceName": "Vac", "local_key": "k" * 16}
+        ]
+        assert await hass.config_entries.async_setup(config_entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert mock_coord_cls.call_args.args[2]["local_host"] == host
+    assert host not in caplog.text
+
+
 def test_int_keyed_restores_int_keys_and_drops_bad_entries(caplog):
     """Stored override dicts come back from JSON with string keys: they are
     coerced back to int, and an entry that doesn't convert is logged and
@@ -343,3 +463,781 @@ def test_int_keyed_restores_int_keys_and_drops_bad_entries(caplog):
     assert _int_keyed(raw, int, "dev1", "map id") == {2154: 1, 3001: 2}
     assert "ignoring non-integer map id 'kitchen'" in caplog.text
     assert "ignoring non-integer map id '4'" in caplog.text
+
+
+def _mock_login(mock_login_cls, *device_ids: str) -> MagicMock:
+    mock_login = mock_login_cls.return_value
+    mock_login.init = AsyncMock()
+    mock_login.mqtt_devices = [
+        {"deviceId": d, "deviceModel": "T2118", "deviceName": f"Vac {d}", "dps": {}}
+        for d in device_ids
+    ]
+    mock_login.cloud_devices = []
+    mock_login.reauth_needed = False
+    return mock_login
+
+
+def _mock_coordinator(device_id: str, init_error: Exception | None = None) -> MagicMock:
+    coord = MagicMock()
+    coord.initialize = AsyncMock(side_effect=init_error)
+    coord.async_teardown = AsyncMock()
+    coord.device_id = device_id
+    coord.device_name = f"Vac {device_id}"
+    coord.device_model = "T2118"
+    coord.last_seen_segments = None
+    coord.data = MagicMock()
+    return coord
+
+
+async def test_failed_coordinator_init_is_torn_down(hass: HomeAssistant):
+    """A coordinator whose initialize() raises is torn down, not just dropped.
+
+    initialize() writes the MQTT cert/key files and may start a transport before
+    it fails; every ConfigEntryNotReady retry would otherwise leak another set.
+    """
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="init_fail_entry",
+    )
+    entry.add_to_hass(hass)
+    failed = _mock_coordinator("dev_fail", init_error=OSError("broker refused"))
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", return_value=failed
+    ):
+        _mock_login(mock_login_cls, "dev_fail")
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    failed.async_teardown.assert_awaited_once()
+
+
+async def test_credentials_a_coordinator_fetched_are_saved(hass: HomeAssistant):
+    """A coordinator's login for MQTT credentials (checkLogin) runs after the
+    login's own save; setup saves the cache again."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="check_login_entry",
+    )
+    entry.add_to_hass(hass)
+    caches = []
+
+    def _factory(*args, **kwargs):
+        caches.append(kwargs["auth_cache"])
+        return _mock_login(MagicMock(), "dev_a")
+
+    def _coordinator(*args, **kwargs):
+        coordinator = _mock_coordinator(args[2]["deviceId"])
+
+        async def _initialize():
+            caches[0].mqtt_credentials = {"certificate_pem": "fetched"}
+
+        coordinator.initialize = AsyncMock(side_effect=_initialize)
+        return coordinator
+
+    with patch("custom_components.robovac_mqtt.EufyLogin", side_effect=_factory), patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=_coordinator
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    stored = await AuthStore(hass, entry.entry_id).async_load()
+    assert stored.mqtt_credentials == {"certificate_pem": "fetched"}
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        EufyLoginTransientError("HTTP 503"),
+        EufyLoginRateLimitedError("100028", retry_after=7200, code=100028),
+        aiohttp.ClientError("reset"),
+        TimeoutError(),
+        RuntimeError("bug"),
+    ],
+    ids=["transient", "rate-limited", "network", "timeout", "unexpected"],
+)
+async def test_retried_setup_failure_keeps_tokens_and_persists_the_throttle(
+    hass: HomeAssistant, error: Exception
+):
+    """Every retried failure persists the cache: its tokens and the login budget
+    and hold-offs the failed run recorded."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="transient_entry",
+    )
+    entry.add_to_hass(hass)
+    await AuthStore(hass, entry.entry_id).async_save(
+        AuthCache(openudid="0123456789abcdef", session={"access_token": "kept"})
+    )
+
+    def _factory(*args, **kwargs):
+        cache = kwargs["auth_cache"]
+        instance = MagicMock()
+
+        async def _init():
+            cache.throttle["hold_off"] = {"login": 9e12}
+            raise error
+
+        instance.init = AsyncMock(side_effect=_init)
+        return instance
+
+    with patch("custom_components.robovac_mqtt.EufyLogin", side_effect=_factory):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    saved = await AuthStore(hass, entry.entry_id).async_load()
+    assert saved.session == {"access_token": "kept"}
+    assert saved.throttle["hold_off"] == {"login": 9e12}
+
+
+def _ctx(response: object) -> MagicMock:
+    ctx = MagicMock()
+    if isinstance(response, BaseException):
+        ctx.__aenter__ = AsyncMock(side_effect=response)
+    else:
+        ctx.__aenter__ = AsyncMock(return_value=response)
+    ctx.__aexit__ = AsyncMock(return_value=False)
+    return ctx
+
+
+def _response(status: int, body: object = None, headers: dict | None = None) -> MagicMock:
+    response = MagicMock(status=status, headers=headers or {})
+    response.json = AsyncMock(return_value=body)
+    return response
+
+
+def _rate_limited_websession(retry_after: str) -> tuple[MagicMock, list[str]]:
+    """A websession answering every login with HTTP 429; records each openudid sent."""
+    sent: list[str] = []
+    response = _response(429, headers={"Retry-After": retry_after})
+
+    def post(_url, **kwargs):
+        sent.append(kwargs["headers"]["openudid"])
+        return _ctx(response)
+
+    websession = MagicMock()
+    websession.post.side_effect = post
+    websession.get.side_effect = AssertionError("no authenticated call expected")
+    return websession, sent
+
+
+async def test_rate_limited_first_start_holds_off_and_keeps_the_openudid(
+    hass: HomeAssistant,
+):
+    """HTTP 429 at login starts a persisted hold-off of at least an hour; the
+    retry inside it sends nothing, and the openudid is the one already sent."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="rate_limited_entry",
+    )
+    entry.add_to_hass(hass)
+    websession, sent = _rate_limited_websession("120")
+
+    with patch(
+        "custom_components.robovac_mqtt.async_get_clientsession", return_value=websession
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.SETUP_RETRY
+        assert len(sent) == 1
+
+        stored = await AuthStore(hass, entry.entry_id).async_load()
+        assert stored.openudid == sent[0]
+        left = CloudThrottle(stored.throttle).held_off("requests")
+        assert left == pytest.approx(REQUEST_HOLD_OFF, abs=10)
+
+        await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert len(sent) == 1
+    assert (await AuthStore(hass, entry.entry_id).async_load()).openudid == sent[0]
+
+
+async def test_a_timeout_after_a_login_keeps_the_attempt_counted(hass: HomeAssistant):
+    """A raw TimeoutError after the login was sent (here on the MQTT
+    credentials) still persists the login against the budget."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="timeout_entry",
+    )
+    entry.add_to_hass(hass)
+    websession = MagicMock()
+    websession.post.side_effect = [
+        _ctx(_response(200, {"access_token": "tok", "user_id": "u1"})),
+        _ctx(TimeoutError()),
+    ]
+    websession.get.side_effect = [
+        _ctx(_response(200, {"user_center_id": "uc", "user_center_token": "t"}))
+    ]
+
+    with patch(
+        "custom_components.robovac_mqtt.async_get_clientsession", return_value=websession
+    ):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert websession.post.call_count == 2
+    stored = await AuthStore(hass, entry.entry_id).async_load()
+    assert len(CloudThrottle(stored.throttle).recent_logins()) == 1
+
+
+async def test_a_rejected_cached_session_refused_a_login_is_not_retried(
+    hass: HomeAssistant,
+):
+    """A 401 on the cached run with the login budget spent: the rejected tokens
+    are dropped from the store, so the retry stops at the local refusal
+    without sending anything."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="rejected_entry",
+    )
+    entry.add_to_hass(hass)
+    now = time.time()
+    await AuthStore(hass, entry.entry_id).async_save(
+        AuthCache(
+            openudid="0123456789abcdef",
+            session={"access_token": "rejected", "user_id": "u1"},
+            throttle={"logins": [now - 60] * LOGIN_BUDGET},
+        )
+    )
+    websession = MagicMock()
+    websession.get.side_effect = lambda *a, **k: _ctx(_response(401))
+
+    with patch(
+        "custom_components.robovac_mqtt.async_get_clientsession", return_value=websession
+    ), patch.object(EufyLogin, "tuya_login", AsyncMock()):
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        assert entry.state is ConfigEntryState.SETUP_RETRY
+        stored = await AuthStore(hass, entry.entry_id).async_load()
+        assert stored.session is None
+        assert len(stored.throttle["logins"]) == LOGIN_BUDGET
+        cached_calls = websession.get.call_count
+        assert cached_calls > 0
+
+        await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_RETRY
+    assert websession.get.call_count == cached_calls
+    websession.post.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("mqtt_robot", "mqtt_up", "has_user_center", "credentials", "refusal", "reloads"),
+    [
+        (True, False, True, None, "hold-off", True),
+        (True, False, True, None, "budget", True),
+        (True, False, True, {"certificate_pem": "spent"}, "hold-off", True),
+        (False, False, True, None, "hold-off", False),
+        (True, True, True, None, "hold-off", False),
+        (True, False, False, None, "hold-off", False),
+        (True, False, True, None, None, False),
+    ],
+    ids=[
+        "left-out",
+        "budget-spent",
+        "has-credentials",
+        "no-mqtt-robot",
+        "mqtt-robot-up",
+        "fallback-session",
+        "login-allowed",
+    ],
+)
+async def test_mqtt_robots_left_out_while_logins_are_refused_reload_once_one_is_allowed(
+    hass: HomeAssistant,
+    caplog,
+    mqtt_robot,
+    mqtt_up,
+    has_user_center,
+    credentials,
+    refusal,
+    reloads,
+):
+    """No login may run at setup: the Tuya robot comes up, the MQTT robot
+    does not, and the entry reloads once when one may."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="refused_entry",
+    )
+    entry.add_to_hass(hass)
+    now = time.time()
+    cases: dict[str | None, tuple[dict[str, Any], float | None]] = {
+        "hold-off": ({"hold_off": {KIND_LOGIN: now + 600}}, 600),
+        "budget": ({"logins": [now - 3600] * LOGIN_BUDGET}, LOGIN_BUDGET_WINDOW - 3600),
+        None: ({}, None),
+    }
+    state, wait = cases[refusal]
+
+    def coordinator(*args, **kwargs):
+        device_id = args[2]["deviceId"]
+        refused = device_id == "mqtt_dev" and not mqtt_up
+        return _mock_coordinator(
+            device_id, init_error=OSError("no MQTT credentials") if refused else None
+        )
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later:
+        login = _mock_login(mock_login_cls, *(["mqtt_dev"] if mqtt_robot else []))
+        login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
+        login.mqtt_credentials = credentials
+        login.has_user_center = has_user_center
+        login.throttle = CloudThrottle(state)
+        # the throttle's part of the wait (the rest: test_cloud)
+        login.replacement_login_wait = login.throttle.login_wait
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert call_later.called is reloads
+    assert ("left out while no Eufy login may run" in caplog.text) is reloads
+    if not reloads:
+        return
+    _hass, delay, action = call_later.call_args.args
+    assert wait is not None
+    assert wait < delay <= wait + 2
+    with patch.object(hass.config_entries, "async_schedule_reload") as reload:
+        action(None)
+    reload.assert_called_once_with(entry.entry_id)
+
+
+async def test_a_reload_armed_while_setup_runs_is_not_armed_twice(
+    hass: HomeAssistant, caplog
+):
+    """A robot armed the reload during setup; setup leaves it as it is."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="armed_in_setup_entry",
+    )
+    entry.add_to_hass(hass)
+
+    def coordinator(*args, **kwargs):
+        robot = _mock_coordinator(args[2]["deviceId"])
+        if robot.device_id == "mqtt_dev":
+
+            async def _init():
+                kwargs["reload_when_logins_resume"](600.0)
+                raise OSError("refused")
+
+            robot.initialize = AsyncMock(side_effect=_init)
+        return robot
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later:
+        login = _mock_login(mock_login_cls, "mqtt_dev")
+        login.cloud_devices = [{"deviceId": "tuya_dev", "deviceName": "Tuya"}]
+        login.mqtt_credentials = None
+        login.has_user_center = True
+        login.replacement_login_wait = MagicMock(return_value=600.0)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert call_later.call_count == 1
+    assert "left out while no Eufy login may run" not in caplog.text
+
+
+async def test_robots_share_one_reload_for_when_a_login_is_allowed(
+    hass: HomeAssistant,
+):
+    """A robot whose new credentials are rejected too asks for the reload:
+    one timer at a time per entry, armed again after it fired, cancelled on
+    unload."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="runtime_hold_off_entry",
+    )
+    entry.add_to_hass(hass)
+    created: list = []
+
+    def coordinator(*args, **kwargs):
+        created.append(kwargs)
+        return _mock_coordinator(args[2]["deviceId"])
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later, patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ) as reload:
+        _mock_login(mock_login_cls, "dev1", "dev2")
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        first, second = (c["reload_when_logins_resume"] for c in created)
+        call_later.assert_not_called()
+
+        assert first(600.0) is True
+        assert second(300.0) is False
+        assert call_later.call_count == 1
+        _hass, delay, action = call_later.call_args.args
+        assert 600.0 < delay <= 602.0
+        action(None)
+        reload.assert_called_once_with(entry.entry_id)
+        assert second(900.0) is True
+        assert call_later.call_count == 2
+
+        assert await hass.config_entries.async_unload(entry.entry_id)
+    call_later.return_value.assert_called_once()
+
+
+@pytest.mark.parametrize(
+    ("down", "left_out", "reloads"),
+    [
+        ((False, False), False, False),
+        ((False, True), False, True),
+        ((False, False), True, True),
+    ],
+    ids=["every-robot-back", "one-robot-down", "one-robot-left-out"],
+)
+async def test_the_hold_off_reload_fires_only_while_a_robot_is_still_out(
+    hass: HomeAssistant, caplog, down, left_out, reloads
+):
+    """A robot armed the reload; when it fires, every MQTT robot connected
+    again and none was left out of setup: no reload."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="recovered_entry",
+    )
+    entry.add_to_hass(hass)
+    created: list = []
+    states = dict(zip(("dev1", "dev2"), down))
+
+    def coordinator(*args, **kwargs):
+        created.append(kwargs)
+        device_id = args[2]["deviceId"]
+        if device_id not in states:
+            return _mock_coordinator(device_id, init_error=OSError("refused"))
+        robot = _mock_coordinator(device_id)
+        robot.mqtt_session_down = states[device_id]
+        return robot
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator", side_effect=coordinator
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later, patch.object(
+        hass.config_entries, "async_schedule_reload"
+    ) as reload:
+        login = _mock_login(mock_login_cls, "dev1", "dev2", *(["dev3"] if left_out else []))
+        login.replacement_login_wait = MagicMock(return_value=None)
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+        caplog.set_level(logging.DEBUG, logger="custom_components.robovac_mqtt")
+        assert created[0]["reload_when_logins_resume"](600.0) is True
+        call_later.call_args.args[2](None)
+
+        assert reload.called is reloads
+        assert ("every MQTT robot is connected" in caplog.text) is not reloads
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+_CACHED_MQTT = {
+    "user_id": "uid",
+    "app_name": "app",
+    "thing_name": "thing",
+    "certificate_pem": "cached",
+    "private_key": "key",
+    "endpoint_addr": "broker.example.com",
+}
+
+
+def _account(login_result):
+    """The real EufyLogin over a mocked HTTP client: discovery finds two MQTT
+    robots and the cached certificate; a login answers ``login_result``."""
+
+    def build(*args, **kwargs):
+        login = EufyLogin(*args, **kwargs)
+        login.eufyApi = MagicMock(
+            session={"access_token": "t"}, user_info={"user_center_id": "c"},
+            login_label=None,
+        )
+        login.eufyApi.login = AsyncMock(side_effect=[login_result])
+
+        async def _init():
+            login.mqtt_credentials = login.auth_cache.mqtt_credentials = _CACHED_MQTT
+            login.mqtt_devices = [
+                {"deviceId": d, "deviceModel": "T2118", "deviceName": d, "dps": {}}
+                for d in ("first", "second")
+            ]
+
+        login.init = AsyncMock(side_effect=_init)
+        return login
+
+    return build
+
+
+def _brokers(*outcomes):
+    """MQTT clients in creation order: connect() raises the outcome, or
+    reports the accepted connection (None)."""
+    pending = iter(outcomes)
+
+    def client(**_kwargs):
+        outcome = next(pending)
+        mock = MagicMock(disconnect=AsyncMock(), is_connected=outcome is None)
+
+        async def _connect():
+            if outcome is not None:
+                raise outcome
+            mock.set_connection_listener.call_args.args[0](True, None)
+
+        mock.connect = AsyncMock(side_effect=_connect)
+        return mock
+
+    return client
+
+
+_EOF = SSLEOFError(8, "EOF occurred in violation of protocol")
+
+
+def _revoked() -> SSLError:
+    err = SSLError(1, "[SSL: SSLV3_ALERT_CERTIFICATE_REVOKED] alert")
+    err.reason = "SSLV3_ALERT_CERTIFICATE_REVOKED"
+    return err
+
+
+@pytest.mark.parametrize(
+    ("login_result", "outcomes", "wait"),
+    [
+        (
+            {"mqtt": {**_CACHED_MQTT, "certificate_pem": "new"}},
+            [_revoked(), None, _EOF, _EOF],
+            SESSION_REPLACED_WINDOW,
+        ),
+        (
+            EufyLoginTransientError("HTTP 503"),
+            [None, _revoked()],
+            cloud_mod._MQTT_RELOGIN_RETRY_DELAY,
+        ),
+        (
+            {"mqtt": {**_CACHED_MQTT, "certificate_pem": "new"}},
+            [_revoked(), None, _revoked()],
+            None,
+        ),
+    ],
+    ids=["closed-after-a-replacement", "replacement-login-failed", "kick-out-latch"],
+)
+async def test_a_robot_left_out_while_no_replacement_login_may_run_reloads_then(
+    hass: HomeAssistant, caplog, login_result, outcomes, wait
+):
+    """The second robot's handshake is closed within the window of the
+    first's replacement login, or its replacement login failed: the entry
+    reloads when the next replacement login may run. A rejection inside the
+    window latches the kick-out instead: reauthentication, no reload."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="left_out_entry",
+    )
+    entry.add_to_hass(hass)
+
+    with patch(
+        "custom_components.robovac_mqtt.EufyLogin", side_effect=_account(login_result)
+    ), patch(
+        "custom_components.robovac_mqtt.coordinator.EufyCleanClient",
+        side_effect=_brokers(*outcomes),
+    ), patch(
+        "custom_components.robovac_mqtt.coordinator._SETUP_HANDSHAKE_RETRY_DELAY", 0.0
+    ), patch("custom_components.robovac_mqtt.async_call_later") as call_later:
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+        assert entry.state is ConfigEntryState.LOADED
+        started = {c.device_id for c in hass.data[DOMAIN][entry.entry_id]["coordinators"]}
+        assert "second" not in started
+        assert ("left out while no Eufy login may run" in caplog.text) is bool(wait)
+        if wait is None:
+            call_later.assert_not_called()
+            assert entry.async_get_active_flows(hass, {"reauth"})
+        else:
+            call_later.assert_called_once()
+            _hass, delay, _action = call_later.call_args.args
+            assert wait - 5 < delay <= wait + 2
+        assert await hass.config_entries.async_unload(entry.entry_id)
+
+
+async def test_global_registration_runs_once_for_several_entries(hass: HomeAssistant):
+    """The frontend hook and websocket commands register in async_setup, once."""
+    with patch(
+        "custom_components.robovac_mqtt.async_when_setup"
+    ) as mock_when_setup, patch(
+        "custom_components.robovac_mqtt.async_setup_websocket_api"
+    ) as mock_ws, patch(
+        "custom_components.robovac_mqtt.EufyLogin"
+    ) as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator",
+        side_effect=lambda *a, **k: _mock_coordinator(a[2]["deviceId"]),
+    ):
+        _mock_login(mock_login_cls, "dev_a")
+        for n in range(2):
+            MockConfigEntry(
+                domain=DOMAIN,
+                data={CONF_USERNAME: f"user{n}@example.com", CONF_PASSWORD: "pw"},
+                entry_id=f"entry_{n}",
+            ).add_to_hass(hass)
+        assert await async_setup_component(hass, DOMAIN, {})
+        await hass.async_block_till_done()
+        await hass.config_entries.async_reload("entry_0")
+        await hass.async_block_till_done()
+
+    assert mock_when_setup.call_count == 1
+    assert mock_ws.call_count == 1
+
+
+async def test_remove_device_refused_while_the_api_still_returns_it(
+    hass: HomeAssistant,
+):
+    """Only a device the Eufy API no longer returns can be removed by the user."""
+    entry = MockConfigEntry(domain=DOMAIN, data={}, entry_id="rm_entry")
+    entry.add_to_hass(hass)
+    hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
+        "coordinators": [_mock_coordinator("dev_live")]
+    }
+    registry = dr.async_get(hass)
+    live = registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "dev_live")}
+    )
+    gone = registry.async_get_or_create(
+        config_entry_id=entry.entry_id, identifiers={(DOMAIN, "dev_gone")}
+    )
+
+    assert await async_remove_config_entry_device(hass, entry, live) is False
+    assert await async_remove_config_entry_device(hass, entry, gone) is True
+
+
+def test_manifest_declares_every_runtime_import_within_ha_constraints():
+    """paho-mqtt and protobuf are imported at runtime, so the manifest declares them.
+
+    HA installs them only for its own mqtt integration; a Core venv without it
+    fails to import the component. The ranges must admit HA's pinned versions.
+    """
+    manifest = json.loads((_COMPONENT_DIR / "manifest.json").read_text())
+    reqs = {
+        (r := Requirement(line)).name.lower(): r for line in manifest["requirements"]
+    }
+    assert {"paho-mqtt", "protobuf"} <= set(reqs)
+
+    constraints = (
+        Path(homeassistant.__file__).parent / "package_constraints.txt"
+    ).read_text()
+    pins = {
+        name.lower(): version
+        for name, _, version in (
+            line.partition("==") for line in constraints.splitlines() if "==" in line
+        )
+    }
+    for name in ("paho-mqtt", "protobuf"):
+        assert reqs[name].specifier.contains(pins[name]), (name, pins[name])
+
+
+async def test_session_replaced_raises_reauth_and_a_repair_issue(hass: HomeAssistant):
+    """Another client's logins: reauth (the user's decision), plus a repair
+    issue naming the account, not the entry title (device names)."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: "user@example.com", CONF_PASSWORD: "pw"},
+        entry_id="replaced_entry",
+        title="RoboVac X10 Pro Omni",
+    )
+    entry.add_to_hass(hass)
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
+        mock_login_cls.return_value.init = AsyncMock(
+            side_effect=EufySessionReplacedError("kicked out")
+        )
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.SETUP_ERROR
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, "session_replaced_replaced_entry")
+    assert issue is not None
+    assert issue.translation_placeholders == {"account": "user@example.com"}
+    assert any(
+        flow["context"]["source"] == "reauth"
+        for flow in hass.config_entries.flow.async_progress()
+    )
+
+
+async def _set_up_kicked_out(hass: HomeAssistant, entry_id: str) -> MockConfigEntry:
+    """An entry whose setup raised the session-replaced repair issue."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        data={CONF_USERNAME: f"{entry_id}@example.com", CONF_PASSWORD: "pw"},
+        entry_id=entry_id,
+    )
+    entry.add_to_hass(hass)
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
+        mock_login_cls.return_value.init = AsyncMock(
+            side_effect=EufySessionReplacedError("kicked out")
+        )
+        await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    return entry
+
+
+async def test_a_successful_setup_clears_the_session_replaced_issue(
+    hass: HomeAssistant,
+):
+    """After a reauth the entry sets up again, and the repair issue goes."""
+    entry = await _set_up_kicked_out(hass, "reauthed_entry")
+    issues = ir.async_get(hass)
+    assert issues.async_get_issue(DOMAIN, "session_replaced_reauthed_entry")
+
+    with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
+        "custom_components.robovac_mqtt.EufyCleanCoordinator",
+        side_effect=lambda *a, **k: _mock_coordinator(a[2]["deviceId"]),
+    ):
+        _mock_login(mock_login_cls, "dev_a")
+        await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+
+    assert entry.state is ConfigEntryState.LOADED
+    assert issues.async_get_issue(DOMAIN, "session_replaced_reauthed_entry") is None
+
+
+async def test_removing_an_entry_deletes_its_repair_issues(hass: HomeAssistant):
+    """The session-replaced issue and its devices' segment issues go with the
+    entry; another entry's stay."""
+    removed = await _set_up_kicked_out(hass, "removed_entry")
+    kept = await _set_up_kicked_out(hass, "kept_entry")
+    devices = dr.async_get(hass)
+    issues = ir.async_get(hass)
+    for entry, identifiers in (
+        # another integration's identifier on our device names no issue of ours
+        (removed, {(DOMAIN, "dev_removed"), ("other_domain", "dev_kept")}),
+        (kept, {(DOMAIN, "dev_kept")}),
+    ):
+        devices.async_get_or_create(
+            config_entry_id=entry.entry_id, identifiers=identifiers
+        )
+        device_id = next(i for d, i in identifiers if d == DOMAIN)
+        ir.async_create_issue(
+            hass,
+            DOMAIN,
+            f"segments_changed_{device_id}",
+            is_fixable=False,
+            severity=ir.IssueSeverity.WARNING,
+            translation_key="segments_changed",
+        )
+    assert issues.async_get_issue(DOMAIN, "session_replaced_removed_entry")
+
+    await hass.config_entries.async_remove(removed.entry_id)
+    await hass.async_block_till_done()
+
+    assert issues.async_get_issue(DOMAIN, "session_replaced_removed_entry") is None
+    assert issues.async_get_issue(DOMAIN, "segments_changed_dev_removed") is None
+    assert issues.async_get_issue(DOMAIN, "session_replaced_kept_entry")
+    assert issues.async_get_issue(DOMAIN, "segments_changed_dev_kept")

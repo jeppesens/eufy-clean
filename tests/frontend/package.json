@@ -1,0 +1,13 @@
+{
+  "name": "eufy-clean-card-tests",
+  "private": true,
+  "version": "1.0.0",
+  "description": "jsdom harness for custom_components/robovac_mqtt/frontend/ (card + map renderer)",
+  "type": "commonjs",
+  "scripts": {
+    "test": "node card.test.mjs && node card-clientrender.test.mjs && node renderer.test.mjs && node golden.test.mjs"
+  },
+  "dependencies": {
+    "jsdom": "^24.1.3"
+  }
+}
