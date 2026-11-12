@@ -83,10 +83,10 @@ class P2PMap:
     rooms: list[dict] = field(default_factory=list)
     obstacles: list[Obstacle] = field(default_factory=list)
     virtual_walls: list[tuple[tuple[int, int], tuple[int, int]]] = field(default_factory=list)
-    forbidden_zones: list[list[tuple[int, int]]] = field(default_factory=list)
-    ban_mop_zones: list[list[tuple[int, int]]] = field(default_factory=list)
+    forbidden_zones: list[list[tuple[float, float]]] = field(default_factory=list)
+    ban_mop_zones: list[list[tuple[float, float]]] = field(default_factory=list)
     target_room_ids: list[int] = field(default_factory=list)
-    target_zones: list[list[tuple[int, int]]] = field(default_factory=list)
+    target_zones: list[list[tuple[float, float]]] = field(default_factory=list)
     path: list[tuple[int, int, int]] = field(default_factory=list)  # (x, y, flags)
     pose: Pose | None = None
 

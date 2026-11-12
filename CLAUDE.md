@@ -250,4 +250,4 @@ This codebase must stay maintainable by humans. Be strict about duplication:
 - Error codes: 100+ entries in `const.py:EUFY_CLEAN_ERROR_CODES`
 - MQTT uses mutual TLS with device-specific certificates from the Eufy cloud API
 - The `has_length` parameter in decode/encode controls whether a varint length prefix is present
-- Accessory max lifespans defined in `const.py:ACCESSORY_MAX_LIFE` (hours); per-model overrides (which also decide which accessory sensors exist) in `MODEL_ACCESSORY_MAX_LIFE`
+- Accessory lifespans (hours) and wire keys are `profiles.py:AccessorySpec` entries; each model's `DeviceProfile` in `MODEL_PROFILES` lists its accessories, which also decides which accessory sensors exist

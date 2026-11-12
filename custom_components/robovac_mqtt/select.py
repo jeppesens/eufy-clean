@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -10,12 +11,15 @@ from homeassistant.components.select import SelectEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import EntityCategory
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from ._orphan_cleanup import prune_orphan_entities
 from .const import (
+    API_TYPE_LEGACY,
+    API_TYPE_NOVEL,
+    API_TYPE_SCALAR,
     DOMAIN,
     DRY_DURATION_MAP,
     EUFY_CLEAN_CLEANING_INTENSITIES,
@@ -23,13 +27,14 @@ from .const import (
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
     EUFY_CLEAN_WATER_LEVELS,
     HEIGHT_DETECTION_MODES,
-    LEGACY_CLEAN_SPEEDS,
+    LEGACY_ROOM_FAN_LEVELS,
+    LEGACY_ROOM_WATER_LEVELS,
     SCALAR_CLEAN_PATTERN_NAMES,
     SCALAR_SUCTION_LEVELS,
     VOICE_CATALOG,
 )
 from .coordinator import EufyCleanCoordinator
-from .entity import API_TYPE_NOVEL, API_TYPE_SCALAR, filter_supported_entities
+from .entity import filter_supported_entities
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -54,8 +59,7 @@ def _optimistically_update_state(
 ) -> None:
     """Optimistically update the coordinator state and notify listeners.
 
-    If the device command fails silently, the UI will show the wrong state
-    until the next DPS update from the device.
+    A silently failed command leaves the UI wrong until the next DPS update.
     """
     _LOGGER.debug(
         "Optimistically updating state for %s: %s",
@@ -83,22 +87,19 @@ async def async_setup_entry(
     for coordinator in coordinators:
         _LOGGER.debug("Adding select entities for %s", coordinator.device_name)
 
-        # Universal selects that work on every api type, including legacy:
-        # SuctionLevelSelectEntity's set_fan_speed is a supported legacy command,
-        # and CleaningPatternSelectEntity is scalar-only (dropped for legacy by
-        # filter_supported_entities anyway).
+        # Safe on every api type: set_fan_speed works on legacy, and the pattern
+        # select is scalar-gated below.
         candidates = [
             SuctionLevelSelectEntity(coordinator),
             CleaningPatternSelectEntity(coordinator),
         ]
 
-        # Novel-only selects. Legacy (Tuya Cloud plain-value) devices cannot
-        # drive these: their commands route to build_legacy_command, which
-        # returns {} and is silently dropped — so a legacy device would show
-        # functional-looking but no-op dropdowns. filter_supported_entities does
-        # NOT exclude them because effective_api_type buckets "legacy" as
-        # "novel", so guard explicitly (matching number/button/sensor).
-        if coordinator.api_type != "legacy":
+        if coordinator.api_type in (API_TYPE_SCALAR, API_TYPE_LEGACY):
+            candidates.append(RoboVacScheduleSelectEntity(coordinator))
+
+        # Novel-only: on legacy these build {} and are dropped, leaving dropdowns
+        # that do nothing. Guarded here because the filter buckets legacy as novel.
+        if coordinator.api_type != API_TYPE_LEGACY:
             candidates += [
                 CleaningModeSelectEntity(coordinator),
                 WaterLevelSelectEntity(coordinator),
@@ -138,22 +139,21 @@ async def async_setup_entry(
                 VoiceSelectEntity(coordinator),
             ]
 
-        # Transport-based hiding (complementary to api-type gating):
-        # Scene data is delivered through Eufy's encrypted P2P channel which
-        # only the MQTT transport receives — skip on Tuya transports rather
-        # than expose permanently-`unknown` UI.
+        # Scene data only arrives over MQTT/P2P; on Tuya it stays `unknown` forever.
         if coordinator.connection_type == "mqtt":
             candidates.append(SceneSelectEntity(coordinator))
             candidates.append(MapSelectEntity(coordinator))
         # The room list comes with the map, or from a manual {room_id: name}
-        # override supplied through the options flow.
+        # override supplied through the options flow. A legacy robot whose map
+        # download failed still gets the entity (receives_map does not wait for
+        # the download): the prune below would delete it for good, while an
+        # empty option list self-heals, as `options` is computed live.
         if coordinator.receives_map or coordinator.room_name_overrides:
             candidates.append(RoomSelectEntity(coordinator))
 
         entities.extend(filter_supported_entities(coordinator, candidates))
 
-    # Prune registry orphans (e.g., scene/clean_room entities registered by an
-    # older build but no longer created on Tuya transports).
+    # Drop entities an older build registered that this device no longer creates.
     prune_orphan_entities(
         hass,
         config_entry.entry_id,
@@ -188,7 +188,6 @@ def _get_dry_duration(cfg: dict[str, Any]) -> str:
 
 def _set_dry_duration(cfg: dict[str, Any], val: str) -> None:
     """Helper to set dry duration."""
-    # Find key by value
     for level, display in DRY_DURATION_MAP.items():
         if display == val:
             if "dry" not in cfg:
@@ -233,11 +232,7 @@ def _set_collect_dust_mode(cfg: dict[str, Any], val: str) -> None:
 
 
 class DockSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
-    """Configuration select for Dock/Station settings.
-
-    Station features; scalar (Tuya) vacuum-only devices like the G50 have no
-    station.
-    """
+    """Configuration select for dock/station settings (devices with a station)."""
 
     supported_api_types = (API_TYPE_NOVEL,)
 
@@ -317,7 +312,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
         opts = [self._PLACEHOLDER] + [
             _format_option_label(s, "Task") for s in self.coordinator.data.scenes
         ]
-        # If the active scene is not in the list, append it so HA does not log a warning.
+        # Append an unlisted active scene, or HA logs an invalid-option warning.
         current = self.current_option
         if current and current != self._PLACEHOLDER and current not in opts:
             opts.append(current)
@@ -348,8 +343,7 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
             None,
         )
         if not scene:
-            _LOGGER.error("Task '%s' not found", option)
-            return
+            raise ServiceValidationError(f"Task {option!r} not found")
 
         scene_id = scene["id"]
         _LOGGER.info("Triggering scene '%s' (ID: %s)", option, scene_id)
@@ -364,15 +358,9 @@ class SceneSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
     """Select entity for choosing and triggering room cleaning.
 
-    Two data sources for the room list, in priority order:
-
-    1. ``coordinator.room_name_overrides`` — manual ``{room_id: name}`` mapping
-       supplied via the options flow. Used on transports that can't deliver
-       the room list from the device (Tuya cloud / local Tuya), and also
-       useful as an MQTT-side override if the device's auto-supplied names
-       are wrong or unfriendly.
-    2. ``coordinator.data.rooms`` — names received via the MQTT/P2P
-       MultiMapsManageResponse / RoomParams stream.
+    Rooms from ``coordinator.selectable_rooms()``: manual ``room_name_overrides``
+    from the options flow, else ``coordinator.data.rooms`` (P2P on novel devices,
+    the Tuya cloud-storage map blob on legacy ones).
     """
 
     supported_api_types = (API_TYPE_NOVEL,)
@@ -389,51 +377,97 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
     _PLACEHOLDER = "None"
 
-    def _override_rooms(self) -> list[dict[str, Any]]:
-        """Return manual overrides as a [{id, name}] list (sorted by ID for stable ordering)."""
-        overrides = self.coordinator.room_name_overrides
-        if not overrides:
-            return []
-        return [{"id": rid, "name": name} for rid, name in sorted(overrides.items())]
-
-    def _active_rooms(self) -> list[dict[str, Any]]:
-        """Choose between override and P2P-derived rooms (overrides win)."""
-        if rooms := self._override_rooms():
-            return rooms
-        return self.coordinator.data.rooms
+    def _room_labels(self) -> list[tuple[Any, str]]:
+        """Return ``(room_id, "<name> (ID: <id>)")`` for each room the select lists."""
+        return [
+            (room["id"], _format_option_label(room, "Room"))
+            for room in self.coordinator.selectable_rooms()
+        ]
 
     @property
     def options(self) -> list[str]:
         """Return available rooms with a placeholder as the first entry."""
-        return [self._PLACEHOLDER] + [
-            _format_option_label(r, "Room") for r in self._active_rooms()
-        ]
+        return [self._PLACEHOLDER] + [label for _, label in self._room_labels()]
 
     @property
     def current_option(self) -> str | None:
         """Return active room if cleaning, otherwise the placeholder."""
         active_ids = set(self.coordinator.data.active_room_ids)
         if active_ids:
-            for r in self._active_rooms():
-                if r.get("id") in active_ids:
-                    return _format_option_label(r, "Room")
+            for room_id, label in self._room_labels():
+                if room_id in active_ids:
+                    return label
         return self._PLACEHOLDER
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose each listed room's current per-room cleaning settings (read-only).
+
+        Keyed by option label; values come from the map room with the same id.
+        Legacy only, from the map blob's ``customRooms`` (``-1``/``0`` show as
+        "Default"); novel room lists carry no per-room settings.
+        """
+        map_rooms = {room.get("id"): room for room in self.coordinator.data.rooms}
+        settings: dict[str, dict[str, Any]] = {}
+        for room_id, label in self._room_labels():
+            room = map_rooms.get(room_id, {})
+            fan = room.get("fan_speed")
+            water = room.get("water_level")
+            times = room.get("clean_times")
+            if fan is None and water is None and times is None:
+                continue
+            settings[label] = {
+                "suction": (
+                    LEGACY_ROOM_FAN_LEVELS[fan]
+                    if isinstance(fan, int) and 0 <= fan < len(LEGACY_ROOM_FAN_LEVELS)
+                    else "Default"
+                ),
+                "wash": (
+                    LEGACY_ROOM_WATER_LEVELS[water]
+                    if isinstance(water, int)
+                    and 0 <= water < len(LEGACY_ROOM_WATER_LEVELS)
+                    else "Default"
+                ),
+                "clean_times": times if isinstance(times, int) and times >= 1 else 1,
+            }
+        return {"room_settings": settings} if settings else {}
+
+    @staticmethod
+    def _label_name(label: str) -> str:
+        """The room name inside a label, dropping any ``(ID: n)`` suffix."""
+        return re.sub(r"\s*\(ID: \d+\)$", "", label)
 
     async def async_select_option(self, option: str) -> None:
         """Trigger cleaning of the selected room."""
         if option == self._PLACEHOLDER:
             return
 
-        rooms = self._active_rooms()
-        room = next(
-            (r for r in rooms if _format_option_label(r, "Room") == option),
-            None,
-        )
-        if not room:
-            _LOGGER.error("Room '%s' not found", option)
-            return
+        # Room ids are resolved against whichever map is active, and legacy devices
+        # can switch maps without bumping DPS 125, so a
+        # cached id can clean the wrong room — re-fetch the newest stored map first.
+        if (
+            self.coordinator.api_type == API_TYPE_LEGACY
+            and not self.coordinator.room_name_overrides
+        ):
+            try:
+                await self.coordinator.async_refresh_legacy_map()
+            except Exception:  # noqa: BLE001 - keep the cached rooms on failure
+                _LOGGER.debug(
+                    "Room clean: legacy map refresh failed; using cached rooms"
+                )
 
-        room_id = room["id"]
+        labels = self._room_labels()
+        room_id = next((rid for rid, label in labels if label == option), None)
+        if room_id is None:
+            # A refresh can move a room to another id; match on the name.
+            name = self._label_name(option)
+            room_id = next(
+                (rid for rid, label in labels if self._label_name(label) == name),
+                None,
+            )
+        if room_id is None:
+            raise ServiceValidationError(f"Room {option!r} is not in the active map")
+
         # Manual override wins, then the discovered map_id, then 1.
         map_id = self.coordinator.resolve_map_id()
         _LOGGER.info(
@@ -451,21 +485,12 @@ class RoomSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
 
 class MapSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
-    """Writable map switcher ("Switch Map").
+    """Writable map switcher ("Switch Map"); the "Active Map" sensor is read-only.
 
-    Distinct from the read-only "Active Map" *sensor*: this is the selector you
-    use to change maps. Options accumulate as the robot visits maps — the map id
-    arrives reliably over the DPS state stream (the same signal the Active Map
-    sensor tracks), so every map the robot has been on is appended and becomes
-    switchable, shown as ``Map (ID: <id>)``. A friendly name is layered in when
-    that map's ``MapDescription`` is seen on the biz stream — the device only
-    emits it when you rename the map in the app (a plain switch or view carries
-    only the id), after which the name is persisted with the id. Bulk enumeration
-    (``MAP_GET_ALL``) is P2P-only, so this is a learn-as-seen list.
-
-    Selecting an option sends ``map_load``. NOTE: the robot pose does not
-    re-localize onto the new map until the vacuum next MOVES — see the
-    ``map_load`` service docs for the single-room-clean workaround.
+    Learn-as-seen: bulk enumeration is P2P-only, so options accumulate as the robot
+    visits maps, labelled ``Map (ID: <id>)`` until a ``MapDescription`` supplies a
+    name. Selecting one sends ``map_load``; the pose re-localizes onto the new map
+    only when the vacuum next moves.
     """
 
     supported_api_types = (API_TYPE_NOVEL,)
@@ -610,14 +635,13 @@ class SuctionLevelSelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize suction level select."""
         super().__init__(coordinator, "suction_level")
-        # scalar-protocol devices (DPS 118) and Tuya-transport protobuf robots
-        # (DPS 159) expose BoostIQ as a separate switch, so their suction list is
-        # the four levels without Boost_IQ. legacy (Tuya Cloud) devices use the
-        # plain Tuya speed strings.
-        if coordinator.api_type == "scalar" or coordinator.tuya_transport:
+        # Scalar devices (DPS 118) and Tuya-transport protobuf robots (DPS 159)
+        # expose BoostIQ as a separate switch, not a 5th level. Legacy devices
+        # use the speeds their Tuya schema lists.
+        if coordinator.api_type == API_TYPE_SCALAR or coordinator.tuya_transport:
             self._attr_options = SCALAR_SUCTION_LEVELS
-        elif coordinator.api_type == "legacy":
-            self._attr_options = list(LEGACY_CLEAN_SPEEDS)
+        elif coordinator.api_type == API_TYPE_LEGACY:
+            self._attr_options = coordinator.legacy_fan_speeds
         else:
             self._attr_options = _SUCTION_LEVELS
 
@@ -649,8 +673,7 @@ class CleaningModeSelectEntity(_StateBackedSelectEntity):
 class CleaningPatternSelectEntity(_StateBackedSelectEntity):
     """Select entity for the cleaning path pattern (Arranged/Random).
 
-    scalar-protocol only (DPS 154 int). Distinct from CleaningModeSelectEntity, which is
-    the X-series Vacuum/Mop axis. Hidden until a pattern value is reported.
+    Scalar only (DPS 154 int); the Vacuum/Mop axis is CleaningModeSelectEntity.
     """
 
     supported_api_types = (API_TYPE_SCALAR,)
@@ -674,11 +697,8 @@ class CleaningPatternSelectEntity(_StateBackedSelectEntity):
 class WaterLevelSelectEntity(_StateBackedSelectEntity):
     """Select entity for adjusting global mop water level.
 
-    This entity and MopIntensitySelectEntity both control the device's
-    water level — WaterLevelSelectEntity uses the raw device names
-    (Low/Medium/High) while MopIntensitySelectEntity uses Matter-
-    compatible aliases (Quiet/Automatic/Max).  Both are intentional:
-    the Matter bridge discovers MopIntensitySelectEntity.
+    Duplicates MopIntensitySelectEntity on purpose: this one uses the raw device
+    names, that one the Matter aliases the Matter bridge discovers.
     """
 
     supported_api_types = (API_TYPE_NOVEL,)
@@ -702,10 +722,8 @@ class WaterLevelSelectEntity(_StateBackedSelectEntity):
 class MopIntensitySelectEntity(_StateBackedSelectEntity):
     """Select entity for mop water level, modeled as Matter MopIntensity.
 
-    In Matter, MopIntensity defines values like 'Quiet', 'Standard', 'Max'.
-    Eufy water levels ('Low', 'Medium', 'High') are mapped to these names
-    to align with standard Matter enums, even though 'Quiet' is not a
-    typical word for water level. 'Automatic' maps to 'Medium' as a safe fallback.
+    Low/Medium/High are renamed to the Matter enum names Quiet/Automatic/Max, odd
+    as those read for a water level.
     """
 
     supported_api_types = (API_TYPE_NOVEL,)
@@ -820,4 +838,91 @@ class VoiceSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
 
         await self.coordinator.async_send_command(command)
         _optimistically_update_state(self.coordinator, voice_set_id=set_id)
+        self.async_write_ha_state()
+
+
+def _format_schedule_option(s: dict[str, Any]) -> str:
+    """Format a schedule entry into a human-readable dropdown option."""
+    t = s.get("time") or "00:00"
+    days = s.get("days") or "Once"
+    sid = s.get("id")
+    enabled_str = "Enabled" if s.get("enabled", True) else "Disabled"
+    return f"{t} ({days}) - {enabled_str} [ID: {sid}]"
+
+
+class RoboVacScheduleSelectEntity(CoordinatorEntity[EufyCleanCoordinator], SelectEntity):
+    """Select entity for picking and managing cleaning schedules."""
+
+    _attr_has_entity_name = True
+    _attr_name = "Selected Schedule"
+    _attr_icon = "mdi:calendar-clock"
+    _attr_entity_category = EntityCategory.CONFIG
+
+    def __init__(self, coordinator: EufyCleanCoordinator) -> None:
+        """Initialize schedule select entity."""
+        super().__init__(coordinator)
+        self._attr_unique_id = f"{coordinator.device_id}_selected_schedule"
+        self._attr_device_info = coordinator.device_info
+
+    @property
+    def available(self) -> bool:
+        """Available once schedules have been loaded from Tuya Cloud or DPS 151."""
+        return super().available and "schedules" in self.coordinator.data.received_fields
+
+    @property
+    def options(self) -> list[str]:
+        """Dynamically return list of existing schedules plus 'Create New'."""
+        schedules = self.coordinator.data.schedules or []
+        opts = ["Create New"]
+        for s in schedules:
+            opts.append(_format_schedule_option(s))
+        return opts
+
+    @property
+    def current_option(self) -> str:
+        """Return the currently selected option."""
+        schedules = self.coordinator.data.schedules or []
+        sel_id = self.coordinator.selected_schedule_id
+        if sel_id is not None:
+            for s in schedules:
+                if str(s.get("id")) == str(sel_id):
+                    return _format_schedule_option(s)
+        return "Create New"
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Expose detailed parameters of the currently selected schedule."""
+        schedules = self.coordinator.data.schedules or []
+        sel_id = self.coordinator.selected_schedule_id
+        if sel_id is not None:
+            for s in schedules:
+                if str(s.get("id")) == str(sel_id):
+                    return {
+                        "schedule_id": s.get("id"),
+                        "time": s.get("time"),
+                        "days": s.get("days"),
+                        "enabled": s.get("enabled", True),
+                        "suction": s.get("suction"),
+                        "wash": s.get("wash") or s.get("water"),
+                        "rooms": s.get("rooms"),
+                        "clean_times": s.get("clean_times", 1),
+                        "mode": s.get("mode") or s.get("action") or "general",
+                        "action": "edit",
+                    }
+        return {
+            "schedule_id": None,
+            "action": "create",
+        }
+
+    async def async_select_option(self, option: str) -> None:
+        """Select a schedule option."""
+        if option == "Create New":
+            self.coordinator.selected_schedule_id = None
+        else:
+            match = re.search(r"\[ID:\s*([^\]]+)\]", option)
+            if match:
+                raw_id = match.group(1).strip()
+                self.coordinator.selected_schedule_id = int(raw_id) if raw_id.isdigit() else raw_id
+            else:
+                self.coordinator.selected_schedule_id = None
         self.async_write_ha_state()

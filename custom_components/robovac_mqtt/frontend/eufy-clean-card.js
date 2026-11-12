@@ -693,14 +693,15 @@ class EufyCleanCard extends HTMLElement {
         resp[this._config.vacuum] ||
         (resp.room_id !== undefined ? resp : Object.values(resp)[0]) ||
         {};
-      // room_id is -1 (or absent) off the map; 0 is a real room on some robots.
-      const raw = Number(entry.room_id);
-      rid = Number.isInteger(raw) && raw >= 0 ? raw : null;
+      // A miss is null, -1 or absent; 0 is a real room id on some robots.
+      const raw = entry.room_id;
+      const n = raw === null || raw === undefined || raw === "" ? NaN : Number(raw);
+      rid = Number.isInteger(n) && n >= 0 ? n : null;
     } catch (err) {
       this._setStatus(`Tap lookup failed: ${err && err.message ? err.message : err}`);
       return;
     }
-    // Only real, listed rooms are selectable; background/unmapped pixels resolve to nothing.
+    // Only real, listed rooms are selectable; a miss or an unlisted id resolves to nothing.
     const room = rid === null ? null : this._lastRooms.find((r) => r.id === rid);
     if (!room) {
       this._setStatus("No room there — tap inside a room.");

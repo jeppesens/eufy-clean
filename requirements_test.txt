@@ -4,5 +4,6 @@ mypy
 types-requests
 types-setuptools
 protobuf
+tinytuya>=1.18.0,<2.0.0
 voluptuous-serialize
 types-PyYAML

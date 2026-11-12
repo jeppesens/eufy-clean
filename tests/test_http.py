@@ -2,11 +2,21 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from unittest.mock import AsyncMock, MagicMock
 
+import aiohttp
 import pytest
 
-from custom_components.robovac_mqtt.api.http import _REQUEST_TIMEOUT, EufyHTTPClient
+from custom_components.robovac_mqtt.api.http import (
+    _LOGIN_CONFIGS,
+    _REQUEST_TIMEOUT,
+    EufyHTTPClient,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+    _retry_after,
+)
 
 
 def _mock_websession(mock_response: AsyncMock) -> MagicMock:
@@ -177,6 +187,23 @@ async def test_login_validate_falls_back_to_v1():
     assert mock_session.post.call_count == 2
 
 
+def test_login_configs_put_the_remembered_winner_first():
+    client = _make_client()
+    client.login_label = _LOGIN_CONFIGS[1]["label"]
+    order = [c["label"] for c in client._ordered_login_configs()]
+    assert order[0] == _LOGIN_CONFIGS[1]["label"]
+    # Reordered, never filtered: the other entry is still a fallback.
+    assert set(order) == {c["label"] for c in _LOGIN_CONFIGS}
+
+
+def test_login_configs_ignore_an_unrecognised_memo():
+    client = _make_client()
+    client.login_label = "some endpoint that no longer exists"
+    assert [c["label"] for c in client._ordered_login_configs()] == [
+        c["label"] for c in _LOGIN_CONFIGS
+    ]
+
+
 @pytest.mark.asyncio
 async def test_login_all_attempts_fail():
     """Returns {} when both v2 and v1 fail."""
@@ -314,3 +341,218 @@ async def test_get_cloud_device_list_legacy_short_circuits():
 
     assert result == [{"id": "legacy_dev"}]
     assert mock_session.get.call_count == 1
+
+
+# --- transient vs rejected login ---
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [429, 500, 502, 503])
+async def test_login_transient_status_raises_transient(status):
+    """Rate limits and server errors are not a credential rejection."""
+    mock_session = _mock_websession_sequence(
+        _login_response(status), _login_response(status)
+    )
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginTransientError):
+        await client.login()
+
+
+@pytest.mark.asyncio
+async def test_login_transient_on_one_config_is_not_a_rejection():
+    """One config failing on the server side and the other rejecting is undecided."""
+    mock_session = _mock_websession_sequence(
+        _login_response(503), _login_response(401)
+    )
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginTransientError):
+        await client.login(validate_only=True)
+
+
+@pytest.mark.asyncio
+async def test_login_network_error_raises_transient():
+    """A transport failure on every config is transient."""
+    mock_session = MagicMock()
+    mock_session.post.side_effect = aiohttp.ClientConnectionError("reset")
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginTransientError):
+        await client.login()
+
+
+@pytest.mark.asyncio
+async def test_login_unreadable_200_raises_transient():
+    """A 200 whose body is not JSON cannot decide the credentials."""
+    bad = AsyncMock()
+    bad.status = 200
+    bad.json = AsyncMock(side_effect=ValueError("not json"))
+    mock_session = _mock_websession_sequence(bad, bad)
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginTransientError):
+        await client.login()
+
+
+@pytest.mark.asyncio
+async def test_login_success_after_transient_config_is_kept():
+    """A later config that yields a user_center wins over an undecided one."""
+    mock_session = _mock_websession_sequence(
+        _login_response(503), _login_response(200, "tok_v1")
+    )
+    client = _make_client(websession=mock_session)
+    client.get_user_info = AsyncMock(
+        return_value={"user_center_id": "x", "user_center_token": "t"}
+    )
+    client.get_mqtt_credentials = AsyncMock(return_value={"endpoint": "mqtt"})
+
+    result = await client.login()
+
+    assert result["session"]["access_token"] == "tok_v1"
+
+
+@pytest.mark.asyncio
+async def test_login_user_info_5xx_is_transient_not_fallback():
+    """A 5xx on user info must not demote the account to a fallback session."""
+    login_ok = _login_response(200, "tok")
+    user_5xx = AsyncMock()
+    user_5xx.status = 503
+    user_5xx.json = AsyncMock(return_value=None)
+
+    def _ctx(resp):
+        c = MagicMock()
+        c.__aenter__ = AsyncMock(return_value=resp)
+        c.__aexit__ = AsyncMock(return_value=False)
+        return c
+
+    mock_session = MagicMock()
+    mock_session.post.side_effect = [_ctx(login_ok), _ctx(login_ok)]
+    mock_session.get.side_effect = [_ctx(user_5xx), _ctx(user_5xx)]
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginTransientError):
+        await client.login()
+
+
+@pytest.mark.asyncio
+async def test_get_user_info_without_user_center_logs_debug_only(caplog):
+    """A missing user_center is the expected fallback path, not an error."""
+    resp = AsyncMock()
+    resp.status = 200
+    resp.json = AsyncMock(return_value={"email": "a@example.com"})
+    client = _make_client(websession=_mock_websession(resp))
+    client.session = {"access_token": "tok"}
+
+    with caplog.at_level("DEBUG"):
+        assert await client.get_user_info() is None
+
+    assert not [r for r in caplog.records if r.levelname in ("ERROR", "WARNING")]
+
+
+# --- HTTP 429 ---
+
+
+def _rate_limited(retry_after: str | None = None) -> AsyncMock:
+    r = _login_response(429)
+    r.headers = {} if retry_after is None else {"Retry-After": retry_after}
+    return r
+
+
+@pytest.mark.asyncio
+async def test_login_429_stops_at_the_first_config_with_its_retry_after():
+    """A rate-limited login does not go on to the next config."""
+    mock_session = _mock_websession_sequence(
+        _rate_limited("120"), _login_response(200, "tok_v1")
+    )
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginRateLimitedError) as err:
+        await client.login()
+
+    assert err.value.retry_after == 120
+    assert mock_session.post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_login_user_info_429_is_a_rate_limit_not_a_fallback():
+    """A 429 on user info stops the login instead of trying the next config."""
+    mock_session = _mock_websession_sequence(
+        _login_response(200, "tok"), _login_response(200, "tok")
+    )
+    mock_session.get.side_effect = _mock_websession_sequence(_rate_limited()).get.side_effect
+    client = _make_client(websession=mock_session)
+
+    with pytest.raises(EufyLoginRateLimitedError) as err:
+        await client.login()
+
+    assert err.value.retry_after is None
+    assert mock_session.post.call_count == 1
+
+
+def _http_date(delta: timedelta) -> str:
+    return format_datetime(datetime.now(timezone.utc) + delta, usegmt=True)
+
+
+@pytest.mark.parametrize(
+    ("header", "expected"),
+    [
+        ("120", 120.0),
+        ("0", 0.0),
+        (None, None),
+        ("", None),
+        ("soon", None),
+    ],
+)
+def test_retry_after_reads_seconds_or_nothing(header, expected):
+    assert _retry_after(_rate_limited(header)) == expected
+
+
+def test_retry_after_reads_an_http_date():
+    got = _retry_after(_rate_limited(_http_date(timedelta(seconds=300))))
+    assert got is not None and 290 <= got <= 300
+    assert _retry_after(_rate_limited(_http_date(timedelta(seconds=-60)))) == 0.0
+
+
+def test_retry_after_without_headers_is_none():
+    response = AsyncMock()
+    response.status = 429
+    assert _retry_after(response) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status", "auth_error", "transient_error"),
+    [(401, True, False), (403, True, False), (408, False, True), (500, False, True),
+     (503, False, True), (404, False, False)],
+)
+async def test_device_list_failures_are_classified(status, auth_error, transient_error):
+    """A server-side failure is recorded apart from a rejected token."""
+    resp = AsyncMock()
+    resp.status = status
+    client = _make_client(websession=_mock_websession(resp))
+    client.session = {"access_token": "tok"}
+
+    assert await client.get_cloud_device_list() == []
+    assert (client.auth_error, client.transient_error) == (auth_error, transient_error)
+
+
+@pytest.mark.asyncio
+async def test_device_list_429_raises_a_rate_limit():
+    mock_session = _mock_websession(_rate_limited("60"))
+    client = _make_client(websession=mock_session)
+    client.session = {"access_token": "tok"}
+
+    with pytest.raises(EufyLoginRateLimitedError) as err:
+        await client.get_cloud_device_list()
+
+    assert err.value.retry_after == 60
+    # the home-api fallback is not tried during a rate limit
+    assert mock_session.get.call_count == 1
+
+
+def test_restore_clears_the_recorded_failures():
+    client = _make_client()
+    client.auth_error = client.transient_error = True
+    client.restore({"access_token": "t"}, None)
+    assert (client.auth_error, client.transient_error) == (False, False)
