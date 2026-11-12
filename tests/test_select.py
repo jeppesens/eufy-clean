@@ -15,6 +15,7 @@ from custom_components.robovac_mqtt.select import (
     CleaningIntensitySelectEntity,
     CleaningModeSelectEntity,
     DockSelectEntity,
+    HeightDetectionSelectEntity,
     MapSelectEntity,
     MopIntensitySelectEntity,
     RoomSelectEntity,
@@ -394,6 +395,7 @@ async def test_legacy_coordinator_excludes_novel_only_selects():
     coordinator.device_model = "T2210"
     coordinator.api_type = "legacy"
     coordinator.connection_type = "cloud"
+    coordinator.receives_map = False
     coordinator.room_name_overrides = {}
     coordinator.data = VacuumState()
     coordinator.last_update_success = True
@@ -514,3 +516,23 @@ async def test_active_map_select_unknown_raises(mock_coordinator):
     entity.async_write_ha_state = MagicMock()
     with pytest.raises(HomeAssistantError):
         await entity.async_select_option("Nope (ID: 99)")
+
+
+@pytest.mark.asyncio
+async def test_height_detection_select_sends_and_reflects_the_mode():
+    coordinator = MagicMock()
+    coordinator.device_id = "dev"
+    coordinator.data = VacuumState(height_detection="Medium", received_fields={"height_detection"})
+    coordinator.last_update_success = True
+    coordinator.async_send_command = AsyncMock()
+    coordinator.build_device_command = MagicMock(return_value={"176": "x"})
+    entity = HeightDetectionSelectEntity(coordinator)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+
+    assert entity.options == ["Safe", "Medium", "Free"]
+    assert entity.current_option == "Medium"
+    await entity.async_select_option("Free")
+    coordinator.build_device_command.assert_called_once_with("set_height_detection", mode="Free")
+    await entity.async_select_option("Turbo")  # unsupported: ignored
+    assert coordinator.build_device_command.call_count == 1

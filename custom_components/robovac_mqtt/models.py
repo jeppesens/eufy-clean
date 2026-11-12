@@ -47,6 +47,8 @@ class VacuumState:
     error_message: str = ""
     error_codes: list[int] = field(default_factory=list)
     warn_codes: list[int] = field(default_factory=list)
+    last_error_code: int = 0
+    last_error_message: str = ""
     charging: bool = False
 
     cleaning_time: int = 0  # seconds
@@ -67,6 +69,7 @@ class VacuumState:
     dock_status: str | None = None  # debounced in the coordinator
     station_clean_water: int = 0  # percent?
     station_dirty_water: str = "Unknown"  # Station dirty-water tank level (WaterLevel name)
+    station_clean_water_level: str = "Unknown"  # Station clean-water tank band (S1 Pro, WaterLevel name)
     station_waste_water: int = 0
     dock_auto_cfg: dict[str, Any] = field(default_factory=dict)
     trigger_source: str = "unknown"
@@ -93,7 +96,7 @@ class VacuumState:
     voice_set_id: int = 1201  # DPS 162 voice pack set_id; 1201 = English (Female)
 
     # scalar-protocol fields
-    boost_iq: bool = False  # scalar DPS 118
+    boost_iq: bool = False  # scalar DPS 118, Tuya-transport DPS 159
     volume: int = 0  # percent (novel: DPS 161; scalar: DPS 111 0-10, x10)
     cleaning_pattern: str = (
         "Arranged"  # scalar DPS 154: Arranged/Random
@@ -106,6 +109,10 @@ class VacuumState:
     # Device settings, DPS 176 UnisettingResponse
     wifi_signal: float = -100.0  # dBm, converted from the reported 0-100%
     child_lock: bool = False
+    height_detection: str | None = None  # S1 Pro height detection sensitivity
+    camera_enabled: bool | None = None  # S1 Pro video switch (read-only)
+    # Last DP 181 video-manager reply as (method, result, monotonic time received).
+    video_response: tuple[int, int, float] | None = None
     dnd_enabled: bool = False
     dnd_start_hour: int = 22
     dnd_start_minute: int = 0

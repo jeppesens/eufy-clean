@@ -28,6 +28,7 @@ dev = [
     "flake8",
     "isort",
     "types-requests",
+    "types-PyYAML",
     "types-setuptools",
     "protobuf",
     "voluptuous-serialize",

@@ -93,6 +93,8 @@ async def async_setup_entry(
             ])
 
         for spec in profile.accessories.values():
+            if not spec.resettable:
+                continue
             buttons.append(
                 RoboVacButton(
                     coordinator,

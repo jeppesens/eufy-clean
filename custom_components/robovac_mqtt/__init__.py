@@ -24,7 +24,6 @@ from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.typing import ConfigType
-from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_when_setup
 
 from .api.cloud import (
@@ -71,36 +70,16 @@ _CARD_FILENAME = "eufy-clean-card.js"
 _CARD_URL_PATH = f"/{DOMAIN}/{_CARD_FILENAME}"
 
 
-def _card_cache_key(paths: list[Path], fallback: str) -> str:
-    """Short content hash over every frontend file, for the ``?v=`` cache-bust.
-
-    Blocking file I/O — call via ``async_add_executor_job``.
-    """
-    digest = hashlib.sha256()
-    for path in sorted(paths):
-        try:
-            digest.update(path.read_bytes())
-        except OSError:
-            return str(fallback)
-        digest.update(b"\0")
-    return f"{fallback}-{digest.hexdigest()[:12]}"
-
-
 async def _async_register_frontend_card(hass: HomeAssistant) -> None:
     """Serve and register the bundled Eufy Clean Lovelace card (once)."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get("card_registered"):
         return
 
-    integration = await async_get_integration(hass, DOMAIN)
-    # ?v= hashes the frontend bytes, not the manifest version, which can drift from
-    # the shipped file and pin stale content. Falls back to the version on error.
-    card_version = await hass.async_add_executor_job(
-        _card_cache_key,
-        [_FRONTEND_DIR / _CARD_FILENAME],
-        integration.version,
-    )
-    card_url = f"{_CARD_URL_PATH}?v={card_version}"
+    # ?v=<content hash> busts the browser cache whenever the card changes; the
+    # integration version only moves on releases.
+    card = await hass.async_add_executor_job((_FRONTEND_DIR / _CARD_FILENAME).read_bytes)
+    card_url = f"{_CARD_URL_PATH}?v={hashlib.sha256(card).hexdigest()[:12]}"
 
     # No hard `frontend` dependency (headless installs), so the optional card must
     # never fail setup.

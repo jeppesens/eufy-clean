@@ -63,10 +63,20 @@ EUFY_API_DEVICE_LIST: Final = (
 EUFY_API_DEVICE_V2: Final = f"{EUFY_API_BASE_URL}/v1/device/v2"
 # Home-api device list fallback
 EUFY_API_DEVICE_LIST_HOME: Final = f"{EUFY_HOME_API_BASE_URL}/v1/device/"
+# product.appliance of a robot vacuum in the cloud device list; the list also
+# holds the account's other eufy products, e.g. a smart scale (issue #121).
+EUFY_APPLIANCE_CLEANING: Final = "Cleaning"
 
 # Tuya productId -> Eufy model code: Tuya Cloud productIds have no Eufy v2 entry,
 # so findModel() cannot match them (see EufyLogin._resolve_tuya_model).
 TUYA_PRODUCT_MODELS: Final[dict[str, str]] = {
+}
+# Tuya productId -> reason, for non-vacuum eufy products that share the
+# account's Tuya home and carry a localKey. getCloudDevices() skips them, so
+# they never get a vacuum coordinator or replace a vacuum placeholder
+# (issue #148).
+TUYA_IGNORED_PRODUCT_IDS: Final[dict[str, str]] = {
+    "zv0iudtdybehgecu": 'eufy robot lawn mower (Tuya name "eufy S1200")',
 }
 EUFY_API_MQTT_INFO: Final = (
     f"{EUFY_AIOT_API_BASE_URL}/app/devicemanage/get_user_mqtt_info"
@@ -242,6 +252,25 @@ EUFY_CLEAN_NOVEL_CLEAN_SPEED = [
     EUFY_CLEAN_CLEAN_SPEED.MAX,
     EUFY_CLEAN_CLEAN_SPEED.BOOST_IQ,
 ]
+
+
+# VideoMgrRequest.Control.Method (DP 181), from the app's own protobuf definitions.
+VIDEO_MGR_STATE_SET: Final = 2
+VIDEO_MGR_STREAM_OPEN: Final = 3
+VIDEO_MGR_STREAM_CLOSE: Final = 4
+
+# DPS 176 field 104 is `videoMgrSw` in the app's own Unisetting schema: the
+# robot's camera switch. It is enabled on the robot itself (hold Start/Pause +
+# Recharge for 10 s), never over the network, so we only ever read it.
+DPS_UNSETTING_VIDEO_SWITCH_FIELD: Final = 104
+
+# Height Detection Sensitivity (S1 Pro, DPS 176 field 107) wire value -> name. The
+# app lists Safe/Medium/Free as 0/1/2; the robot's field is one higher (0 = unset).
+HEIGHT_DETECTION_MODES: Final[dict[int, str]] = {1: "Safe", 2: "Medium", 3: "Free"}
+DPS_UNSETTING_HEIGHT_DETECTION_FIELD: Final = 107
+
+# WorkStatus.State.REMOTE_CTRL: the robot is being driven by hand.
+WORK_STATE_REMOTE_CTRL = 6
 
 
 class EUFY_CLEAN_CONTROL(int, Enum):
@@ -528,6 +557,7 @@ DPS_MAP = {
     "ACCESSORIES_STATUS": "168",
     "GO_HOME": "173",
     "CLEAN_SPEED": "158",
+    "BOOST_IQ": "159",  # Tuya-transport robots (S1 Pro): BoostIQ on/off
     "FIND_ROBOT": "160",
     "BATTERY_LEVEL": "163",
     "STATION_STATUS": "173",
@@ -544,6 +574,7 @@ DPS_MAP = {
     "MULTI_MAP_MANAGE": "172",
     "MAP_MANAGE": "169",
     "UNDISTURBED": "157",
+    "VIDEO_MANAGER": "181",  # S1 Pro camera stream control (VideoMgrRequest/Response)
 }
 
 # Known DPS keys intentionally not parsed; raw values still land in raw_dps.
@@ -559,7 +590,6 @@ KNOWN_UNPROCESSED_DPS: frozenset[str] = frozenset(
         # Unknown DPS keys:
         "150",
         "151",
-        "159",
         "171",
         "174",
         "175",
@@ -639,6 +669,16 @@ SCALAR_CLEAN_PATTERN_NAMES = {1: "Arranged", 2: "Random"}
 
 SCALAR_WORK_MODE_START = 1
 SCALAR_WORK_MODE_GO_HOME = 3
+
+# Eufy S1 Pro. Only T2080A is verified: T2080 is the plain "Robovac S1" and its
+# numbering and behaviour are not known to match.
+S1_PRO_MODELS: Final = frozenset({"T2080A"})
+
+
+def is_s1_pro(model: str | None) -> bool:
+    """True for an S1 Pro model code, whatever its case."""
+    return (model or "").upper() in S1_PRO_MODELS
+
 
 # Dock statuses that mean an operation is running; anything else resets to Idle.
 DOCK_ACTIVITY_STATES = (
@@ -804,3 +844,104 @@ TUYA_THING_SALT = (
     b"38:7D:4D:8F:96:A3:43:DF:40:FC:D9:05:BF:F6:86_dn9erpyp7nmeuvah8ktghqsgpay87maa_"
     b"pt585qhmt75hwcynchnps9dnxh9suhwd"
 )
+
+
+# Raw 8-digit error numbers -> the code the S1 Pro prints on its screen, from
+# eufy Clean 3.20.0 (1042) assets/green_lantern/T2080A_prompt_json.json. The
+# older protobuf enum named t2080 uses a different numbering scheme.
+S1_PRO_SCREEN_CODES = {
+    18875652: "E54",
+    18876163: "E73",
+    18876178: "E7J",
+    18939904: "EB00",
+    18939905: "EB01",
+    18940175: "EB1F",
+    18940176: "EB1G",
+    18940177: "EB1H",
+    19922944: "E0",
+    19922945: "E1",
+    19922947: "E3",
+    19923200: "E10",
+    19923202: "E12",
+    19923204: "E14",
+    19923206: "E16",
+    19923712: "E30",
+    19923713: "E31",
+    19924225: "E51",
+    19924229: "E55",
+    19924230: "E56",
+    19924231: "E57",
+    19924233: "E59",
+    19924240: "E5G",
+    19924241: "E5H",
+    19924736: "E70",
+    19924738: "E72",
+    19924740: "E74",
+    19924741: "E75",
+    19924742: "E76",
+    19924743: "E77",
+    19924755: "E7K",
+    19988736: "EB10",
+    19988737: "EB11",
+    19988738: "EB12",
+    19988739: "EB13",
+    19988740: "EB14",
+    19988741: "EB15",
+    19988754: "EB1J",
+    19988755: "EB1K",
+    19989253: "EB35",
+    20971522: "E2",
+    20971524: "E4",
+    20971527: "E7",
+    20971779: "E13",
+    20971781: "E15",
+    20972032: "E20",
+    20972033: "E21",
+    20972034: "E22",
+    20972035: "E23",
+    20972037: "E25",
+    20972290: "E32",
+    20972545: "E41",
+    20972800: "E50",
+    20972802: "E52",
+    20972803: "E53",
+    20972808: "E58",
+    20972810: "E5A",
+    20972811: "E5B",
+    20972812: "E5C",
+    20972813: "E5D",
+    20973333: "E7M",
+    21037058: "EB02",
+    21037059: "EB03",
+    21037318: "EB16",
+    21037319: "EB17",
+    21037320: "EB18",
+    21037321: "EB19",
+    21037323: "EB1B",
+    21037324: "EB1C",
+    21037568: "EB20",
+    21037569: "EB21",
+    21037571: "EB23",
+    21037572: "EB24",
+    21037824: "EB30",
+    21037825: "EB31",
+    21037826: "EB32",
+    21037827: "EB33",
+    21037828: "EB34",
+    21037830: "EB36",
+    21037831: "EB37",
+    21038081: "EB41",
+}
+
+S1_PRO_ERROR_DESCRIPTIONS: Final = {
+    "E0": "Dustbin or filter not installed",
+    "E1": "Roller brush blocked",
+    "E30": "Robot lifted off the ground",
+    "E31": "Drive wheel blocked",
+    "E74": "Return to base station failed",
+    "E75": "Return to base station failed: route blocked",
+    "E76": "Return to base station failed: task ended",
+    "E77": "Robot not detected at the base station: task paused",
+    "EB11": "Base station clean water low",
+    "EB13": "Base station dirty water tank full",
+}
