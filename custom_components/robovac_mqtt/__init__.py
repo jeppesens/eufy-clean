@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import logging
-import random
-import string
 from collections.abc import Callable
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -12,14 +11,29 @@ import aiohttp
 from homeassistant.components.frontend import add_extra_js_url
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_PASSWORD, CONF_USERNAME, Platform
-from homeassistant.core import HomeAssistant
+from homeassistant.const import (
+    CONF_PASSWORD,
+    CONF_USERNAME,
+    EVENT_HOMEASSISTANT_STOP,
+    Platform,
+)
+from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import device_registry as dr
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.event import async_call_later
+from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 from homeassistant.setup import async_when_setup
 
-from .api.cloud import EufyLogin, EufyLoginError
+from .api.cloud import (
+    EufyLogin,
+    EufyLoginError,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+)
+from .auth_store import AuthStore
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
@@ -30,6 +44,7 @@ from .const import (
     DOMAIN,
 )
 from .coordinator import EufyCleanCoordinator
+from .websocket_api import async_setup as async_setup_websocket_api
 
 PLATFORMS: list[Platform] = [
     Platform.VACUUM,
@@ -41,38 +56,60 @@ PLATFORMS: list[Platform] = [
     Platform.BINARY_SENSOR,
     Platform.TIME,
     Platform.CAMERA,
+    Platform.UPDATE,
 ]
 _LOGGER = logging.getLogger(__name__)
 
+# seconds past the login hold-off end, so the reload's login is allowed
+_HOLD_OFF_RELOAD_SLACK = 1.0
+
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 _FRONTEND_DIR = Path(__file__).parent / "frontend"
-# Unified room + zone card. Defines both `eufy-clean-card` and the backward-compat
-# `zone-clean-card` alias, so older dashboards keep working after the rename.
+# Also defines the pre-rename `zone-clean-card` alias for older dashboards.
 _CARD_FILENAME = "eufy-clean-card.js"
 _CARD_URL_PATH = f"/{DOMAIN}/{_CARD_FILENAME}"
+# Imported by the card, which resolves it relative to its own module URL, so it
+# must be served from the same URL directory.
+_RENDERER_FILENAME = "eufy-map-renderer.js"
+_RENDERER_URL_PATH = f"/{DOMAIN}/{_RENDERER_FILENAME}"
+
+
+def _card_cache_key(paths: list[Path], fallback: str) -> str:
+    """Short content hash over EVERY frontend file, for the ``?v=`` cache-bust.
+
+    Hashes the whole bundle: the card propagates its own query string to the renderer
+    it imports, so a card-only hash would leave a renderer-only edit uncached-busted.
+    Blocking file I/O — call via ``async_add_executor_job``.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(paths):
+        try:
+            digest.update(path.read_bytes())
+        except OSError:
+            return str(fallback)
+        digest.update(b"\0")
+    return f"{fallback}-{digest.hexdigest()[:12]}"
 
 
 async def _async_register_frontend_card(hass: HomeAssistant) -> None:
-    """Serve and register the bundled Eufy Clean Lovelace card (once).
-
-    Shipping the card inside the integration keeps it in lock-step with the
-    ``room_clean`` / ``zone_clean`` send_command handlers — a single install
-    delivers both, with no manual ``www/`` copy or Lovelace resource entry.
-    """
+    """Serve and register the bundled Eufy Clean Lovelace card (once)."""
     domain_data = hass.data.setdefault(DOMAIN, {})
     if domain_data.get("card_registered"):
         return
 
-    # ?v=<content hash> busts the browser cache whenever the card changes. The
-    # integration version is not enough: it only moves on releases, so a browser
-    # keeps running a stale card across installs of the same version.
-    card = await hass.async_add_executor_job((_FRONTEND_DIR / _CARD_FILENAME).read_bytes)
-    card_url = f"{_CARD_URL_PATH}?v={hashlib.sha256(card).hexdigest()[:12]}"
+    integration = await async_get_integration(hass, DOMAIN)
+    # ?v= hashes the frontend bytes, not the manifest version, which can drift from
+    # the shipped file and pin stale content. Falls back to the version on error.
+    card_version = await hass.async_add_executor_job(
+        _card_cache_key,
+        [_FRONTEND_DIR / _CARD_FILENAME, _FRONTEND_DIR / _RENDERER_FILENAME],
+        integration.version,
+    )
+    card_url = f"{_CARD_URL_PATH}?v={card_version}"
 
-    # Runs from async_when_setup(hass, "frontend", ...), so frontend is set up and
-    # add_extra_js_url's hass.data is in place. We still don't declare a hard
-    # `frontend` dependency (headless installs must load without it); the try/except
-    # stays as a belt-and-suspenders guard so an optional card can never fail the
-    # vacuum integration's setup.
+    # No hard `frontend` dependency (headless installs), so the optional card must
+    # never fail setup.
     try:
         await hass.http.async_register_static_paths(
             [
@@ -80,7 +117,13 @@ async def _async_register_frontend_card(hass: HomeAssistant) -> None:
                     _CARD_URL_PATH,
                     str(_FRONTEND_DIR / _CARD_FILENAME),
                     cache_headers=False,
-                )
+                ),
+                # Not in add_extra_js_url: the card imports it on demand.
+                StaticPathConfig(
+                    _RENDERER_URL_PATH,
+                    str(_FRONTEND_DIR / _RENDERER_FILENAME),
+                    cache_headers=False,
+                ),
             ]
         )
         add_extra_js_url(hass, card_url)
@@ -97,12 +140,12 @@ async def _async_register_frontend_card(hass: HomeAssistant) -> None:
 async def _register_card_when_frontend_ready(
     hass: HomeAssistant, _component: str
 ) -> None:
-    """``async_when_setup`` callback — register the card now that frontend is up."""
+    """Register the card now that frontend is up (``async_when_setup`` callback)."""
     await _async_register_frontend_card(hass)
 
 
 def _int_keyed(
-    raw: dict, convert: Callable[[Any], Any], device_id: str, what: str
+    raw: dict, convert: Callable[[Any], Any], device_name: str, what: str
 ) -> dict[int, Any]:
     """Coerce a stored override dict back to int keys.
 
@@ -116,44 +159,70 @@ def _int_keyed(
             coerced[int(raw_key)] = convert(raw_value)
         except (TypeError, ValueError):
             _LOGGER.warning(
-                "Device %s: ignoring non-integer %s %r", device_id, what, raw_key
+                "%s: ignoring non-integer %s %r", device_name, what, raw_key
             )
     return coerced
 
 
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    """Register the global, entry-independent parts once per HA run."""
+    # Deferred: registering before `frontend` is up silently no-ops.
+    async_when_setup(hass, "frontend", _register_card_when_frontend_ready)
+    # Websocket command names are global; registering one twice raises.
+    async_setup_websocket_api(hass)
+    return True
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Delete this entry's cached credentials (bearer tokens, X.509 private key)."""
+    await AuthStore(hass, entry.entry_id).async_remove()
+
+
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Initialize the integration."""
-    # Register the bundled card once `frontend` is set up. async_when_setup fires
-    # immediately if it already is, else when it finishes — so the card registers
-    # regardless of integration load order. Calling _async_register_frontend_card
-    # directly here silently no-ops when this entry loads before frontend (the
-    # add_extra_js_url hass.data isn't there yet), which is why the card was missing
-    # on some installs (issue #140).
-    async_when_setup(hass, "frontend", _register_card_when_frontend_ready)
-
     username = entry.data[CONF_USERNAME]
     password = entry.data[CONF_PASSWORD]
 
-    # Generate OpenUDID (consistent per session)
-    openudid = "".join(random.choices(string.hexdigits, k=32))
+    # The openudid must stay stable across setups or every restart announces a
+    # brand-new device to Eufy. See auth_store.py.
+    auth_store = AuthStore(hass, entry.entry_id)
+    auth_cache = await auth_store.async_load()
 
-    # Initialize Login Controller
     session = async_get_clientsession(hass)
-    eufy_login = EufyLogin(username, password, openudid, websession=session)
+    # Constructed inside the try: it restores the persisted cache, and a corrupt
+    # store must degrade to the retried ConfigEntryNotReady, not SETUP_ERROR.
     try:
+        eufy_login = EufyLogin(
+            username,
+            password,
+            auth_cache.openudid,
+            websession=session,
+            auth_cache=auth_cache,
+        )
         await eufy_login.init()
     except EufyLoginError as e:
+        # Bad credentials invalidate every cached token; do not keep serving them.
+        auth_cache.clear_tokens()
+        await auth_store.async_save(auth_cache)
         raise ConfigEntryAuthFailed(f"Invalid Eufy credentials: {e}") from e
-    except (aiohttp.ClientError, TimeoutError, OSError) as e:
-        raise ConfigEntryNotReady(f"Cannot reach Eufy servers: {e}") from e
     except Exception as e:
+        # The retry must reuse the openudid and see any login hold-off.
+        await auth_store.async_save(auth_cache)
+        if isinstance(e, EufyLoginRateLimitedError):
+            raise ConfigEntryNotReady(f"Eufy cloud rate limit: {e}") from e
+        if isinstance(e, EufyLoginTransientError):
+            # 5xx or network: the cached tokens may still be good.
+            raise ConfigEntryNotReady(f"Eufy servers unavailable: {e}") from e
+        if isinstance(e, (aiohttp.ClientError, TimeoutError, OSError)):
+            raise ConfigEntryNotReady(f"Cannot reach Eufy servers: {e}") from e
         raise ConfigEntryNotReady(f"Unexpected setup error: {e}") from e
 
-    coordinators = []
+    # Persist refreshed tokens, or just the probe memos if the cache was reused.
+    await auth_store.async_save(auth_cache)
 
-    # Get Devices and create coordinators
-    # eufy_login.mqtt_devices populated by init/getDevices
-    # eufy_login.cloud_devices populated by init/getCloudDevices (Tuya Cloud)
+    coordinators: list[EufyCleanCoordinator] = []
+    reload = _HoldOffReload(hass, entry, eufy_login, coordinators)
+
     all_devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
     is_multi_device = len(all_devices) > 1
     _LOGGER.debug(
@@ -163,14 +232,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         len(all_devices),
     )
 
-    # Per-device local-Tuya overrides from options. The user enters the LAN
-    # address of each dock through the integration's options flow; we promote
-    # such devices from cloud-polled to direct local-push.
+    # A LAN address in the options flow promotes a device to direct local-push.
     local_overrides: dict[str, dict] = entry.options.get(CONF_LOCAL_DEVICES, {})
     if local_overrides:
         _LOGGER.debug(
-            "Local Tuya overrides configured for: %s",
-            list(local_overrides.keys()),
+            "Local Tuya overrides configured for %d device(s)", len(local_overrides)
         )
 
     for device_info in all_devices:
@@ -185,16 +251,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 extras["local_host"] = host
                 extras["local_version"] = override.get(CONF_LOCAL_VERSION, 3.3)
                 _LOGGER.info(
-                    "Device %s promoted to local Tuya (host=%s)", device_id, host
+                    "%s: using the local Tuya transport",
+                    device_info.get("deviceName", "Unknown"),
                 )
+            device_name = device_info.get("deviceName", "Unknown")
             # Room ID → name overrides apply to any transport.
             if room_overrides := override.get(CONF_ROOM_NAMES):
-                coerced = _int_keyed(room_overrides, str, device_id, "room id")
+                coerced = _int_keyed(room_overrides, str, device_name, "room id")
                 if coerced:
                     extras["room_name_overrides"] = coerced
                     _LOGGER.info(
-                        "Device %s using %d manual room name override(s)",
-                        device_id, len(coerced),
+                        "%s: using %d manual room name override(s)",
+                        device_name, len(coerced),
                     )
             # Manual map-id override for room/zone clean commands (devices
             # that report their cloud map id, which the firmware rejects).
@@ -202,22 +270,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 try:
                     extras["map_id_override"] = int(map_override)
                     _LOGGER.info(
-                        "Device %s using manual map id override %d",
-                        device_id, extras["map_id_override"],
+                        "%s: using manual map id override %d",
+                        device_name, extras["map_id_override"],
                     )
                 except (TypeError, ValueError):
                     _LOGGER.warning(
-                        "Device %s: ignoring non-integer map id %r",
-                        device_id, map_override,
+                        "%s: ignoring non-integer map id %r",
+                        device_name, map_override,
                     )
             # Per-map variant, keyed by the map id the device reports.
             if map_overrides := override.get(CONF_MAP_IDS):
-                per_map = _int_keyed(map_overrides, int, device_id, "map id")
+                per_map = _int_keyed(map_overrides, int, device_name, "map id")
                 if per_map:
                     extras["map_id_overrides"] = per_map
                     _LOGGER.info(
-                        "Device %s using %d per-map map id override(s)",
-                        device_id, len(per_map),
+                        "%s: using %d per-map map id override(s)",
+                        device_name, len(per_map),
                     )
             if extras:
                 device_info = {**device_info, **extras}
@@ -228,34 +296,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             device_id,
         )
 
-        coordinator = EufyCleanCoordinator(hass, eufy_login, device_info, config_entry=entry)
+        coordinator = EufyCleanCoordinator(
+            hass,
+            eufy_login,
+            device_info,
+            config_entry=entry,
+            reload_when_logins_resume=reload.schedule,
+        )
         try:
             await coordinator.initialize()
 
-            # Migrate segments from config entry data to per-device Store.
-            # Only migrate if the store is empty and we have a single device
-            # to avoid overwriting newer data or assigning to wrong device.
+            # Only with an empty store and one device: otherwise this could
+            # overwrite newer data or attach it to the wrong device.
             if last_seen := entry.data.get("last_seen_segments"):
                 if is_multi_device:
                     _LOGGER.info(
                         "Skipping migration of last seen segments for %s due to multi-device setup",
-                        device_id,
+                        coordinator.device_name,
                     )
                 elif not coordinator.last_seen_segments:
                     await coordinator.async_save_segments(last_seen)
                     _LOGGER.info(
                         "Migrated last seen segments for %s to persistent storage",
-                        device_id,
+                        coordinator.device_name,
                     )
 
             coordinators.append(coordinator)
         except Exception as e:
-            _LOGGER.warning("Failed to initialize coordinator for %s: %s", device_id, e)
+            _LOGGER.warning(
+                "Failed to initialize %s: %s",
+                device_info.get("deviceName", "Unknown"),
+                e,
+            )
+            _LOGGER.debug("Failed device id: %s", device_id)
+            # initialize() may have written the MQTT cert/key files or started a
+            # transport before failing; each setup retry would leak another set.
+            await coordinator.async_teardown()
 
     if not coordinators:
         raise ConfigEntryNotReady("No Eufy Clean devices could be initialized")
 
-    # Check for orphaned devices and log warnings
+    _schedule_reload_for_mqtt_credentials(eufy_login, coordinators, reload)
+
     current_device_ids = {c.device_id for c in coordinators}
     device_registry = dr.async_get(hass)
     registry_devices = dr.async_entries_for_config_entry(
@@ -263,24 +345,22 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
 
     for device_entry in registry_devices:
-        # Extract our domain's device ID from identifiers set
         eufy_id = next(
             (id[1] for id in device_entry.identifiers if id[0] == DOMAIN), None
         )
 
         if eufy_id and eufy_id not in current_device_ids:
             _LOGGER.warning(
-                "Device %s (%s) is registered but was not returned by the Eufy API. "
+                "Device %s is registered but was not returned by the Eufy API. "
                 "It will be shown as unavailable. You can manually remove it if it was deleted from your account.",
                 device_entry.name_by_user or device_entry.name,
-                eufy_id,
             )
+            _LOGGER.debug("Missing device id: %s", eufy_id)
 
     hass.data.setdefault(DOMAIN, {})
     hass.data[DOMAIN][entry.entry_id] = {"coordinators": coordinators}
 
-    # Clean up migrated data from config entry (skip for multi-device to avoid
-    # deleting data that was intentionally not migrated)
+    # Skip for multi-device: that data was intentionally not migrated.
     if "last_seen_segments" in entry.data and not is_multi_device:
         new_data = dict(entry.data)
         new_data.pop("last_seen_segments")
@@ -289,9 +369,109 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Removed legacy last_seen_segments from config entry %s", entry.entry_id
         )
 
+    async def _async_stop(_event: Event) -> None:
+        """Close every transport when Home Assistant stops.
+
+        HA does not unload config entries on shutdown, so async_unload_entry never
+        runs on this path and the local Tuya listener would keep blocking executor
+        threads during teardown.
+        """
+        for coordinator in coordinators:
+            await coordinator.async_teardown()
+
+    entry.async_on_unload(
+        hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _async_stop)
+    )
+
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
     return True
+
+
+class _HoldOffReload:
+    """The entry's one reload for when the login hold-off ends.
+
+    Shared by setup and every robot of the entry; cancelled on unload, and
+    skipped when it fires while no MQTT robot is out.
+    """
+
+    def __init__(
+        self,
+        hass: HomeAssistant,
+        entry: ConfigEntry,
+        eufy_login: EufyLogin,
+        coordinators: list[EufyCleanCoordinator],
+    ) -> None:
+        self._hass = hass
+        self._entry = entry
+        self._eufy_login = eufy_login
+        # setup's list, filled as the robots come up
+        self._coordinators = coordinators
+        self._cancel: CALLBACK_TYPE | None = None
+        entry.async_on_unload(self._async_cancel)
+
+    @callback
+    def schedule(self, wait: float) -> bool:
+        """Reload in ``wait`` s plus slack; False when a reload is armed already."""
+        if self._cancel is not None:
+            return False
+        self._cancel = async_call_later(
+            self._hass, wait + _HOLD_OFF_RELOAD_SLACK, self._reload
+        )
+        return True
+
+    @callback
+    def _reload(self, _now: datetime) -> None:
+        self._cancel = None
+        coordinators = self._coordinators
+        if not _mqtt_robots_left_out(self._eufy_login, coordinators) and not any(
+            c.mqtt_session_down for c in coordinators
+        ):
+            _LOGGER.debug(
+                "No reload at the end of the login hold-off: every MQTT robot "
+                "is connected"
+            )
+            return
+        self._hass.config_entries.async_schedule_reload(self._entry.entry_id)
+
+    @callback
+    def _async_cancel(self) -> None:
+        if self._cancel is not None:
+            self._cancel()
+            self._cancel = None
+
+
+def _mqtt_robots_left_out(
+    eufy_login: EufyLogin, coordinators: list[EufyCleanCoordinator]
+) -> list[dict[str, Any]]:
+    """The discovered MQTT robots that have no coordinator in this setup."""
+    started = {c.device_id for c in coordinators}
+    return [d for d in eufy_login.mqtt_devices if d.get("deviceId") not in started]
+
+
+def _schedule_reload_for_mqtt_credentials(
+    eufy_login: EufyLogin,
+    coordinators: list[EufyCleanCoordinator],
+    reload: _HoldOffReload,
+) -> None:
+    """Reload the entry once a replacement login may run when MQTT robots
+    were left out of this setup while none may (no MQTT credentials, or the
+    broker rejected the ones it got).
+
+    A fallback-session account never gets MQTT credentials: no reload.
+    """
+    left_out = _mqtt_robots_left_out(eufy_login, coordinators)
+    if not left_out or not eufy_login.has_user_center:
+        return
+    wait = eufy_login.replacement_login_wait()
+    if wait is None or not reload.schedule(wait):
+        return
+    _LOGGER.info(
+        "%d MQTT device(s) left out while no Eufy login may run; reloading "
+        "the entry when one may, in %.0f min",
+        len(left_out),
+        wait / 60,
+    )
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -302,10 +482,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         data = hass.data[DOMAIN].get(entry.entry_id)
         if data and "coordinators" in data:
             for coordinator in data["coordinators"]:
-                coordinator.async_shutdown_timers()
-                await coordinator.async_stop_p2p()
-                if coordinator.client:
-                    await coordinator.client.disconnect()
+                await coordinator.async_teardown()
 
         hass.data[DOMAIN].pop(entry.entry_id)
 
@@ -315,5 +492,10 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 async def async_remove_config_entry_device(
     hass: HomeAssistant, config_entry: ConfigEntry, device_entry: dr.DeviceEntry
 ) -> bool:
-    """Remove a config entry device."""
-    return True
+    """Allow removing a device only when the Eufy API no longer returns it."""
+    data = hass.data.get(DOMAIN, {}).get(config_entry.entry_id) or {}
+    live_ids = {c.device_id for c in data.get("coordinators", [])}
+    return not any(
+        domain == DOMAIN and eufy_id in live_ids
+        for domain, eufy_id in device_entry.identifiers
+    )

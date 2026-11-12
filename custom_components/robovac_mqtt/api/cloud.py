@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
+import aiohttp
+
+from ..auth_store import (
+    LOGIN_HOLD_OFF_DEFAULT,
+    session_expiry,
+    trim_session,
+    trim_user_info,
+)
 from ..const import (
     DPS_MAP,
     EUFY_APPLIANCE_CLEANING,
@@ -13,18 +24,46 @@ from ..const import (
     TUYA_PRODUCT_MODELS,
 )
 from ..utils import is_protobuf_dps_value
-from .http import EufyHTTPClient
+from .http import EufyHTTPClient, EufyLoginRateLimitedError, EufyLoginTransientError
 from .tuya_cloud import TuyaCloudClient, TuyaCloudError
+from .tuya_thing import TuyaThingClient, is_session_error
+
+__all__ = [
+    "EufyLogin",
+    "EufyLoginError",
+    "EufyLoginRateLimitedError",
+    "EufyLoginTransientError",
+]
 
 _LOGGER = logging.getLogger(__name__)
 
+# Seconds without a replacement MQTT login after one failed (Eufy unreachable).
+_MQTT_RELOGIN_RETRY_DELAY = 5 * 60.0
+# Seconds between successful replacement MQTT logins: a broker that accepts a
+# certificate and rejects it again soon after gets no login per cycle.
+_MQTT_RELOGIN_MIN_INTERVAL = 3600.0
+# Cap of the login hold-off after logins in a row whose MQTT credentials the
+# broker rejected: LOGIN_HOLD_OFF_DEFAULT, doubled per such login up to this.
+_REJECTED_LOGIN_HOLD_OFF_MAX = 3600.0
+
+# Failures of one region probe that must not stop the next region.
+_TUYA_PROBE_ERRORS = (
+    TuyaCloudError,
+    aiohttp.ClientError,
+    TimeoutError,
+    KeyError,
+    TypeError,
+    ValueError,
+)
+
+
+def _is_tuya_session_error(err: TuyaCloudError) -> bool:
+    """Is this a rejected or missing Tuya session, the only error a login fixes?"""
+    return err.code == "NO_SID" or is_session_error(err)
+
 
 def _is_scalar_state_value(value: Any) -> bool:
-    """Is DPS 15 a scalar (G50) status — i.e. numeric, not a Tuya status string?
-
-    The scalar protocol reports DPS 15 as an int (or numeric string); Tuya Cloud
-    legacy devices report it as a word status like "Running"/"Charging".
-    """
+    """Is DPS 15 numeric (scalar) rather than a Tuya word status?"""
     if isinstance(value, bool):
         return False
     if isinstance(value, (int, float)):
@@ -35,7 +74,11 @@ def _is_scalar_state_value(value: Any) -> bool:
 
 
 class EufyLoginError(Exception):
-    """Eufy Login Error."""
+    """The Eufy cloud rejected the credentials.
+
+    Transient failures (429, 5xx, network) raise EufyLoginTransientError, which
+    is not a subclass.
+    """
 
 
 class EufyLogin:
@@ -45,6 +88,7 @@ class EufyLogin:
         password: str,
         openudid: str,
         websession: Any | None = None,
+        auth_cache: Any | None = None,
     ):
         self.eufyApi = EufyHTTPClient(username, password, openudid, websession=websession)
         self.username = username
@@ -56,73 +100,409 @@ class EufyLogin:
         self.cloud_devices: list[dict[str, Any]] = []
         self.eufy_api_devices: list[dict[str, Any]] = []
         self.tuya_client: TuyaCloudClient | None = None
+        self.tuya_thing_client: TuyaThingClient | None = None
+        # Every devId on the Tuya device list (firmware calls need one).
+        self.tuya_device_ids: set[str] = set()
         self._eufy_user_id: str | None = None
+        # The probe candidate that answered, not the redirect's regionCode.
+        self._tuya_probe_region: str | None = None
+        # The last discovery could not reach the Tuya cloud (login or list).
+        self._tuya_failed = False
+        # Serialises Tuya re-logins: each login invalidates the previous sid.
+        self._tuya_login_lock = asyncio.Lock()
+        # One MQTT-credential login for all coordinators that find none.
+        self._check_login_lock = asyncio.Lock()
+        # MQTT credentials whose rejection gets no further login: ones a login
+        # produced that the broker has not accepted yet, or ones the account
+        # login refused.
+        self._mqtt_relogin_spent: dict[str, Any] | None = None
+        # MQTT credentials whose replacement login was refused:
+        # re-authentication, not a reload, brings new ones.
+        self._mqtt_relogin_refused: dict[str, Any] | None = None
+        # time.monotonic() before which no replacement login is sent
+        self._mqtt_relogin_not_before: float | None = None
+        # Persisted handshake reused across restarts; None disables caching.
+        self.auth_cache = auth_cache
+        if auth_cache is not None:
+            self.eufyApi.restore(
+                auth_cache.session, auth_cache.user_info, auth_cache.login_label
+            )
+            self.mqtt_credentials = auth_cache.mqtt_credentials
+            if auth_cache.mqtt_credentials_unaccepted and self.mqtt_credentials:
+                self._mqtt_relogin_spent = self.mqtt_credentials
+            if auth_cache.session:
+                self._eufy_user_id = auth_cache.session.get("user_id")
 
     async def init(self):
-        _LOGGER.debug("EufyLogin.init() starting: HTTP login + device discovery")
-        await self.login({"mqtt": True})
-        await self.getDevices()
+        """Authenticate and discover devices, reusing a cached handshake.
 
-        # Attempt Tuya Cloud login for legacy cloud devices
+        Validated by RESULT, not a timer: a cached run that finds nothing
+        discards the cache and re-logs in. A cached run that failed on the
+        server side (Eufy 408/5xx, Tuya unreachable) raises
+        EufyLoginTransientError instead and keeps the cache. An HTTP 429
+        starts the login hold-off and raises EufyLoginRateLimitedError.
+        """
+        cached = self.auth_cache is not None and self.auth_cache.can_skip_login
+        discover = True
+        if cached:
+            _LOGGER.debug("EufyLogin.init() starting: reusing cached credentials")
+            await self._discover()
+            proved = self._eufy_session_proved()
+            if proved and not self._mqtt_devices_without_credentials():
+                self._capture_auth_cache()
+                return
+            if proved and self.login_hold_off_left() is not None:
+                _LOGGER.debug(
+                    "Cached session has no MQTT credentials; no login until the "
+                    "login hold-off ends"
+                )
+                self._capture_auth_cache()
+                return
+            if (
+                not proved
+                and not self.eufyApi.auth_error
+                and (self.eufyApi.transient_error or self._tuya_failed)
+            ):
+                raise EufyLoginTransientError(
+                    "device discovery failed on the server side; keeping the "
+                    "cached session"
+                )
+            if proved:
+                # the session just served discovery; only the login is missing
+                _LOGGER.info(
+                    "Cached Eufy session has no MQTT credentials for %d MQTT "
+                    "device(s); logging in again",
+                    len(self.mqtt_devices),
+                )
+                discover = False
+            else:
+                _LOGGER.info(
+                    "Cached Eufy credentials were rejected or found nothing; "
+                    "re-authenticating"
+                )
+                self._reset_after_stale_cache()
+
+        _LOGGER.debug("EufyLogin.init() starting: HTTP login")
+        await self.login({"mqtt": True})
+        try:
+            if discover:
+                await self._discover()
+        finally:
+            # the login succeeded: keep its tokens even if discovery failed
+            self._capture_auth_cache()
+        if self._mqtt_devices_without_credentials():
+            # e.g. a user-center outage: the next setups reuse this session
+            # instead of logging in again until the hold-off ends
+            self._hold_off_logins(None)
+
+    def _mqtt_devices_without_credentials(self) -> bool:
+        """MQTT robots found, but the session holds no MQTT credentials for them."""
+        return bool(self.mqtt_devices) and not self.mqtt_credentials
+
+    def login_hold_off_left(self) -> float | None:
+        if self.auth_cache is None:
+            return None
+        return self.auth_cache.login_hold_off_left()
+
+    def _hold_off_logins(self, seconds: float | None) -> None:
+        if self.auth_cache is None:
+            return
+        self.auth_cache.hold_off_logins(seconds)
+        _LOGGER.warning(
+            "Eufy logins on hold for %.0f s",
+            self.auth_cache.login_hold_off_left() or 0.0,
+        )
+
+    def _eufy_session_proved(self) -> bool:
+        """Did this run prove the cached EUFY token still works?
+
+        Only ``auth_error`` (401/403) decides: Tuya discovery succeeds on a
+        dead eufy session, and an account may legitimately own no AIOT device.
+        """
+        if self.eufyApi.auth_error:
+            return False
+        return bool(self.eufy_api_devices or self.mqtt_devices or self.cloud_devices)
+
+    async def _discover(self) -> None:
+        """Device discovery: the part that is identical cached or not."""
+        try:
+            await self.getDevices()
+        except EufyLoginRateLimitedError as err:
+            self._hold_off_logins(err.retry_after)
+            raise
+
+        self._tuya_failed = False
         try:
             await self.tuya_login()
             await self.getCloudDevices()
         except Exception as e:
+            self._tuya_failed = True
             _LOGGER.warning(
                 "Tuya Cloud login failed; legacy cloud devices will be unavailable: %s", e
             )
 
+    def _reset_after_stale_cache(self) -> None:
+        """Drop everything derived from a cache that turned out to be stale."""
+        if self.auth_cache is not None:
+            self.auth_cache.clear_tokens()
+        self.eufyApi.restore(None, None, self.eufyApi.login_label)
+        self.mqtt_credentials = None
+        self._eufy_user_id = None
+        self.mqtt_devices = []
+        self.cloud_devices = []
+        self.eufy_api_devices = []
+        self.tuya_client = None
+        self.tuya_thing_client = None
+        self._tuya_probe_region = None
+        self._tuya_failed = False
+
+    def _capture_auth_cache(self) -> None:
+        """Copy the live handshake back into the cache for the next restart."""
+        cache = self.auth_cache
+        if cache is None:
+            return
+        # A cached session carries no fresh expires_in; keep the stored expiry.
+        raw_session = self.eufyApi.session
+        cache.session = trim_session(raw_session)
+        expiry = session_expiry(raw_session)
+        if expiry is not None:
+            cache.session_expires_at = expiry
+        cache.user_info = trim_user_info(self.eufyApi.user_info)
+        cache.mqtt_credentials = self.mqtt_credentials
+        cache.mqtt_credentials_unaccepted = (
+            self.mqtt_credentials is not None
+            and self.mqtt_credentials is self._mqtt_relogin_spent
+        )
+        # The fallback-session path never sets a label; writing None would
+        # erase a previously good memo.
+        if self.eufyApi.login_label:
+            cache.login_label = self.eufyApi.login_label
+        if self._tuya_probe_region is not None:
+            cache.tuya_region = self._tuya_probe_region
+
     async def login(self, config: dict):
+        """Log in to Eufy; refused locally while the login hold-off runs."""
         eufyLogin = None
 
         if not config["mqtt"]:
             raise EufyLoginError("MQTT login is required")
 
-        eufyLogin = await self.eufyApi.login()
+        if (left := self.login_hold_off_left()) is not None:
+            raise EufyLoginRateLimitedError(
+                f"Eufy logins on hold for another {left:.0f} s",
+                retry_after=left,
+            )
+        try:
+            eufyLogin = await self.eufyApi.login()
+        except EufyLoginRateLimitedError as err:
+            self._hold_off_logins(err.retry_after)
+            raise
 
         if not eufyLogin:
             raise EufyLoginError("Login failed")
 
         self.mqtt_credentials = eufyLogin["mqtt"]
+        self._mqtt_relogin_spent = self.mqtt_credentials
         _LOGGER.debug("HTTP login successful, MQTT credentials obtained")
 
-        # Store user_id for Tuya Cloud login
         session = eufyLogin.get("session", {})
         self._eufy_user_id = session.get("user_id")
         _LOGGER.debug("Eufy user_id: %s", "present" if self._eufy_user_id else "missing")
 
+    @property
+    def has_user_center(self) -> bool:
+        """False for a fallback-session account, which never gets MQTT credentials."""
+        return not (self.eufyApi.session and self.eufyApi.user_info is None)
+
     async def checkLogin(self):
-        if not self.mqtt_credentials:
+        """Log in for MQTT credentials when missing and the account can have them."""
+        async with self._check_login_lock:
+            if self.mqtt_credentials:
+                return
+            if not self.has_user_center:
+                _LOGGER.debug("Fallback-session account: no MQTT credentials to fetch")
+                return
             await self.login({"mqtt": True})
+            self._capture_auth_cache()
+
+    async def replace_rejected_mqtt_credentials(
+        self,
+        rejected: dict[str, Any],
+        save: Callable[[], Awaitable[None]],
+    ) -> bool:
+        """Replace MQTT credentials the broker rejects, with one login for all callers.
+
+        The rejected credentials leave the auth cache, so the next setup logs in
+        instead of reusing them. No login runs during the login hold-off, nor
+        for credentials a login produced (until the broker accepts them; the
+        auth cache keeps that mark across a restart) or refused: their
+        rejection starts the hold-off, which outlives a restart and grows with
+        each such login in a row. Nor within the
+        retry delay of a failed replacement login or the minimum interval after
+        a successful one.
+        ``save`` persists the cache after a change. Returns True when the caller
+        should reconnect with ``mqtt_credentials``. Raises EufyLoginError when
+        the account login is refused.
+        """
+        async with self._check_login_lock:
+            current = self.mqtt_credentials
+            if current and current is not rejected:
+                return True
+            changed = False
+            cache = self.auth_cache
+            if cache is not None and cache.mqtt_credentials is not None:
+                cache.mqtt_credentials = None
+                changed = True
+            try:
+                if rejected is self._mqtt_relogin_spent:
+                    _LOGGER.debug("MQTT credentials from a login rejected; no login")
+                    if self.login_hold_off_left() is None:
+                        self._hold_off_after_a_rejected_login()
+                        changed = True
+                    return False
+                if self.replacement_login_wait() is not None:
+                    _LOGGER.debug("Replacement MQTT login held back; no login")
+                    return False
+                changed = True
+                try:
+                    await self.login({"mqtt": True})
+                except EufyLoginError:
+                    self._mqtt_relogin_spent = rejected
+                    self._mqtt_relogin_refused = rejected
+                    raise
+                except (
+                    EufyLoginTransientError, aiohttp.ClientError, TimeoutError
+                ) as err:
+                    _LOGGER.warning("Could not fetch new MQTT credentials: %s", err)
+                    self._mqtt_relogin_not_before = (
+                        time.monotonic() + _MQTT_RELOGIN_RETRY_DELAY
+                    )
+                    return False
+                self._capture_auth_cache()
+                if not self.mqtt_credentials:
+                    self._hold_off_logins(None)
+                    return False
+                self._mqtt_relogin_not_before = (
+                    time.monotonic() + _MQTT_RELOGIN_MIN_INTERVAL
+                )
+                _LOGGER.info("Fetched new MQTT credentials after a broker rejection")
+                return True
+            finally:
+                if changed:
+                    await save()
+
+    def _hold_off_after_a_rejected_login(self) -> None:
+        """Hold off logins after the broker rejected a login's credentials,
+        twice as long as after the previous one in a row, up to
+        _REJECTED_LOGIN_HOLD_OFF_MAX."""
+        cache = self.auth_cache
+        if cache is None:
+            return
+        seconds = LOGIN_HOLD_OFF_DEFAULT * 2 ** cache.rejected_logins
+        if seconds < _REJECTED_LOGIN_HOLD_OFF_MAX:
+            cache.rejected_logins += 1
+        self._hold_off_logins(min(seconds, _REJECTED_LOGIN_HOLD_OFF_MAX))
+
+    def replacement_login_wait(self) -> float | None:
+        """Seconds until a replacement MQTT login may run: the longest of the
+        login hold-off, the retry delay after a failed replacement login and
+        the minimum interval after a successful one. None when one may now.
+        """
+        waits = [self.login_hold_off_left()]
+        if self._mqtt_relogin_not_before is not None:
+            waits.append(self._mqtt_relogin_not_before - time.monotonic())
+        left = [w for w in waits if w is not None and w > 0]
+        return max(left) if left else None
+
+    def mqtt_reload_wait(self, rejected: dict[str, Any]) -> float | None:
+        """Seconds until an entry reload may log in to replace ``rejected``,
+        when no login in this run will: they came from a login (the hold-off
+        stands in for the replacement). None otherwise, also after a refused
+        account login, where re-authentication brings new credentials.
+        """
+        if (
+            rejected is not self._mqtt_relogin_spent
+            or rejected is self._mqtt_relogin_refused
+        ):
+            return None
+        return self.replacement_login_wait()
+
+    def mqtt_credentials_accepted(self, credentials: dict[str, Any] | None) -> bool:
+        """The broker accepted ``credentials``: a later rejection may log in again.
+
+        Also ends the run of rejected logins. Returns True when the auth cache
+        changed and should be saved.
+        """
+        if credentials is None:
+            return False
+        cache = self.auth_cache
+        changed = False
+        if cache is not None and cache.rejected_logins:
+            cache.rejected_logins = 0
+            changed = True
+        if credentials is not self._mqtt_relogin_spent:
+            return changed
+        self._mqtt_relogin_spent = None
+        if cache is None or not cache.mqtt_credentials_unaccepted:
+            return changed
+        cache.mqtt_credentials_unaccepted = False
+        return True
 
     async def tuya_login(self) -> None:
-        """Attempt Tuya Cloud login using Eufy user_id.
-
-        Tries EU region first, falls back to US.
-        """
+        """Log in to the Tuya cloud with the Eufy user_id, probing EU then US."""
         if not self._eufy_user_id:
             _LOGGER.debug("No Eufy user_id available; skipping Tuya Cloud login")
             return
 
-        # Try EU first
-        try:
-            client = TuyaCloudClient("EU", websession=self._websession)
-            await client.login(self._eufy_user_id)
-            self.tuya_client = client
-            _LOGGER.debug("Tuya Cloud login successful (EU)")
-            return
-        except TuyaCloudError as e:
-            _LOGGER.debug("Tuya Cloud EU login failed: %s", e)
+        # Reordered (never filtered) so a remembered region that stops working
+        # still falls back to the other.
+        regions = ["EU", "US"]
+        remembered = self.auth_cache.tuya_region if self.auth_cache else None
+        if remembered in regions:
+            regions.remove(remembered)
+            regions.insert(0, remembered)
 
-        # Fall back to US
-        try:
-            client = TuyaCloudClient("US", websession=self._websession)
-            await client.login(self._eufy_user_id)
+        last_error: Exception | None = None
+        for region in regions:
+            try:
+                client = TuyaCloudClient(region, websession=self._websession)
+                await client.login(self._eufy_user_id)
+            except _TUYA_PROBE_ERRORS as err:
+                _LOGGER.debug("Tuya Cloud %s login failed: %s", region, err)
+                last_error = err
+                continue
             self.tuya_client = client
-            _LOGGER.debug("Tuya Cloud login successful (US)")
-        except TuyaCloudError as e:
-            _LOGGER.debug("Tuya Cloud US login failed: %s", e)
-            raise
+            # The PROBED region, not client.region: a redirect rewrites that
+            # to a regionCode ("AZ") that is not a probe candidate.
+            self._tuya_probe_region = region
+            _LOGGER.debug("Tuya Cloud login successful (%s)", region)
+            break
+        else:
+            if last_error is None:
+                last_error = TuyaCloudError("LOGIN_FAILED", "Tuya Cloud login failed")
+            raise last_error
+
+        # Also the probed region: a regionCode is not a country code here.
+        region = self._tuya_probe_region or "US"
+        self.tuya_thing_client = TuyaThingClient(
+            user_id=self._eufy_user_id,
+            country_code=region,
+            websession=self._websession,
+        )
+
+    async def _tuya_relogin(self, failed_sid: str | None) -> None:
+        """Re-authenticate the existing Tuya client, once for all waiters.
+
+        ``failed_sid`` is the sid the failed request used; a waiter that finds
+        a different sid reuses the login another waiter already made.
+        """
+        async with self._tuya_login_lock:
+            client = self.tuya_client
+            if client is None or not self._eufy_user_id:
+                raise TuyaCloudError("NO_CLIENT", "No Tuya client to re-login")
+            if client.sid and client.sid != failed_sid:
+                return
+            await client.login(self._eufy_user_id)
 
     async def getDevices(self) -> None:
         self.eufy_api_devices = await self.eufyApi.get_cloud_device_list()
@@ -165,10 +545,7 @@ class EufyLogin:
                 "softVersion": device.get("main_sw_version")
                 or device.get("soft_version")
                 or "",
-                # A reconstructed entry is a placeholder for a device whose real
-                # AIOT/MQTT list was empty — it is NOT a confirmed MQTT device.
-                # getCloudDevices() lets a matching Tuya device (with a localKey)
-                # supersede it so the device uses the Tuya cloud/local path.
+                # Placeholder only; a Tuya device with a localKey supersedes it.
                 "reconstructed": device.get("_reconstructed", False),
             }
             for device in devices
@@ -185,29 +562,25 @@ class EufyLogin:
     async def getCloudDevices(self) -> None:
         """Fetch devices from Tuya Cloud and add those not already in MQTT list.
 
-        Per device the Tuya cloud returns ``localKey`` and the last-known
-        ``ip``. The local key is the credential needed to talk the Tuya v3
-        protocol on port 6668; the ``ip`` is the public address the dock used
-        to reach the cloud, which is rarely usable as a LAN target — the user
-        normally supplies the LAN address through the integration's options
-        (handled in __init__.py).
+        ``localKey`` is the Tuya v3 credential; ``ip`` is the public address,
+        rarely a usable LAN target.
         """
         if not self.tuya_client:
             return
 
         try:
-            tuya_devices = await self.tuya_client.get_device_list()
+            # Setup-time discovery must not miss a newly added device.
+            tuya_devices = await self.tuya_client.get_device_list(force=True)
         except TuyaCloudError as e:
+            self._tuya_failed = True
             _LOGGER.warning("Failed to fetch Tuya Cloud device list: %s", e)
             return
+        self.tuya_device_ids = {
+            d["devId"] for d in tuya_devices if isinstance(d, dict) and d.get("devId")
+        }
 
-        # MQTT devices split by whether they are confirmed (real AIOT dps) or
-        # just reconstructed placeholders (the AIOT list was empty). A real Tuya
-        # device with a localKey should SUPERSEDE a placeholder rather than be
-        # dropped as a duplicate — otherwise a Tuya-only device (e.g. S1 Pro)
-        # gets stuck on the MQTT path it can't actually answer (issue #131).
-        # Tuya is keyed on devId consistently with the polling path
-        # (TuyaCloudClient.get_device), so match on devId only.
+        # A keyed Tuya device must SUPERSEDE a placeholder, not be dropped as
+        # a duplicate, else it is stuck on an MQTT path it cannot answer.
         confirmed_ids = {
             d["deviceId"] for d in self.mqtt_devices if not d.get("reconstructed")
         }
@@ -221,7 +594,10 @@ class EufyLogin:
         for device in tuya_devices:
             dev_id = device.get("devId")
             if not dev_id:
-                _LOGGER.debug("Cloud device skipping (no devId): %s", device)
+                _LOGGER.debug(
+                    "Cloud device skipping (no devId): keys=%s",
+                    sorted(device) if isinstance(device, dict) else type(device).__name__,
+                )
                 continue
             if dev_id in seen_cloud_ids:
                 _LOGGER.debug("Cloud device %s: skipping (duplicate Tuya record)", dev_id)
@@ -239,7 +615,6 @@ class EufyLogin:
                     ignored_ids.add(dev_id)
                 continue
             if dev_id in confirmed_ids:
-                # A confirmed MQTT device — keep the (push) MQTT path.
                 _LOGGER.debug(
                     "Cloud device %s: skipping (already a confirmed MQTT device)",
                     dev_id,
@@ -272,18 +647,25 @@ class EufyLogin:
 
             dps = self._coerce_dps(device.get("dps"))
             local_key = device.get("localKey") or ""
+            api_type = self.checkApiType(dps)
+            # Omitted from the device list and used only by the legacy path.
+            tuya_schema = (
+                await self.tuya_client.get_device_schema(dev_id)
+                if api_type == "legacy"
+                else {}
+            )
             self.cloud_devices.append(
                 {
                     **model_info,
-                    "apiType": self.checkApiType(dps),
+                    "apiType": api_type,
                     "mqtt": False,
                     "dps": dps,
                     "softVersion": "",
-                    # Surface the local-Tuya credentials so the coordinator
-                    # (or user-supplied LAN address in options) can promote
-                    # the connection to direct local push.
+                    # Lets the coordinator promote to direct local push.
                     "local_key": local_key,
                     "tuya_public_ip": device.get("ip") or "",
+                    # Per-device DPS vocabulary; the legacy path prefers it.
+                    "tuya_schema": tuya_schema,
                 }
             )
             seen_cloud_ids.add(dev_id)
@@ -296,11 +678,8 @@ class EufyLogin:
                 d for d in self.mqtt_devices if d["deviceId"] not in dropped_ids
             ]
 
-        # Single-robot safety net: if Tuya returned exactly one localKey-bearing
-        # device that did NOT match any id, and exactly one reconstructed
-        # placeholder is left over, they are the same physical robot (the Eufy
-        # cloud id and the Tuya devId differ). Drop the placeholder so we don't
-        # create two coordinators for one vacuum.
+        # One leftover placeholder plus one unmatched keyed Tuya device is the
+        # same robot under two ids; drop it, or one vacuum gets 2 coordinators.
         if not superseded_ids:
             leftover = [
                 d
@@ -340,35 +719,34 @@ class EufyLogin:
         return {}
 
     async def get_rtc_config(self, device_id: str) -> dict[str, Any] | None:
-        """Fetch a device's P2P/RTC config, re-logging in once if the session died.
+        """Fetch a device's P2P/RTC config; on a session error re-login and retry once.
 
-        Reads ``tuya_client`` at call time: a re-login (here or in
-        ``getCloudDevice``) replaces the client, so a reference captured at
-        startup would keep a dead sid.
+        The re-login re-authenticates the shared client under the login lock,
+        so other holders of ``tuya_client`` see the new session.
         """
-        if not self.tuya_client:
+        client = self.tuya_client
+        if not client:
             raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session")
+        sid = client.sid
         try:
-            return await self.tuya_client.get_rtc_config(device_id)
+            return await client.get_rtc_config(device_id)
         except TuyaCloudError as e:
-            _LOGGER.debug("Tuya RTC config for %s failed: %s; attempting re-login", device_id, e)
-            self.tuya_client.sid = None
-            await self.tuya_login()
-            if not self.tuya_client:
-                raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session after re-login") from e
-            return await self.tuya_client.get_rtc_config(device_id)
+            if not _is_tuya_session_error(e):
+                raise
+            _LOGGER.debug("Tuya RTC config for %s failed: %s; re-logging in", device_id, e)
+            await self._tuya_relogin(sid)
+            return await client.get_rtc_config(device_id)
 
     async def getCloudDevice(self, device_id: str) -> dict[str, Any] | None:
-        """Poll a cloud device's DPS via Tuya Cloud API.
-
-        On failure, attempts re-login and retries once.
-        """
-        if not self.tuya_client:
+        """Poll a cloud device's DPS; on a session error re-login and retry once."""
+        client = self.tuya_client
+        if not client:
             _LOGGER.warning("Cannot poll cloud device: no Tuya client")
             return None
 
+        sid = client.sid
         try:
-            result = await self.tuya_client.get_device(device_id)
+            result = await client.get_device(device_id)
             _LOGGER.debug(
                 "Cloud device %s poll: %s",
                 device_id,
@@ -376,11 +754,13 @@ class EufyLogin:
             )
             return result
         except TuyaCloudError as e:
-            _LOGGER.debug("Cloud device %s poll failed: %s; attempting re-login", device_id, e)
-            self.tuya_client.sid = None
+            if not _is_tuya_session_error(e):
+                _LOGGER.debug("Cloud device %s poll failed: %s", device_id, e)
+                return None
+            _LOGGER.debug("Cloud device %s poll failed: %s; re-logging in", device_id, e)
             try:
-                await self.tuya_login()
-                return await self.tuya_client.get_device(device_id)
+                await self._tuya_relogin(sid)
+                return await client.get_device(device_id)
             except Exception as retry_err:
                 _LOGGER.warning(
                     "Failed to poll cloud device %s after re-login: %s",
@@ -392,51 +772,42 @@ class EufyLogin:
     async def sendCloudCommand(
         self, device_id: str, dps: dict[str, Any]
     ) -> None:
-        """Send a command to a cloud device via Tuya Cloud API.
-
-        On failure, attempts re-login and retries once.
-        """
-        if not self.tuya_client:
+        """Send a command to a cloud device; on a session error re-login and retry once."""
+        client = self.tuya_client
+        if not client:
             raise EufyLoginError("Cannot send cloud command: no Tuya client")
 
+        sid = client.sid
         try:
-            await self.tuya_client.send_command(device_id, dps)
-            _LOGGER.debug("Cloud command to %s succeeded: %s", device_id, dps)
+            await client.send_command(device_id, dps)
+            _LOGGER.debug("Cloud command to %s succeeded: DPS %s", device_id, sorted(dps))
         except TuyaCloudError as e:
-            _LOGGER.debug("Cloud command to %s failed: %s; attempting re-login", device_id, e)
-            self.tuya_client.sid = None
+            if not _is_tuya_session_error(e):
+                raise EufyLoginError(
+                    f"Failed to send cloud command to {device_id}: {e}"
+                ) from e
+            _LOGGER.debug("Cloud command to %s failed: %s; re-logging in", device_id, e)
             try:
-                await self.tuya_login()
-                await self.tuya_client.send_command(device_id, dps)
+                await self._tuya_relogin(sid)
+                await client.send_command(device_id, dps)
             except Exception as retry_err:
                 raise EufyLoginError(
                     f"Failed to send cloud command to {device_id}: {retry_err}"
                 ) from retry_err
 
-    async def getMqttDevice(self, deviceId: str):
-        devices = await self.eufyApi.get_device_list()
-        return next((d for d in devices if d.get("device_sn") == deviceId), None)
-
     @staticmethod
     def checkApiType(dps: dict):
         """Classify a device's DPS protocol from its initial state snapshot.
 
-        - "novel"  : Anker protobuf DPS (WORK_STATUS/CLEANING_PARAMETERS as base64)
-        - "scalar" : Tuya-style plain int/JSON DPS over MQTT (e.g. T2210/G50) —
-                     reuses the protobuf DPS *numbers* but with int values
-        - "legacy" : no protobuf DPS at all (pure Tuya cloud devices, PR #110)
-
-        Value-shape based: a key-presence check alone misclassifies scalar
-        devices (which carry protobuf DPS numbers with int values) as novel.
+        On value SHAPE, not key presence: scalar reuses the protobuf DPS
+        numbers with int values. "legacy" = no protobuf DPS at all.
         """
         for key in (DPS_MAP["WORK_STATUS"], DPS_MAP["CLEANING_PARAMETERS"]):
             val = dps.get(key)
             if val is not None:
                 return "novel" if is_protobuf_dps_value(val) else "scalar"
-        # DPS 15 is the scalar (G50) status as an INT, but Tuya Cloud legacy
-        # devices (e.g. S1 Pro) report DPS 15 as a STATUS STRING ("Running").
-        # Only the numeric form is scalar — a status string is legacy and must
-        # use the legacy parser/command builder.
+        # DPS 15 is scalar status as an INT; legacy Tuya devices report it as a
+        # status string ("Running"), which must use the legacy parser.
         state_val = dps.get(SCALAR_DPS["STATE"])
         if state_val is not None and _is_scalar_state_value(state_val):
             return "scalar"
@@ -484,19 +855,15 @@ class EufyLogin:
 
     @staticmethod
     def _resolve_tuya_model(tuya_device: dict[str, Any]) -> str:
-        """Best-effort model code for a Tuya-cloud device whose devId does not
-        match any Eufy v2 device id.
+        """Best-effort model code for a Tuya device with no Eufy v2 match.
 
-        Tries the productId/productKey -> model table first, then an EXACT
-        model code embedded in the device name. Returns "" when no known model
-        can be determined — the caller decides validity.
+        productId table first, then an exact model code in the name.
         """
         product_id = EufyLogin._tuya_product_id(tuya_device)
         if product_id in TUYA_PRODUCT_MODELS:
             return TUYA_PRODUCT_MODELS[product_id]
-        # Only accept a name token that is an EXACT known model code — routing
-        # arbitrary tokens through _resolve_model()'s 5-char truncation would
-        # false-positive (e.g. "T22610" -> "T2261") on user-set device names.
+        # EXACT model codes only: _resolve_model()'s 5-char truncation would
+        # false-positive ("T22610" -> "T2261") on user-set device names.
         name = tuya_device.get("name") or ""
         for token in name.replace("-", " ").split():
             if token in EUFY_CLEAN_DEVICES:
@@ -533,15 +900,9 @@ class EufyLogin:
                 "invalid": False,
             }
 
-        # Fallback: accounts where the V2 endpoint returns no metadata for a
-        # device (e.g. devices added through the modern Eufy Clean app rather
-        # than the legacy EufyHome app) still get a usable entry from the
-        # AIOT device-list response, which carries device_model and
-        # device_name directly.
+        # For devices the V2 endpoint has no metadata for.
         if aiot_device:
-            # Use the shared resolver (not a raw [:5] slice) so 6-char codes
-            # like T2080A (S1 Pro) aren't truncated to T2080 (S1) and
-            # misidentified.
+            # Shared resolver, not [:5]: T2080A must not become T2080.
             model_code = self._resolve_model(aiot_device.get("device_model") or "")
             return {
                 "deviceId": deviceId,
@@ -553,12 +914,8 @@ class EufyLogin:
                 "invalid": not bool(model_code),
             }
 
-        # Fallback: a Tuya-cloud device (legacy transport) whose devId is not in
-        # the Eufy v2 list. Resolve the model from the Tuya record rather than
-        # skipping the device. A device that exposes a localKey is a real,
-        # controllable Tuya device even when its exact model is unknown — keep
-        # it (so the legacy/local transport works) and only flag it invalid when
-        # there is neither a resolvable model nor a localKey (issue #131).
+        # A localKey means a real, controllable device even with an unknown
+        # model, so only "no model and no localKey" is invalid.
         if tuya_device is not None:
             model = self._resolve_tuya_model(tuya_device)
             has_local_key = bool(tuya_device.get("localKey"))

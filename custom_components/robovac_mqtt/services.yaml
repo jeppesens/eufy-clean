@@ -2,7 +2,8 @@ room_at_point:
   name: Room at point
   description: >-
     Resolve which mapped room sits under a normalized point on the rendered map
-    image. Returns { room_id, room_name } — room_id -1 means no room there (0 is a valid room on some robots). Used by
+    image. Returns { room_id, room_name }; room_id is -1 when no room is there
+    (0 is a valid room id on some robots). Used by
     the bundled Eufy Clean card for tap-a-room-on-the-map selection.
   target:
     entity:
@@ -135,3 +136,242 @@ remote_drive:
           max: 10
           step: 0.5
           unit_of_measurement: s
+
+set_room_config:
+  name: Set room config
+  description: >-
+    Set a room's persistent per-room cleaning settings — suction power, wash
+    (mop water) level, and how many times to clean it — on a legacy device's
+    current map. The settings are stored on the map (customRooms), so scheduled
+    and auto cleans of that room use them too. Each room's current values are
+    shown as the "room_settings" attribute of the "Clean Room" select entity.
+    Only the fields you pass are changed; the others keep their current value.
+    Legacy (Tuya-cloud) models only — on X-series vacuums pass per-room
+    parameters with a room_clean send_command instead.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    room:
+      name: Room
+      description: >-
+        The room to configure: its name (as in the "Clean Room" select, e.g.
+        "Living Room"), the select's option ("Living Room (ID: 3)") or its
+        numeric room id.
+      required: true
+      example: Living Room
+      selector:
+        text:
+    suction:
+      name: Suction
+      description: Suction power for this room.
+      required: false
+      example: Max
+      selector:
+        select:
+          options:
+            - Quiet
+            - Standard
+            - Turbo
+            - Max
+    wash:
+      name: Wash level
+      description: Mop water level for this room.
+      required: false
+      example: Mid
+      selector:
+        select:
+          options:
+            - Low
+            - Mid
+            - High
+    clean_times:
+      name: Clean times
+      description: How many times to clean this room (repeat count).
+      required: false
+      example: 2
+      selector:
+        number:
+          min: 1
+          max: 3
+          mode: box
+
+set_schedule:
+  name: Set cleaning schedule
+  description: >-
+    Add a new cleaning schedule or modify an existing schedule on this vacuum.
+    When modifying, every field left out keeps its current value. A new schedule
+    needs a time; the other fields default to every day, enabled, Standard
+    suction, Mid wash, the whole home, one pass and the general mode.
+    Supported on legacy (Tuya Cloud) and scalar (DPS 151) models. Scalar models
+    store only time, days, enabled, suction and the path pattern; setting wash,
+    rooms or clean times fails there.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    time:
+      name: Time
+      description: >-
+        Cleaning start time in 24-hour HH:MM format (e.g. "08:30" or "14:00").
+        Required for a new schedule.
+      required: false
+      example: "08:30"
+      selector:
+        time:
+    schedule_id:
+      name: Schedule ID
+      description: >-
+        ID or label of an existing schedule to modify. Leave empty to modify the schedule currently selected
+        in the 'Selected Schedule' dropdown entity (select.<device>_selected_schedule), or to create a new one.
+      required: false
+      example: 123456789
+      selector:
+        text:
+    days:
+      name: Days of the week
+      description: >-
+        Days to repeat cleaning. Select one or more days from the dropdown, or enter custom weekdays.
+      required: false
+      selector:
+        select:
+          multiple: true
+          custom_value: true
+          options:
+            - label: "Every day"
+              value: "Every day"
+            - label: "Weekdays (Mon - Fri)"
+              value: "Mon, Tue, Wed, Thu, Fri"
+            - label: "Weekends (Sat - Sun)"
+              value: "Sat, Sun"
+            - label: "Monday"
+              value: "Mon"
+            - label: "Tuesday"
+              value: "Tue"
+            - label: "Wednesday"
+              value: "Wed"
+            - label: "Thursday"
+              value: "Thu"
+            - label: "Friday"
+              value: "Fri"
+            - label: "Saturday"
+              value: "Sat"
+            - label: "Sunday"
+              value: "Sun"
+    enabled:
+      name: Enabled
+      description: Whether this schedule is active.
+      required: false
+      selector:
+        boolean:
+    suction:
+      name: Suction power
+      description: Suction level for the scheduled clean.
+      required: false
+      example: Max
+      selector:
+        select:
+          options:
+            - Quiet
+            - Standard
+            - Turbo
+            - Max
+    wash:
+      name: Wash level (Mop water)
+      description: Mop water flow level for the scheduled clean (mop-capable legacy models; not supported on scalar models).
+      required: false
+      example: Mid
+      selector:
+        select:
+          options:
+            - Low
+            - Mid
+            - High
+            - Dry
+    rooms:
+      name: Rooms
+      description: >-
+        Room names or room IDs to clean on schedule; an empty list cleans the whole
+        home. Not supported on scalar models.
+      required: false
+      example: ["Living Room", "Kitchen"]
+      selector:
+        object:
+    clean_times:
+      name: Clean times
+      description: Number of cleaning cycles per scheduled run (1 to 3). Not supported on scalar models.
+      required: false
+      example: 1
+      selector:
+        number:
+          min: 1
+          max: 3
+          mode: box
+    mode:
+      name: Cleaning mode
+      description: >-
+        Legacy models: general (the schedule's suction and wash) or customize (each
+        room's own settings). Scalar models: the path pattern, Arranged or Random;
+        general means Arranged.
+      required: false
+      example: general
+      selector:
+        select:
+          options:
+            - label: "General"
+              value: "general"
+            - label: "Per-room settings (legacy)"
+              value: "customize"
+            - label: "Arranged (scalar)"
+              value: "Arranged"
+            - label: "Random (scalar)"
+              value: "Random"
+
+delete_schedule:
+  name: Delete cleaning schedule
+  description: >-
+    Delete an existing cleaning schedule by its schedule ID or by picking it from the
+    'Selected Schedule' dropdown entity (select.<device>_selected_schedule).
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    schedule_id:
+      name: Schedule ID
+      description: >-
+        The ID or label of the schedule to delete. If omitted, deletes the schedule
+        currently selected in the 'Selected Schedule' dropdown entity.
+      required: false
+      example: 123456789
+      selector:
+        text:
+
+enable_schedule:
+  name: Enable / disable cleaning schedule
+  description: >-
+    Turn an existing cleaning schedule on or off without deleting it. Can target a specific ID
+    or the schedule currently chosen in the 'Selected Schedule' dropdown entity (select.<device>_selected_schedule).
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    enabled:
+      name: Enabled
+      description: Whether the schedule should be active (true) or inactive (false).
+      required: true
+      default: true
+      selector:
+        boolean:
+    schedule_id:
+      name: Schedule ID
+      description: >-
+        The ID or label of the schedule to enable or disable. If omitted, updates the schedule
+        currently selected in the 'Selected Schedule' dropdown entity.
+      required: false
+      example: 123456789
+      selector:
+        text:

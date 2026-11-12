@@ -3,12 +3,9 @@ from unittest.mock import MagicMock
 import pytest
 from homeassistant.core import HomeAssistant
 
-from custom_components.robovac_mqtt.const import (
-    ACCESSORY_MAX_LIFE,
-    DOMAIN,
-    MODEL_ACCESSORY_MAX_LIFE,
-)
+from custom_components.robovac_mqtt.const import DOMAIN
 from custom_components.robovac_mqtt.models import AccessoryState, VacuumState
+from custom_components.robovac_mqtt.profiles import get_device_profile
 from custom_components.robovac_mqtt.sensor import async_setup_entry
 
 
@@ -21,6 +18,15 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
     coordinator.device_name = "RoboVac"
     coordinator.device_id = "test_device"
     coordinator.device_info = {}
+    coordinator.device_model = "T2266"
+    coordinator.api_type = "novel"
+    # sensor.py prefers coordinator.profile when it is a real DeviceProfile;
+    # a MagicMock is not, so it falls back to get_device_profile(model, api_type).
+    coordinator.profile = None
+    profile = get_device_profile("T2266", "novel")
+    accessory_max = {
+        attr: spec.max_life_hours for attr, spec in profile.accessories.items()
+    }
 
     # Mock state with some usage
     acc_state = AccessoryState(
@@ -43,7 +49,7 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
     rb_sensor = next(
         e for e in added_entities if e._attr_name == "Rolling Brush Remaining"
     )
-    max_main = ACCESSORY_MAX_LIFE["main_brush_usage"]
+    max_main = accessory_max["main_brush_usage"]
     assert rb_sensor.native_value == max_main - 100
     assert rb_sensor.extra_state_attributes["usage_hours"] == 100
     assert rb_sensor.extra_state_attributes["total_life_hours"] == max_main
@@ -52,7 +58,7 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
     sb_sensor = next(
         e for e in added_entities if e._attr_name == "Side Brush Remaining"
     )
-    max_side = ACCESSORY_MAX_LIFE["side_brush_usage"]
+    max_side = accessory_max["side_brush_usage"]
     assert sb_sensor.native_value == max_side - 50
 
     # Verify negative handling (over usage)
@@ -80,7 +86,7 @@ async def test_accessory_sensors_setup(hass: HomeAssistant):
                 "Dust Bag Remaining": (1269, 1440),
             },
         ),
-        # Values reported by an Omni E35 (#186). Its table doesn't list the
+        # Values reported by an Omni E35 (#186). Its profile doesn't list the
         # scrape and dustbag counters, so they get no sensor.
         (
             "T210M",
@@ -111,7 +117,7 @@ async def test_accessory_sensors_model_override(
     usage: AccessoryState,
     expected: dict[str, tuple[int, int]],
 ):
-    """A model with its own lifespan table gets exactly those accessories."""
+    """A model with its own profile gets exactly those accessories."""
     entry = MagicMock()
     entry.entry_id = "test_entry"
 
@@ -123,7 +129,7 @@ async def test_accessory_sensors_model_override(
     coordinator.api_type = "novel"
     coordinator.data = VacuumState(accessories=usage)
 
-    # A second, default-table vacuum set up after it must not leak its
+    # A second, default-profile vacuum set up after it must not leak its
     # lifespans into the first one's sensors.
     other = MagicMock()
     other.device_name = "Other"
@@ -155,7 +161,7 @@ async def test_accessory_sensors_default_table_has_no_per_model_parts(
 ):
     """Models without an override keep the default accessories.
 
-    The dust bag and sewage tank filter only exist in per-model tables.
+    The dust bag and sewage tank filter only exist in per-model profiles.
     """
     entry = MagicMock()
     entry.entry_id = "test_entry"
@@ -184,9 +190,12 @@ async def test_accessory_sensors_default_table_has_no_per_model_parts(
     }
 
 
-def test_s1_pro_lifespans_come_from_the_model_table():
+def test_s1_pro_lifespans_come_from_the_model_profile():
     """S1 Pro lifespans come from the Eufy app's accessory table; no tray."""
-    s1 = MODEL_ACCESSORY_MAX_LIFE["T2080A"]
-    assert s1["filter_usage"] == 60 and s1["sensor_usage"] == 360
+    s1 = get_device_profile("T2080A", "novel").accessories
+    assert s1["filter_usage"].max_life_hours == 60
+    assert s1["sensor_usage"].max_life_hours == 360
     assert "scrape_usage" not in s1  # no cleaning tray on the S1 Pro
-    assert "T2080" not in MODEL_ACCESSORY_MAX_LIFE  # plain S1 is a different robot
+    # The plain S1 (T2080) is a different robot and keeps the default lifespans.
+    s1_plain = get_device_profile("T2080", "novel").accessories
+    assert s1_plain["filter_usage"].max_life_hours == 360

@@ -1,14 +1,27 @@
 """Unit tests for the cloud login module."""
 
+import asyncio
+import json
 import logging
+import time
 import unittest.mock
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import aiohttp
 import pytest
 
 from custom_components.robovac_mqtt.api import cloud as cloud_mod
-from custom_components.robovac_mqtt.api.cloud import EufyLogin, EufyLoginError
+from custom_components.robovac_mqtt.api.cloud import (
+    EufyLogin,
+    EufyLoginError,
+    EufyLoginRateLimitedError,
+    EufyLoginTransientError,
+)
 from custom_components.robovac_mqtt.api.tuya_cloud import TuyaCloudError
+from custom_components.robovac_mqtt.auth_store import (
+    LOGIN_HOLD_OFF_DEFAULT,
+    AuthCache,
+)
 
 
 def _make_login(
@@ -318,6 +331,144 @@ async def test_tuya_login_skips_without_user_id():
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "eu_error",
+    [TimeoutError(), aiohttp.ClientError("reset"), KeyError("publicKey"), TypeError()],
+)
+async def test_tuya_login_non_tuya_error_still_probes_us(eu_error):
+    """A timeout, transport error or malformed EU answer falls through to US."""
+    login = _make_login()
+    login._eufy_user_id = "test_user_123"
+
+    def make_client(region, **kwargs):
+        mock = MagicMock()
+        if region == "EU":
+            mock.login = AsyncMock(side_effect=eu_error)
+        else:
+            mock.login = AsyncMock(return_value="us_session")
+        return mock
+
+    with patch(
+        "custom_components.robovac_mqtt.api.cloud.TuyaCloudClient",
+        side_effect=make_client,
+    ):
+        await login.tuya_login()
+
+    assert login.tuya_client is not None
+    assert login._tuya_probe_region == "US"
+
+
+def _probe_regions(failing: set[str]):
+    """A TuyaCloudClient factory failing in *failing*, and the probe order it records."""
+    tried: list[str] = []
+
+    def make_client(region, **kwargs):
+        tried.append(region)
+        mock = MagicMock()
+        if region in failing:
+            mock.login = AsyncMock(side_effect=TuyaCloudError("ERR", "nope"))
+        else:
+            mock.login = AsyncMock(return_value="sid")
+        return mock
+
+    return tried, make_client
+
+
+@pytest.mark.asyncio
+async def test_tuya_login_tries_the_remembered_region_first():
+    """A US account does not pay a failed EU login on every start."""
+    login = _make_login()
+    login.auth_cache = AuthCache(tuya_region="US")
+    login._eufy_user_id = "uid"
+    tried, make_client = _probe_regions(failing=set())
+
+    with patch(
+        "custom_components.robovac_mqtt.api.cloud.TuyaCloudClient",
+        side_effect=make_client,
+    ):
+        await login.tuya_login()
+
+    assert tried == ["US"]
+    assert login._tuya_probe_region == "US"
+
+
+@pytest.mark.asyncio
+async def test_tuya_login_falls_back_when_the_remembered_region_fails():
+    """A remembered region is a hint, not a filter."""
+    login = _make_login()
+    login.auth_cache = AuthCache(tuya_region="US")
+    login._eufy_user_id = "uid"
+    tried, make_client = _probe_regions(failing={"US"})
+
+    with patch(
+        "custom_components.robovac_mqtt.api.cloud.TuyaCloudClient",
+        side_effect=make_client,
+    ):
+        await login.tuya_login()
+
+    assert tried == ["US", "EU"]
+    assert login._tuya_probe_region == "EU"
+
+
+@pytest.mark.asyncio
+async def test_tuya_login_raises_when_every_region_fails():
+    login = _make_login()
+    login._eufy_user_id = "uid"
+    _tried, make_client = _probe_regions(failing={"EU", "US"})
+
+    with patch(
+        "custom_components.robovac_mqtt.api.cloud.TuyaCloudClient",
+        side_effect=make_client,
+    ), pytest.raises(TuyaCloudError):
+        await login.tuya_login()
+
+
+@pytest.mark.asyncio
+async def test_check_login_skips_fallback_session_account():
+    """A session without a user_center has no MQTT credentials to fetch."""
+    login = _make_login(mqtt_credentials=None)
+    login.eufyApi.session = {"access_token": "tok", "user_id": "u1"}
+    login.eufyApi.user_info = None
+
+    await login.checkLogin()
+
+    login.eufyApi.login.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_check_login_writes_fresh_credentials_to_the_cache():
+    """Credentials fetched by checkLogin reach the auth cache."""
+    login = _make_login(mqtt_credentials=None)
+    login.eufyApi.session = None
+    login.eufyApi.user_info = None
+    login.eufyApi.login_label = None
+    login.auth_cache = AuthCache()
+
+    await login.checkLogin()
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.auth_cache.mqtt_credentials == {"endpoint": "mqtt.example.com"}
+
+
+@pytest.mark.asyncio
+async def test_check_login_concurrent_callers_log_in_once():
+    """Coordinators starting together share one MQTT-credential login."""
+    login = _make_login(mqtt_credentials=None)
+    login.eufyApi.session = None
+    login.eufyApi.user_info = None
+
+    async def _slow_login():
+        await asyncio.sleep(0)
+        return {"mqtt": {"endpoint": "mqtt.example.com"}}
+
+    login.eufyApi.login = AsyncMock(side_effect=_slow_login)
+
+    await asyncio.gather(*(login.checkLogin() for _ in range(3)))
+
+    login.eufyApi.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_login_stores_user_id():
     """login() should store the Eufy user_id from the session."""
     login = _make_login()
@@ -331,6 +482,332 @@ async def test_login_stores_user_id():
     await login.login({"mqtt": True})
 
     assert login._eufy_user_id == "eu_123"
+
+
+@pytest.mark.asyncio
+async def test_login_sends_nothing_during_the_hold_off():
+    login = _make_login()
+    login.auth_cache = AuthCache()
+    login.auth_cache.hold_off_logins(300)
+
+    with pytest.raises(EufyLoginRateLimitedError) as err:
+        await login.login({"mqtt": True})
+
+    login.eufyApi.login.assert_not_awaited()
+    assert 290 < err.value.retry_after <= 300
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("retry_after", "expected"), [(120.0, 120.0), (None, LOGIN_HOLD_OFF_DEFAULT)]
+)
+async def test_a_rate_limited_login_starts_the_hold_off(retry_after, expected):
+    """Retry-After sets the hold-off; without one the default applies."""
+    login = _make_login()
+    login.auth_cache = AuthCache()
+    login.eufyApi.login = AsyncMock(
+        side_effect=EufyLoginRateLimitedError("HTTP 429", retry_after=retry_after)
+    )
+
+    with pytest.raises(EufyLoginRateLimitedError):
+        await login.login({"mqtt": True})
+
+    assert expected - 10 < login.auth_cache.login_hold_off_left() <= expected
+
+
+# ── Rejected MQTT credentials ───────────────────────────────────────
+
+
+def _login_with_rejected_credentials():
+    """An EufyLogin whose cached MQTT credentials the broker rejects."""
+    rejected = {"certificate_pem": "old"}
+    login = _make_login(mqtt_credentials=rejected)
+    login.eufyApi.session = None
+    login.eufyApi.user_info = None
+    login.eufyApi.login_label = None
+    login.auth_cache = AuthCache(mqtt_credentials=rejected)
+    login.eufyApi.login = AsyncMock(
+        return_value={"mqtt": {"certificate_pem": "new"}}
+    )
+    return login, rejected, AsyncMock()
+
+
+@pytest.mark.asyncio
+async def test_rejected_credentials_are_replaced_by_one_login():
+    """The rejected cert leaves the cache, a login fetches new ones, both persist."""
+    login, rejected, save = _login_with_rejected_credentials()
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.mqtt_credentials == {"certificate_pem": "new"}
+    assert login.auth_cache.mqtt_credentials == {"certificate_pem": "new"}
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_rejected_credentials_during_the_hold_off_send_no_login():
+    """The hold-off holds; the rejected cert still leaves the persisted cache."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.auth_cache.hold_off_logins(300)
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_not_awaited()
+    assert login.auth_cache.mqtt_credentials is None
+    save.assert_awaited_once()
+    # a rejection after the hold-off logs in by itself: no reload needed
+    assert login.mqtt_reload_wait(rejected) is None
+
+
+@pytest.mark.asyncio
+async def test_rejected_credentials_after_a_refused_login_send_no_second_login():
+    """A refused account login raises once; the same rejection never retries it."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(return_value={})
+
+    with pytest.raises(EufyLoginError):
+        await login.replace_rejected_mqtt_credentials(rejected, save)
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    # re-authentication follows, not a reload that would log in again
+    assert login.auth_cache.login_hold_off_left() is not None
+    assert login.mqtt_reload_wait(rejected) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error",
+    [EufyLoginTransientError("HTTP 503"), aiohttp.ClientError("reset"), TimeoutError()],
+)
+async def test_a_failed_replacement_login_keeps_the_rejected_cert_out(error):
+    """An outage during the login: no replacement, the drop is still persisted."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(side_effect=error)
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    assert login.auth_cache.mqtt_credentials is None
+    save.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_credentials_a_login_just_produced_get_no_replacement_login():
+    """The broker rejects what a login handed out seconds ago: another login
+    would not help, so logins are held off instead."""
+    login, _rejected, save = _login_with_rejected_credentials()
+    await login.login({"mqtt": True})
+    fresh = login.mqtt_credentials
+
+    assert await login.replace_rejected_mqtt_credentials(fresh, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    left = login.auth_cache.login_hold_off_left()
+    assert left is not None
+    # nothing in this run logs in for them: a reload when the hold-off ends
+    assert left - 5 <= login.mqtt_reload_wait(fresh) <= left
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_replacement_holds_off_logins_after_a_restart_too():
+    """The hold-off is persisted and renewed once it lapsed while the rejections
+    go on, so setups after a restart do not log in each time."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+    assert login.auth_cache.login_hold_off_left() is not None
+    running = login.auth_cache.login_hold_until = time.time() + 60
+    save.reset_mock()
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    assert login.auth_cache.login_hold_until == running
+    save.assert_not_awaited()
+    login.auth_cache.login_hold_until = 0.0
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    assert login.auth_cache.login_hold_off_left() is not None
+    save.assert_awaited_once()
+    login.eufyApi.login.assert_awaited_once()
+
+
+async def _hold_off_after_a_rejected_login(login, save) -> float:
+    """Log in once the hold-off is over; the broker rejects what it produced.
+    Returns the hold-off that starts."""
+    login.auth_cache.login_hold_until = None
+    await login.login({"mqtt": True})
+    assert await login.replace_rejected_mqtt_credentials(
+        login.mqtt_credentials, save
+    ) is False
+    return login.auth_cache.login_hold_off_left()
+
+
+@pytest.mark.asyncio
+async def test_consecutive_rejected_logins_hold_off_logins_longer_up_to_an_hour():
+    """15, 30, then 60 min after each login whose credentials the broker
+    turns away; the count outlives a restart and ends with an accept."""
+    login, _rejected, save = _login_with_rejected_credentials()
+    holds = [await _hold_off_after_a_rejected_login(login, save) for _ in range(4)]
+
+    assert [round(h / 60) for h in holds] == [15, 30, 60, 60]
+    stored = AuthCache.from_dict(json.loads(json.dumps(login.auth_cache.to_dict())))
+    login.auth_cache = stored
+    # counted only while the hold-off still grows
+    assert stored.rejected_logins == 2
+    assert round(await _hold_off_after_a_rejected_login(login, save) / 60) == 60
+
+    assert login.mqtt_credentials_accepted({"certificate_pem": "other"}) is True
+    assert round(await _hold_off_after_a_rejected_login(login, save) / 60) == 15
+
+
+@pytest.mark.asyncio
+async def test_rejections_soon_after_a_failed_replacement_login_send_no_login():
+    """Eufy unreachable: the coordinators that ask next get no login of their own."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(side_effect=EufyLoginTransientError("HTTP 503"))
+
+    for _ in range(3):
+        assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_after_a_failed_replacement_persists_its_result():
+    """The cache is already dropped; the later successful login is still saved."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(
+        side_effect=[
+            EufyLoginTransientError("HTTP 503"),
+            {"mqtt": {"certificate_pem": "new"}},
+        ]
+    )
+    with patch.object(cloud_mod, "_MQTT_RELOGIN_RETRY_DELAY", 0.0):
+        await login.replace_rejected_mqtt_credentials(rejected, save)
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+
+    assert save.await_count == 2
+    assert login.auth_cache.mqtt_credentials == {"certificate_pem": "new"}
+
+
+@pytest.mark.asyncio
+async def test_a_broker_that_rejects_again_soon_after_accepting_gets_no_second_login():
+    """Accept, drop, reject, repeat: one replacement login per interval, and the
+    rejected cert still leaves the cache."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.auth_cache.mqtt_credentials is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("accepted", "logins"), [(False, 0), (True, 1)])
+async def test_a_reload_keeps_the_bound_on_credentials_from_a_login(accepted, logins):
+    """Credentials a login produced that the broker never accepted get no
+    replacement login from the reloaded entry either; accepted ones do."""
+    login, rejected, save = _login_with_rejected_credentials()
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    if accepted:
+        assert login.mqtt_credentials_accepted(login.mqtt_credentials) is True
+    stored = AuthCache.from_dict(json.loads(json.dumps(login.auth_cache.to_dict())))
+    with patch(
+        "custom_components.robovac_mqtt.api.cloud.EufyHTTPClient", autospec=True
+    ):
+        reloaded = EufyLogin("u", "p", "open-udid", auth_cache=stored)
+    reloaded.eufyApi = MagicMock(session=None, user_info=None, login_label=None)
+    reloaded.eufyApi.login = AsyncMock(return_value={"mqtt": {"certificate_pem": "3"}})
+
+    replaced = await reloaded.replace_rejected_mqtt_credentials(
+        reloaded.mqtt_credentials, save
+    )
+
+    assert replaced is accepted
+    assert reloaded.eufyApi.login.await_count == logins
+    assert (stored.login_hold_off_left() is None) is accepted
+
+
+@pytest.mark.asyncio
+async def test_an_accepted_replacement_allows_the_next_one_after_the_interval():
+    """A rotation after the interval is replaced again."""
+    login, rejected, save = _login_with_rejected_credentials()
+    with patch.object(cloud_mod, "_MQTT_RELOGIN_MIN_INTERVAL", 0.0):
+        assert await login.replace_rejected_mqtt_credentials(rejected, save) is True
+    replacement = login.mqtt_credentials
+    login.mqtt_credentials_accepted(replacement)
+
+    assert await login.replace_rejected_mqtt_credentials(replacement, save) is True
+
+    assert login.eufyApi.login.await_count == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("login_result", "hold_off", "expected"),
+    [
+        (None, None, None),
+        (None, 600.0, 600.0),
+        (EufyLoginTransientError("HTTP 503"), None, 300.0),
+        (EufyLoginTransientError("HTTP 503"), 600.0, 600.0),
+        ({"mqtt": {"certificate_pem": "new"}}, None, 3600.0),
+        ({"mqtt": {"certificate_pem": "new"}}, 7200.0, 7200.0),
+    ],
+    ids=[
+        "free", "hold-off", "retry-delay", "hold-off-past-retry-delay",
+        "min-interval", "hold-off-past-min-interval",
+    ],
+)
+async def test_the_wait_for_a_replacement_login_is_the_longest_bound(
+    login_result, hold_off, expected
+):
+    """The hold-off, the retry delay after a failed replacement login and
+    the interval after a successful one: a replacement login waits for all;
+    the rejections in between send none."""
+    login, rejected, save = _login_with_rejected_credentials()
+    if login_result is not None:
+        login.eufyApi.login = AsyncMock(
+            side_effect=login_result
+            if isinstance(login_result, Exception)
+            else [login_result]
+        )
+        await login.replace_rejected_mqtt_credentials(rejected, save)
+    if hold_off is not None:
+        login.auth_cache.hold_off_logins(hold_off)
+
+    wait = login.replacement_login_wait()
+
+    if expected is None:
+        assert wait is None
+        return
+    assert expected - 5 < wait <= expected
+    if isinstance(login_result, dict):
+        rejected = login.mqtt_credentials
+        login.mqtt_credentials_accepted(rejected)
+    calls = login.eufyApi.login.await_count
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert login.eufyApi.login.await_count == calls
+
+
+@pytest.mark.asyncio
+async def test_a_replacement_login_without_mqtt_credentials_holds_off_logins():
+    """A login that yields no MQTT credentials must not repeat at every rejection."""
+    login, rejected, save = _login_with_rejected_credentials()
+    login.eufyApi.login = AsyncMock(return_value={"mqtt": None})
+
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+    assert await login.replace_rejected_mqtt_credentials(rejected, save) is False
+
+    login.eufyApi.login.assert_awaited_once()
+    assert login.auth_cache.login_hold_off_left() is not None
 
 
 # ── Cloud device discovery ──────────────────────────────────────────
@@ -354,6 +831,8 @@ async def test_get_cloud_devices_populates_list():
     ]
 
     mock_tuya = MagicMock()
+    # getCloudDevices awaits get_device_schema for legacy devices.
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     mock_tuya.get_device_list = AsyncMock(
         return_value=[
             {"devId": "cloud_dev_1", "dps": {"15": "Running", "104": 80}},
@@ -366,6 +845,28 @@ async def test_get_cloud_devices_populates_list():
     assert len(login.cloud_devices) == 1
     assert login.cloud_devices[0]["deviceId"] == "cloud_dev_1"
     assert login.cloud_devices[0]["mqtt"] is False
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_devices_keeps_every_tuya_device_id():
+    """Every devId on the Tuya list is kept, including ones not set up as cloud
+    devices, so firmware entities can be limited to devices Tuya knows."""
+    login = _make_login()
+    login.mqtt_devices = [{"deviceId": "both_dev", "deviceName": "MQTT Vacuum"}]
+    mock_tuya = MagicMock()
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
+    mock_tuya.get_device_list = AsyncMock(
+        return_value=[
+            {"devId": "both_dev", "dps": {"15": "Running"}},
+            {"devId": "unknown_model", "dps": {}},
+            {"name": "no id"},
+        ]
+    )
+    login.tuya_client = mock_tuya
+
+    await login.getCloudDevices()
+
+    assert login.tuya_device_ids == {"both_dev", "unknown_model"}
 
 
 @pytest.mark.asyncio
@@ -386,6 +887,8 @@ async def test_get_cloud_devices_skips_mqtt_duplicates():
     ]
 
     mock_tuya = MagicMock()
+    # getCloudDevices awaits get_device_schema for legacy devices.
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     mock_tuya.get_device_list = AsyncMock(
         return_value=[
             {"devId": "shared_dev", "dps": {"153": "something"}},
@@ -405,6 +908,8 @@ async def test_get_cloud_devices_skips_invalid_models():
     login.mqtt_devices = []
 
     mock_tuya = MagicMock()
+    # getCloudDevices awaits get_device_schema for legacy devices.
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     mock_tuya.get_device_list = AsyncMock(
         return_value=[{"devId": "unknown_dev", "dps": {"15": "Running"}}]
     )
@@ -413,6 +918,21 @@ async def test_get_cloud_devices_skips_invalid_models():
     await login.getCloudDevices()
 
     assert len(login.cloud_devices) == 0
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_devices_records_a_failed_tuya_list():
+    """A failed Tuya list read is an outage, not an account without devices."""
+    login = _make_login()
+    login.tuya_client = MagicMock()
+    login.tuya_client.get_device_list = AsyncMock(
+        side_effect=TuyaCloudError("ERR", "down")
+    )
+
+    await login.getCloudDevices()
+
+    assert not login.cloud_devices
+    assert login._tuya_failed is True
 
 
 @pytest.mark.asyncio
@@ -444,16 +964,20 @@ async def test_get_cloud_device_delegates_to_tuya():
 
 
 @pytest.mark.asyncio
-async def test_send_cloud_command_delegates_to_tuya():
-    """sendCloudCommand should call tuya_client.send_command."""
+async def test_send_cloud_command_delegates_to_tuya(caplog):
+    """sendCloudCommand calls tuya_client.send_command and logs only DPS keys."""
     login = _make_login()
     mock_tuya = MagicMock()
     mock_tuya.send_command = AsyncMock()
     login.tuya_client = mock_tuya
+    dps = {"2": True, "124": "c2VjcmV0LXJvb20tbmFtZQ=="}
 
-    await login.sendCloudCommand("dev_123", {"2": True})
+    with caplog.at_level(logging.DEBUG, logger=cloud_mod.__name__):
+        await login.sendCloudCommand("dev_123", dps)
 
-    mock_tuya.send_command.assert_called_once_with("dev_123", {"2": True})
+    mock_tuya.send_command.assert_called_once_with("dev_123", dps)
+    assert "succeeded" in caplog.text
+    assert dps["124"] not in caplog.text
 
 
 @pytest.mark.asyncio
@@ -470,28 +994,109 @@ async def test_get_cloud_device_no_tuya_client():
 # ── Cloud re-login on SID expiration ──────────────────────────────
 
 
+def _tuya_client_mock(sid: str = "old_sid") -> MagicMock:
+    """A Tuya cloud client whose login() installs a new sid."""
+    mock_tuya = MagicMock()
+    mock_tuya.sid = sid
+
+    async def _login(_user_id):
+        mock_tuya.sid = "new_sid"
+        return "new_sid"
+
+    mock_tuya.login = AsyncMock(side_effect=_login)
+    return mock_tuya
+
+
 @pytest.mark.asyncio
 async def test_get_cloud_device_relogins_on_failure():
-    """getCloudDevice should re-login and retry on TuyaCloudError."""
+    """A session error re-logs in the existing client and retries once."""
     login = _make_login()
     login._eufy_user_id = "test_user"
-    mock_tuya = MagicMock()
-    # First call fails, second (after re-login) succeeds
+    mock_tuya = _tuya_client_mock()
     mock_tuya.get_device = AsyncMock(
         side_effect=[
-            TuyaCloudError("EXPIRED", "Session expired"),
+            TuyaCloudError("USER_SESSION_INVALID", "Session expired"),
             {"15": "Running", "104": 50},
         ]
     )
-    mock_tuya.sid = "old_sid"
     login.tuya_client = mock_tuya
+    thing = login.tuya_thing_client = MagicMock()
 
-    with patch.object(login, "tuya_login", new_callable=AsyncMock) as mock_relogin:
+    with patch.object(login, "tuya_login", new_callable=AsyncMock) as full_login:
         result = await login.getCloudDevice("dev_123")
 
-    mock_relogin.assert_called_once()
+    full_login.assert_not_called()
+    mock_tuya.login.assert_awaited_once_with("test_user")
+    assert login.tuya_client is mock_tuya
+    assert login.tuya_thing_client is thing
     assert result == {"15": "Running", "104": 50}
     assert mock_tuya.get_device.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_get_cloud_device_non_session_error_does_not_relogin():
+    """A request error that is not a session error never triggers a login."""
+    login = _make_login()
+    login._eufy_user_id = "test_user"
+    mock_tuya = _tuya_client_mock()
+    mock_tuya.get_device = AsyncMock(
+        side_effect=TuyaCloudError("DEVICE_OFFLINE", "Device is offline")
+    )
+    login.tuya_client = mock_tuya
+
+    result = await login.getCloudDevice("dev_123")
+
+    assert result is None
+    mock_tuya.login.assert_not_called()
+    assert mock_tuya.get_device.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_send_cloud_command_non_session_error_does_not_relogin():
+    """A rejected command raises without a re-login."""
+    login = _make_login()
+    login._eufy_user_id = "test_user"
+    mock_tuya = _tuya_client_mock()
+    mock_tuya.send_command = AsyncMock(
+        side_effect=TuyaCloudError("PARAM_ERROR", "Bad dps")
+    )
+    login.tuya_client = mock_tuya
+
+    with pytest.raises(EufyLoginError):
+        await login.sendCloudCommand("dev_123", {"2": True})
+
+    mock_tuya.login.assert_not_called()
+    assert mock_tuya.send_command.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_concurrent_session_errors_share_one_relogin():
+    """N devices hitting the same dead sid cause one login, not N."""
+    login = _make_login()
+    login._eufy_user_id = "test_user"
+    mock_tuya = _tuya_client_mock()
+
+    async def _get_device(device_id):
+        if mock_tuya.sid == "old_sid":
+            await asyncio.sleep(0)
+            raise TuyaCloudError("USER_SESSION_INVALID", "Session expired")
+        return {"15": device_id}
+
+    async def _slow_login(_user_id):
+        await asyncio.sleep(0)
+        mock_tuya.sid = "new_sid"
+        return "new_sid"
+
+    mock_tuya.get_device = AsyncMock(side_effect=_get_device)
+    mock_tuya.login = AsyncMock(side_effect=_slow_login)
+    login.tuya_client = mock_tuya
+
+    results = await asyncio.gather(
+        *(login.getCloudDevice(f"dev_{i}") for i in range(4))
+    )
+
+    assert results == [{"15": f"dev_{i}"} for i in range(4)]
+    mock_tuya.login.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -499,39 +1104,35 @@ async def test_get_cloud_device_relogin_also_fails():
     """getCloudDevice returns None when re-login also fails."""
     login = _make_login()
     login._eufy_user_id = "test_user"
-    mock_tuya = MagicMock()
+    mock_tuya = _tuya_client_mock()
     mock_tuya.get_device = AsyncMock(
         side_effect=TuyaCloudError("EXPIRED", "Session expired")
     )
-    mock_tuya.sid = "old_sid"
+    mock_tuya.login = AsyncMock(
+        side_effect=TuyaCloudError("LOGIN_FAIL", "Bad credentials")
+    )
     login.tuya_client = mock_tuya
 
-    with patch.object(
-        login, "tuya_login", new_callable=AsyncMock,
-        side_effect=TuyaCloudError("LOGIN_FAIL", "Bad credentials"),
-    ):
-        result = await login.getCloudDevice("dev_123")
+    result = await login.getCloudDevice("dev_123")
 
     assert result is None
 
 
 @pytest.mark.asyncio
 async def test_send_cloud_command_relogins_on_failure():
-    """sendCloudCommand should re-login and retry on TuyaCloudError."""
+    """sendCloudCommand re-logs in the existing client on a session error."""
     login = _make_login()
     login._eufy_user_id = "test_user"
-    mock_tuya = MagicMock()
-    # First call fails, second (after re-login) succeeds
+    mock_tuya = _tuya_client_mock()
     mock_tuya.send_command = AsyncMock(
         side_effect=[TuyaCloudError("EXPIRED", "Session expired"), None]
     )
-    mock_tuya.sid = "old_sid"
     login.tuya_client = mock_tuya
 
-    with patch.object(login, "tuya_login", new_callable=AsyncMock) as mock_relogin:
-        await login.sendCloudCommand("dev_123", {"2": True})
+    await login.sendCloudCommand("dev_123", {"2": True})
 
-    mock_relogin.assert_called_once()
+    mock_tuya.login.assert_awaited_once_with("test_user")
+    assert login.tuya_client is mock_tuya
     assert mock_tuya.send_command.call_count == 2
 
 
@@ -540,19 +1141,17 @@ async def test_send_cloud_command_relogin_also_fails():
     """sendCloudCommand raises EufyLoginError when re-login also fails."""
     login = _make_login()
     login._eufy_user_id = "test_user"
-    mock_tuya = MagicMock()
+    mock_tuya = _tuya_client_mock()
     mock_tuya.send_command = AsyncMock(
         side_effect=TuyaCloudError("EXPIRED", "Session expired")
     )
-    mock_tuya.sid = "old_sid"
+    mock_tuya.login = AsyncMock(
+        side_effect=TuyaCloudError("LOGIN_FAIL", "Bad credentials")
+    )
     login.tuya_client = mock_tuya
 
-    with patch.object(
-        login, "tuya_login", new_callable=AsyncMock,
-        side_effect=TuyaCloudError("LOGIN_FAIL", "Bad credentials"),
-    ):
-        with pytest.raises(EufyLoginError, match="Failed to send cloud command"):
-            await login.sendCloudCommand("dev_123", {"2": True})
+    with pytest.raises(EufyLoginError, match="Failed to send cloud command"):
+        await login.sendCloudCommand("dev_123", {"2": True})
 
 
 # ── AIOT-empty device reconstruction (PR #122 unified-app login) ─────
@@ -699,6 +1298,8 @@ async def test_get_cloud_devices_keeps_localkey_device_with_unknown_model():
     login.mqtt_devices = []
 
     mock_tuya = MagicMock()
+    # getCloudDevices awaits get_device_schema for legacy devices.
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     mock_tuya.get_device_list = AsyncMock(
         return_value=[
             {
@@ -782,6 +1383,8 @@ async def test_tuya_device_supersedes_reconstructed_mqtt_placeholder():
     assert login.mqtt_devices[0]["reconstructed"] is True
 
     mock_tuya = MagicMock()
+    # getCloudDevices awaits get_device_schema for legacy devices.
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     mock_tuya.get_device_list = AsyncMock(
         return_value=[
             {
@@ -836,6 +1439,8 @@ async def test_confirmed_mqtt_device_not_superseded_by_tuya_duplicate():
     assert login.mqtt_devices[0].get("reconstructed") is False
 
     mock_tuya = MagicMock()
+    # getCloudDevices awaits get_device_schema for legacy devices.
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     mock_tuya.get_device_list = AsyncMock(
         return_value=[{"devId": "x8_dev", "localKey": "k", "dps": {}}]
     )
@@ -865,6 +1470,8 @@ async def test_tuya_duplicate_record_added_once():
     login = _make_login(eufy_api_devices=[])
     login.mqtt_devices = []
     mock_tuya = MagicMock()
+    # getCloudDevices awaits get_device_schema for legacy devices.
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     mock_tuya.get_device_list = AsyncMock(
         return_value=[
             {"devId": "dup_dev", "localKey": "k", "name": "S1 Pro", "dps": {}},
@@ -900,6 +1507,8 @@ async def test_tuya_supersedes_placeholder_on_id_mismatch_single_robot():
     assert len(login.mqtt_devices) == 1  # reconstructed placeholder
 
     mock_tuya = MagicMock()
+    # getCloudDevices awaits get_device_schema for legacy devices.
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     mock_tuya.get_device_list = AsyncMock(
         return_value=[
             {"devId": "tuya_devid", "localKey": "k", "name": "S1 Pro", "dps": {}}
@@ -1022,6 +1631,7 @@ async def test_ignored_tuya_product_placeholder_drop_keeps_safety_net():
             _IGNORED_TUYA_RECORD,
         ]
     )
+    mock_tuya.get_device_schema = AsyncMock(return_value={})
     login.tuya_client = mock_tuya
 
     await login.getCloudDevices()
@@ -1031,28 +1641,47 @@ async def test_ignored_tuya_product_placeholder_drop_keeps_safety_net():
 
 
 @pytest.mark.asyncio
-async def test_get_rtc_config_relogins_and_reads_the_new_client():
-    """The RTC fetch must follow a re-login: a client captured at startup keeps a dead sid."""
+async def test_get_rtc_config_relogins_the_shared_client_on_a_session_error():
+    """A session error re-authenticates the shared client once, then retries."""
     login = _make_login()
-    old = MagicMock()
-    old.sid = "old"
-    old.get_rtc_config = AsyncMock(side_effect=TuyaCloudError("EXPIRED", "Session expired"))
-    new = MagicMock()
-    new.get_rtc_config = AsyncMock(return_value={"device_password": "pw"})
-    login.tuya_client = old
+    client = MagicMock()
+    client.sid = "old"
+    client.get_rtc_config = AsyncMock(
+        side_effect=[
+            TuyaCloudError("EXPIRED", "Session expired"),
+            {"device_password": "pw"},
+        ]
+    )
+    login.tuya_client = client
 
-    async def relogin():
-        login.tuya_client = new
-
-    with patch.object(login, "tuya_login", AsyncMock(side_effect=relogin)) as mock_relogin:
+    with (
+        patch.object(login, "_tuya_relogin", AsyncMock()) as mock_relogin,
+        patch.object(login, "tuya_login", AsyncMock()) as mock_login,
+    ):
         assert await login.get_rtc_config("dev_123") == {"device_password": "pw"}
 
-    mock_relogin.assert_awaited_once()
-    assert old.sid is None
-    new.get_rtc_config.assert_awaited_once_with("dev_123")
-    # Later calls use the replacement without logging in again.
-    mock_relogin.reset_mock()
-    await login.get_rtc_config("dev_123")
+    mock_relogin.assert_awaited_once_with("old")
+    mock_login.assert_not_awaited()
+    assert login.tuya_client is client
+
+
+@pytest.mark.asyncio
+async def test_get_rtc_config_does_not_relogin_on_other_errors():
+    """A request error is raised as is; only a session error spends a login."""
+    login = _make_login()
+    client = MagicMock()
+    client.sid = "old"
+    client.get_rtc_config = AsyncMock(
+        side_effect=TuyaCloudError("PARAM_ERROR", "bad device")
+    )
+    login.tuya_client = client
+
+    with (
+        patch.object(login, "_tuya_relogin", AsyncMock()) as mock_relogin,
+        pytest.raises(TuyaCloudError),
+    ):
+        await login.get_rtc_config("dev_123")
+
     mock_relogin.assert_not_awaited()
 
 

@@ -28,6 +28,19 @@ def _room_mask(width, height, rid_at):
     return bytes(((rid_at(px, py) << 2) & 0xFF) for py in range(height) for px in range(width))
 
 
+def _legacy_room_mask(width, height, rid_at):
+    """Build a room_pixels byte mask, ids stored OFFSET BY ONE.
+
+    ``map_data_from_tuya_map`` stores ``(id + 1) << 2`` so that a stored 0 means
+    "no room" and a real room id 0 stays representable; ``room_id_offset`` takes
+    the +1 back off on read. ``rid_at`` may return None for "no room here".
+    """
+    def _byte(px, py):
+        rid = rid_at(px, py)
+        return 0 if rid is None else (((rid + 1) << 2) & 0xFF)
+    return bytes(_byte(px, py) for py in range(height) for px in range(width))
+
+
 def _map_with_mask(rid_at, width=10, height=10, resolution=1, **kw):
     """A MapData whose room mask is filled by rid_at(px, py), aligned to the grid."""
     return MapData(
@@ -38,6 +51,21 @@ def _map_with_mask(rid_at, width=10, height=10, resolution=1, **kw):
         room_pixels=_room_mask(width, height, rid_at),
         room_outline_width=width,
         room_outline_height=height,
+        **kw,
+    )
+
+
+def _legacy_map_with_mask(rid_at, width=10, height=10, resolution=1, **kw):
+    """Like _map_with_mask, for a legacy Tuya map (ids stored offset by one)."""
+    return MapData(
+        raw_pixels=b"",
+        width=width,
+        height=height,
+        resolution=resolution,
+        room_pixels=_legacy_room_mask(width, height, rid_at),
+        room_outline_width=width,
+        room_outline_height=height,
+        room_id_offset=1,
         **kw,
     )
 
@@ -119,6 +147,56 @@ def test_hit_test_y_flip_orientation():
     assert md.room_id_at_normalized(0.5, 0.9) == 3  # image bottom -> low source py
 
 
+def test_hit_test_floors_like_the_card_at_a_cell_boundary():
+    """The hit-test must FLOOR the normalized point, exactly as the card does.
+
+    The card's whole-map normalized coordinates are ``nx = col / width`` and
+    ``ny = 1 - row / height``, inverted with ``Math.floor`` in ``roomIdAt`` /
+    ``cellFromEvent`` (``frontend/eufy-map-renderer.js``) — a cell owns the
+    half-open span of its own width. Rounding instead pushed every point in the
+    OUTER half of a cell into the next cell, so a tap near a room boundary
+    highlighted one room in the card and cleaned a different one.
+
+    Here rooms split at source column 5 on a 10-wide grid. nx = 0.46 is 4.6
+    cells across, i.e. the far side of column 4, which is still room 1 — rounding
+    made it column 5, i.e. room 2.
+    """
+    md = _map_with_mask(lambda px, py: 1 if px < 5 else 2)
+
+    assert md.room_id_at_normalized(0.46, 0.5) == 1   # col 4, its far side
+    assert md.room_id_at_normalized(0.54, 0.5) == 2   # col 5, its near side
+    # Every column resolves to the column the card would pick, sampled off-centre
+    # so the two rules genuinely disagree (a cell centre rounds back to itself).
+    for col in range(10):
+        assert md.room_id_at_normalized((col + 0.7) / 10, 0.5) == (1 if col < 5 else 2)
+        assert md.room_id_at_normalized((col + 0.2) / 10, 0.5) == (1 if col < 5 else 2)
+
+
+def test_hit_test_rows_floor_like_the_card_too():
+    """Same rule on the flipped axis: row = floor((1 - ny) * height)."""
+    md = _map_with_mask(lambda px, py: 1 if py < 5 else 2)
+
+    for row in range(10):
+        for offset in (0.2, 0.7):
+            ny = 1.0 - (row + offset) / 10
+            assert md.room_id_at_normalized(0.5, ny) == (1 if row < 5 else 2)
+
+
+def test_hit_test_legacy_returns_mask_id_and_room_zero_is_real():
+    """An unset mask cell is None, but room id 0 is a REAL room and must survive.
+
+    This is the whole point of the +1 storage offset: the Hallway is room 0 on the
+    T2266, so "no room" and "room 0" cannot both be 0.
+    """
+    md = _legacy_map_with_mask(lambda px, py: None if px < 5 else 32)
+    assert md.room_id_at_normalized(0.1, 0.5) is None  # left half  -> no room
+    assert md.room_id_at_normalized(0.9, 0.5) == 32  # right half -> background id
+
+    md0 = _legacy_map_with_mask(lambda px, py: None if px < 5 else 0)
+    assert md0.room_id_at_normalized(0.1, 0.5) is None  # no room
+    assert md0.room_id_at_normalized(0.9, 0.5) == 0  # room id 0, not a miss
+
+
 def test_hit_test_room_zero_is_a_room():
     """Ids 0-31 are rooms (the S1 Pro numbers its first room 0); ids from 32 up
     (60 = no room data, 61 = gap, 62 = obstacle, 63 = unknown) are not. Room 0 needs
@@ -184,6 +262,13 @@ def test_coordinator_unnamed_room_returns_id_none(mock_hass, mock_login):
     assert coordinator.room_id_at_normalized(0.5, 0.5) == (7, None)
 
 
+def test_coordinator_legacy_miss_returns_none(mock_hass, mock_login):
+    """A tap on an unset (no-room) legacy mask cell -> (None, None)."""
+    md = _legacy_map_with_mask(lambda px, py: None)
+    coordinator = _coordinator_with_map(mock_hass, mock_login, md)
+    assert coordinator.room_id_at_normalized(0.5, 0.5) == (None, None)
+
+
 def test_coordinator_miss_returns_none(mock_hass, mock_login):
     """A tap on a background (60) mask cell -> (None, None)."""
     md = _map_with_mask(lambda px, py: 60)
@@ -217,7 +302,7 @@ async def test_service_returns_resolved_room(mock_coordinator):
 
 @pytest.mark.asyncio
 async def test_service_miss_returns_empty_name(mock_coordinator):
-    """A miss returns room_id -1 and an empty string name (never None, for the card)."""
+    """A miss returns room_id -1 (0 is a real room) and an empty string name."""
     mock_coordinator.room_id_at_normalized = MagicMock(return_value=(None, None))
     entity = RoboVacMQTTEntity(mock_coordinator)
 
