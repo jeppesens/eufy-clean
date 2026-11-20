@@ -27,6 +27,7 @@ from __future__ import annotations
 import io
 import math
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from PIL import Image, ImageDraw, ImageFont
@@ -244,7 +245,19 @@ def _room_label_anchors(md: MapData) -> dict[int, tuple[float, float]]:
     return anchors
 
 
+# Pillow's built-in font only covers basic ASCII, so room names such as "Baño" or
+# "Küche" drew a missing-glyph box. Use a bundled Latin subset of Noto Sans
+# (SIL OFL, see api/fonts/OFL.txt) and keep the built-in font as a fallback.
+# Fonts are not cached: renders run in executor threads and FreeType faces are not
+# thread-safe.
+_FONT_PATH = Path(__file__).parent / "fonts" / "NotoSans-Medium-latin.ttf"
+
+
 def _font(size: int) -> ImageFont.ImageFont | ImageFont.FreeTypeFont:
+    try:
+        return ImageFont.truetype(str(_FONT_PATH), size)
+    except OSError:  # font file missing or no FreeType
+        pass
     try:
         return ImageFont.load_default(size=size)
     except (TypeError, OSError):  # Pillow < 10.1 or no FreeType

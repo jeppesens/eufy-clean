@@ -3,8 +3,9 @@
 import io
 
 import pytest
-from PIL import Image
+from PIL import Image, ImageDraw
 
+from custom_components.robovac_mqtt.api import map_render
 from custom_components.robovac_mqtt.api.map_render import (
     MapOverlay,
     render_map,
@@ -150,3 +151,22 @@ def test_a_point_outside_every_room_is_no_room_without_a_room_list():
     md = _outline_map(rid_at=lambda x, y: 1 if x < 10 else 0, room_names={})
     assert md.room_id_at_normalized(0.1, 0.5) == 1
     assert md.room_id_at_normalized(0.9, 0.5) is None
+
+
+def _glyph(font, char: str) -> bytes:
+    image = Image.new("L", (48, 48), 0)
+    ImageDraw.Draw(image).text((8, 4), char, font=font, fill=255)
+    return image.tobytes()
+
+
+def test_label_font_has_accented_letters():
+    """Room names in Spanish/French/German need glyphs outside plain ASCII."""
+    font = map_render._font(24)
+    missing = _glyph(font, "\U0010ffff")  # the font's missing-glyph box
+    for char in "áéíóúüñÁÉÍÓÚÜÑ¿¡çêöß":
+        assert _glyph(font, char) != missing, char
+
+
+def test_label_font_falls_back_when_the_bundled_font_is_missing(monkeypatch, tmp_path):
+    monkeypatch.setattr(map_render, "_FONT_PATH", tmp_path / "missing.ttf")
+    assert map_render._font(20) is not None
