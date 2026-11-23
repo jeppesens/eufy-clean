@@ -278,6 +278,20 @@ class TuyaCloudClient:
         _LOGGER.debug("Tuya get_device %s: not found in %d devices", device_id, len(devices))
         return None
 
+    async def is_device_online(self, device_id: str) -> bool | None:
+        """Whether Tuya sees the device's Wi-Fi module connected.
+
+        Reads ``moduleMap.wifi.isOnline`` from the device list (falling back to a
+        top-level ``isOnline``). None when the device or the flag is missing.
+        """
+        for device in await self.get_device_list():
+            if device.get("devId") != device_id:
+                continue
+            wifi = (device.get("moduleMap") or {}).get("wifi") or {}
+            online = wifi.get("isOnline", device.get("isOnline"))
+            return online if isinstance(online, bool) else None
+        return None
+
     async def send_command(
         self, device_id: str, dps: dict[str, Any]
     ) -> None:

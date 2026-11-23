@@ -600,3 +600,20 @@ def test_encrypt_password_matches_upstream_js(case):
         f"encrypt_password mismatch for {case['name']}: "
         f"Python={result}, JS={case['expected_hex']}"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("device", "expected"),
+    [
+        ({"devId": "d1", "moduleMap": {"wifi": {"isOnline": False}}}, False),
+        ({"devId": "d1", "moduleMap": {"wifi": {"isOnline": True}}}, True),
+        ({"devId": "d1", "isOnline": True}, True),
+        ({"devId": "d1"}, None),
+        ({"devId": "other", "isOnline": True}, None),
+    ],
+)
+async def test_is_device_online(device, expected):
+    client = TuyaCloudClient("EU", websession=MagicMock())
+    client.get_device_list = AsyncMock(return_value=[device])
+    assert await client.is_device_online("d1") is expected

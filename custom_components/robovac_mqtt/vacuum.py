@@ -349,6 +349,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         command = self.coordinator.build_device_command("room_clean", **command_kwargs)
         self.coordinator.set_active_cleaning_targets(room_ids=room_ids)
         await self.coordinator.async_send_command(command)
+        self.coordinator.note_intent("cleaning")
 
     async def _async_send_room_custom(
         self,
@@ -496,6 +497,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         self.coordinator.set_active_cleaning_targets(zone_count=len(quads_cm))
         await self.coordinator.async_send_command(command)
+        self.coordinator.note_intent("cleaning")
 
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
         """Clean specific segments with current custom parameters."""
@@ -650,6 +652,7 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             "cleaning_time": data.cleaning_time,
             "cleaning_area": data.cleaning_area,
             "task_status": data.task_status,
+            "local_only": self.coordinator.local_only,
             "trigger_source": data.trigger_source,
             **error_attributes(data),
             "error_message": data.error_message,
@@ -667,6 +670,23 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         await self.coordinator.async_send_command(
             self.coordinator.build_device_command("return_to_base")
         )
+        self.coordinator.note_intent("returning")
+
+    def _refuse_offline_whole_house(self, force: bool = False) -> None:
+        """Block a whole-house start while the robot can't reach its cloud.
+
+        On an S1 Pro, whole-house starts while internet-blocked made it build a
+        fresh map for each job, and the saved map (rooms, names, zones) was gone
+        afterwards. Room and zone cleans are not affected. ``force`` overrides.
+        """
+        if force or self.coordinator.local_only is not True:
+            return
+        raise HomeAssistantError(
+            f"{self.coordinator.device_name} can't reach its cloud: a whole-house "
+            "start now may make it map from scratch and lose the saved map. Clean "
+            "rooms or zones instead, or use vacuum.send_command start_auto with "
+            "force: true."
+        )
 
     async def async_start(self, **kwargs: Any) -> None:
         """Start or resume the cleaning task."""
@@ -675,21 +695,25 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
                 self.coordinator.build_device_command("play")
             )
         else:
+            self._refuse_offline_whole_house()
             await self.coordinator.async_send_command(
                 self.coordinator.build_device_command("start_auto")
             )
+        self.coordinator.note_intent("cleaning")
 
     async def async_pause(self, **kwargs: Any) -> None:
         """Pause the cleaning task."""
         await self.coordinator.async_send_command(
             self.coordinator.build_device_command("pause")
         )
+        self.coordinator.note_intent("paused")
 
     async def async_stop(self, **kwargs: Any) -> None:
         """Stop the cleaning task."""
         await self.coordinator.async_send_command(
             self.coordinator.build_device_command("stop")
         )
+        self.coordinator.note_intent("idle")
 
     async def async_clean_spot(self, **kwargs: Any) -> None:
         """Perform a spot clean-up."""
@@ -784,6 +808,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         if isinstance(params, dict):
             command_kwargs.update(params)
         command_kwargs.update(kwargs)
+        if command == "start_auto":
+            self._refuse_offline_whole_house(bool(command_kwargs.pop("force", False)))
         # Route raw service commands through the device's DPS protocol too, so
         # e.g. vacuum.send_command "pause" emits a scalar write on scalar
         # (Tuya) devices. build_device_command applies the coordinator's
