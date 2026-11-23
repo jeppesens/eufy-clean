@@ -165,12 +165,16 @@ class LocalTuyaClient:
                 pass
             self._listen_task = None
 
-    async def send_command(self, dps: dict[str, Any], *, wait: bool = True) -> None:
-        """Send a DPS write to the device.
+    async def send_command(
+        self, dps: dict[str, Any], *, wait: bool = True
+    ) -> dict[str, Any] | None:
+        """Send a DPS write to the device and return the DPS it answered with.
 
-        ``wait=False`` skips waiting for the device's reply (which arrives as an
-        ordinary push for anything it acts on). Drive commands get no reply at all,
-        so waiting on them just stalls the next command by the socket timeout.
+        The device often answers in the write's own reply (for example a
+        ``ModeCtrlResponse`` on DPS 152 that says whether it accepted a clean).
+        That reply is dispatched like any push and returned, or None when there
+        is none. ``wait=False`` skips waiting for it (drive commands get no reply
+        at all, so waiting on them just stalls the next command).
 
         ``dps`` is a mapping of DPS index (string) to value matching the same
         format the MQTT and Cloud transports use. Values may be plain
@@ -185,15 +189,15 @@ class LocalTuyaClient:
             "Local Tuya %s: sending DPS %s", self.device_id, list(dps.keys())
         )
         # tinytuya's set_multiple_values takes {dp_index: value} where dp_index
-        # may be int or string. Returns a dict on success / error info dict on
-        # failure; we only care about exceptions.
+        # may be int or string. It returns the device's reply ({"dps": ...}), an
+        # error-info dict, or None.
         try:
             async with self._dev_lock:
                 write = self._loop.run_in_executor(
                     None, partial(self._dev.set_multiple_values, dps, nowait=not wait)
                 )
                 try:
-                    await asyncio.shield(write)
+                    reply = await asyncio.shield(write)
                 except asyncio.CancelledError:
                     # Cancelling an await cannot stop its executor thread. Keep
                     # the socket lock until the write finishes before a brake,
@@ -207,6 +211,11 @@ class LocalTuyaClient:
             raise LocalTuyaError(
                 f"Failed to send local Tuya command to {self.device_id}: {e}"
             ) from e
+        answered = reply.get("dps") if isinstance(reply, dict) else None
+        if not isinstance(answered, dict) or not answered:
+            return None
+        self._dispatch(reply)
+        return answered
 
     async def _listen_loop(self) -> None:
         """Pump status() and receive() in the background, dispatching DPS pushes."""

@@ -45,7 +45,7 @@ from .api.map_stream import (
 )
 from .api.p2p.mapdata import CHANGED_MAP, CHANGED_POSE, CHANGED_ROOMS, CHANGED_ZONES
 from .api.p2p.mapimage import build_map_data, build_overlay, world_to_grid
-from .api.parser import update_state
+from .api.parser import rejected_mode_ctrl, update_state
 from .const import (
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_DESKTOP,
@@ -56,12 +56,15 @@ from .const import (
     DEFAULT_NOTIFY_MOBILE_SERVICE,
     DEFAULT_ROBOT_STYLE,
     DOMAIN,
+    DPS_MAP,
     WORK_STATE_REMOTE_CTRL,
     is_s1_pro,
 )
 from .errors import screen_error_code
 from .models import VacuumState
 from .p2p_map import P2PMapFeed
+from .proto.cloud.control_pb2 import ModeCtrlRequest
+from .utils import decode
 from .video_stream import RobotVideo
 
 _LOGGER = logging.getLogger(__name__)
@@ -1081,7 +1084,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 await self.eufy_login.sendCloudCommand(self.device_id, command_dict)
             elif self.client:
                 if isinstance(self.client, LocalTuyaClient):
-                    await self.client.send_command(command_dict, wait=wait)
+                    reply = await self.client.send_command(command_dict, wait=wait)
+                    self._raise_if_clean_refused(command_dict, reply)
                 else:
                     await self.client.send_command(command_dict)
             else:
@@ -1094,6 +1098,28 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             raise HomeAssistantError(
                 f"Failed to send command to {self.device_name}: {e}"
             ) from e
+
+    def _raise_if_clean_refused(
+        self, command: dict[str, Any], reply: dict[str, Any] | None
+    ) -> None:
+        """Fail the call when the robot refused the clean it was just asked to start.
+
+        Only START_* methods raise, and only when the reply names the method that
+        was sent: a stop or pause the robot declines (say, on a docked robot) is
+        logged by the parser, and must not break a "stop, then return" script.
+        """
+        play_pause = DPS_MAP["PLAY_PAUSE"]
+        if not reply or play_pause not in command or play_pause not in reply:
+            return
+        rejected = rejected_mode_ctrl(reply[play_pause])
+        if rejected is None or not rejected[1].startswith("START_"):
+            return
+        try:
+            sent = decode(ModeCtrlRequest, command[play_pause]).method
+        except Exception:  # noqa: BLE001 - can't tell what was sent
+            return
+        if int(sent) == rejected[0]:
+            raise HomeAssistantError(f"{self.device_name} rejected {rejected[1]}")
 
     async def _async_update_data(self) -> VacuumState:
         """Fetch data from API endpoint.
