@@ -347,8 +347,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
             command_kwargs["mode"] = mode
 
         command = self.coordinator.build_device_command("room_clean", **command_kwargs)
-        self.coordinator.set_active_cleaning_targets(room_ids=room_ids)
         await self.coordinator.async_send_command(command)
+        self.coordinator.set_active_cleaning_targets(room_ids=room_ids)
 
     async def _async_send_room_custom(
         self,
@@ -494,8 +494,8 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         if not command:
             return
 
-        self.coordinator.set_active_cleaning_targets(zone_count=len(quads_cm))
         await self.coordinator.async_send_command(command)
+        self.coordinator.set_active_cleaning_targets(zone_count=len(quads_cm))
 
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
         """Clean specific segments with current custom parameters."""

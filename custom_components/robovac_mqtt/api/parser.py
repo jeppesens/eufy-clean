@@ -41,7 +41,7 @@ from ..proto.cloud.app_device_info_pb2 import DeviceInfo
 from ..proto.cloud.clean_param_pb2 import CleanParamRequest, CleanParamResponse
 from ..proto.cloud.clean_statistics_pb2 import CleanStatistics
 from ..proto.cloud.consumable_pb2 import ConsumableResponse
-from ..proto.cloud.control_pb2 import ModeCtrlRequest
+from ..proto.cloud.control_pb2 import ModeCtrlRequest, ModeCtrlResponse
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.language_pb2 import LanguageResponse
 from ..proto.cloud.multi_maps_pb2 import MultiMapsManageResponse
@@ -490,6 +490,27 @@ def _process_work_status(
         _LOGGER.warning("Error parsing Work Status: %s", e, exc_info=True)
 
 
+def rejected_mode_ctrl(value: Any) -> tuple[int, str] | None:
+    """``(method, name)`` of the command a DPS 152 reply says the robot refused.
+
+    The robot answers every ModeCtrl command with ``{method, seq, result}``; a
+    FAILED result (for example a room clean on a map it no longer has) is the
+    only sign the command was refused. Request echoes decode as SUCCESS: their
+    field 3 is a message, the reply's a varint.
+    """
+    try:
+        reply = decode(ModeCtrlResponse, value)
+    except Exception:  # noqa: BLE001 - not a reply
+        return None
+    if reply.result != ModeCtrlResponse.FAILED:
+        return None
+    method = int(reply.method)
+    try:
+        return method, ModeCtrlRequest.Method.Name(method)
+    except ValueError:
+        return method, f"method {method}"
+
+
 def _process_play_pause(
     state: VacuumState, dps: dict[str, Any], changes: dict[str, Any]
 ) -> None:
@@ -501,6 +522,13 @@ def _process_play_pause(
     try:
         mode_ctrl = decode(ModeCtrlRequest, value)
         _LOGGER.debug("Decoded ModeCtrlRequest: %s", mode_ctrl)
+
+        if mode_ctrl.WhichOneof("Param") is None:
+            # No parameters: the robot's reply to a command, or a parameter-less
+            # control echo (pause, stop...), which decodes as SUCCESS.
+            if rejected := rejected_mode_ctrl(value):
+                _LOGGER.warning("The robot rejected %s", rejected[1])
+            return
 
         if mode_ctrl.HasField("select_rooms_clean"):
             room_ids = [r.id for r in mode_ctrl.select_rooms_clean.rooms]
@@ -529,7 +557,6 @@ def _process_play_pause(
             track_received_field(state, changes, "active_room_ids")
 
         # Scene: intentionally skipped (already tracked via WorkStatus.current_scene)
-        # Control commands (pause/resume/stop): no Param oneof, naturally ignored
 
     except Exception as e:
         _LOGGER.warning("Error parsing Play/Pause DPS: %s", e, exc_info=True)
