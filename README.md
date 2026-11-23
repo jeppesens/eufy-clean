@@ -360,6 +360,40 @@ data:
 `map_id` is taken from the current map automatically; pass it explicitly to override. The
 robot uses its current cleaning mode (vacuum / mop) and fan settings for the zone run.
 
+#### Zones and spots in real coordinates (`clean_zone`, `clean_spot`)
+
+Floor-plan cards, scripts and automations usually know a real position rather than a
+fraction of the map image. Two services take coordinates in **centimetres in the robot's
+own map frame**: the frame of the map camera's `robot` and `dock` attributes and of its
+`calibration_points` (1 unit = 1 cm). Both are select-zones cleans for protobuf (novel)
+robots. They don't need the rendered map image, but the robot needs a saved map, and
+`map_id` defaults to the active map (pass `map_id` to `clean_zone` to override). The frame
+stays put when the map image re-renders, but a new map (re-mapping) starts a new frame.
+
+```yaml
+# clean one or more rectangles [x0, y0, x1, y1] (or four [x, y] corners each)
+action: robovac_mqtt.clean_zone
+target:
+  entity_id: vacuum.robovac
+data:
+  zones:
+    - [-25, 189, 75, 289]
+  clean_times: 1
+
+# clean a square round a point (size = side in cm, default 150)
+action: robovac_mqtt.clean_spot
+target:
+  entity_id: vacuum.robovac
+data:
+  x: 25
+  y: 239
+  size: 100
+```
+
+`zone_clean` through `vacuum.send_command` also accepts `zones_cm` (the same world-cm zones,
+with optional `clean_times` and `map_id`) instead of the normalised `zones`. Zones with
+non-finite values, values beyond 100000 cm, or no area are skipped.
+
 #### Drawing zones — bundled card
 
 Hand-writing normalized coordinates is fiddly, so the integration **bundles a small

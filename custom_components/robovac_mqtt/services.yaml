@@ -135,3 +135,88 @@ remote_drive:
           max: 10
           step: 0.5
           unit_of_measurement: s
+
+clean_zone:
+  name: Clean zones
+  description: >-
+    Clean one or more zones given in centimetres in the robot's map frame (the
+    frame of the map camera's robot and dock attributes). Each zone is a
+    rectangle [x0, y0, x1, y1] or a list of four [x, y] corners. For map-image
+    fractions use vacuum.send_command zone_clean instead.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    zones:
+      name: Zones
+      description: List of zones, e.g. [[100, -50, 250, 100]].
+      required: true
+      example: "[[100, -50, 250, 100]]"
+      selector:
+        object:
+    clean_times:
+      name: Passes
+      description: Cleaning passes per zone.
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 3
+    map_id:
+      name: Map id
+      description: >-
+        Override the map id sent with the zones (defaults to the active map, as for
+        zone_clean).
+      selector:
+        number:
+          min: 1
+          max: 65535
+          mode: box
+
+clean_spot:
+  name: Clean spot
+  description: >-
+    Clean a square round a point given in centimetres in the robot's map frame
+    (the frame of the map camera's robot and dock attributes). It is a zone clean
+    of one square, so it works wherever clean_zone does.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    x:
+      name: X
+      description: Centre X in centimetres.
+      required: true
+      example: 25
+      selector:
+        number:
+          mode: box
+          unit_of_measurement: cm
+    y:
+      name: Y
+      description: Centre Y in centimetres.
+      required: true
+      example: 239
+      selector:
+        number:
+          mode: box
+          unit_of_measurement: cm
+    size:
+      name: Size
+      description: Side of the square in centimetres.
+      default: 150
+      selector:
+        number:
+          min: 50
+          max: 500
+          unit_of_measurement: cm
+    clean_times:
+      name: Passes
+      description: Cleaning passes.
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 3

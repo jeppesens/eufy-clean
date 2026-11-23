@@ -31,7 +31,12 @@ from homeassistant.helpers.issue_registry import (
 )
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .api.commands import REMOTE_DIRECTIONS, build_command
+from .api.commands import (
+    REMOTE_DIRECTIONS,
+    ZONE_CM_LIMIT,
+    build_command,
+    rects_cm_to_quads,
+)
 from .const import (
     DOMAIN,
     EUFY_CLEAN_NOVEL_CLEAN_SPEED,
@@ -137,6 +142,18 @@ _ACTIVITY_MAP: dict[str, VacuumActivity] = {
 PARALLEL_UPDATES = 1
 
 
+def _finite(value: float) -> float:
+    if not math.isfinite(value):
+        raise vol.Invalid("must be a finite number")
+    return value
+
+
+# A spot centre in the robot's world frame (cm).
+_ZONE_CM = vol.All(
+    vol.Coerce(float), _finite, vol.Range(min=-ZONE_CM_LIMIT, max=ZONE_CM_LIMIT)
+)
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -188,6 +205,35 @@ async def async_setup_entry(
             vol.Optional("seq", default=1): vol.All(vol.Coerce(int), vol.Range(min=0)),
         },
         "async_map_load",
+    )
+    # Clean rectangles given in the robot's world frame (cm), for callers that know
+    # real coordinates (scripts, floor-plan cards) rather than map-image fractions.
+    platform.async_register_entity_service(
+        "clean_zone",
+        {
+            vol.Required("zones"): vol.All(list, vol.Length(min=1, max=10)),
+            vol.Optional("clean_times", default=1): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=3)
+            ),
+            vol.Optional("map_id"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+        },
+        "async_clean_zone",
+    )
+    # Spot-clean a square round a point in the robot's world frame (cm): a
+    # select-zones clean of one square, which the S1 Pro honours. See async_clean_spot_at.
+    platform.async_register_entity_service(
+        "clean_spot",
+        {
+            vol.Required("x"): _ZONE_CM,
+            vol.Required("y"): _ZONE_CM,
+            vol.Optional("size", default=150): vol.All(
+                vol.Coerce(float), vol.Range(min=50, max=500)
+            ),
+            vol.Optional("clean_times", default=1): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=3)
+            ),
+        },
+        "async_clean_spot_at",
     )
     # Prune a saved map from the learn-as-seen Switch Map list (a map deleted on the
     # device or left over after a factory reset). Local-only; the active map can't be
@@ -497,6 +543,58 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         self.coordinator.set_active_cleaning_targets(zone_count=len(quads_cm))
         await self.coordinator.async_send_command(command)
 
+    def _require_protobuf(self, what: str) -> None:
+        if self.coordinator.api_type != "novel":
+            raise HomeAssistantError(
+                f"{what} needs a protobuf (novel) Eufy robot; "
+                f"{self.coordinator.device_name} uses the {self.coordinator.api_type} API"
+            )
+
+    async def async_clean_zone(
+        self,
+        zones: list[Any],
+        clean_times: int = 1,
+        map_id: int | None = None,
+        *,
+        what: str = "clean_zone",
+    ) -> None:
+        """Clean rectangles given in world cm (``[x0, y0, x1, y1]`` or four corners)."""
+        self._require_protobuf(what)
+        if (
+            isinstance(zones, (list, tuple))
+            and len(zones) == 4
+            and not any(isinstance(v, (list, tuple)) for v in zones)
+        ):
+            zones = [zones]  # one rectangle given without the outer list
+        quads_cm = rects_cm_to_quads(zones)
+        if not quads_cm:
+            raise HomeAssistantError(
+                f"{what}: no valid zones; give [x0, y0, x1, y1] or four [x, y] corners "
+                "in centimetres (the map camera's robot/dock frame), within "
+                f"{ZONE_CM_LIMIT} cm and not zero-area"
+            )
+        command = self.coordinator.build_device_command(
+            "zone_clean",
+            zones_cm=quads_cm,
+            map_id=map_id or self.coordinator.resolve_map_id(),
+            clean_times=clean_times,
+        )
+        if not command:
+            return
+        self.coordinator.set_active_cleaning_targets(zone_count=len(quads_cm))
+        await self.coordinator.async_send_command(command)
+
+    async def async_clean_spot_at(
+        self, x: float, y: float, size: float = 150, clean_times: int = 1
+    ) -> None:
+        """Clean a ``size`` cm square centred on (x, y) in world cm."""
+        half = float(size) / 2
+        await self.async_clean_zone(
+            [[x - half, y - half, x + half, y + half]],
+            clean_times=clean_times,
+            what="clean_spot",
+        )
+
     async def async_clean_segments(self, segment_ids: list[str], **kwargs: Any) -> None:
         """Clean specific segments with current custom parameters."""
         room_ids = [
@@ -768,6 +866,23 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
 
         if command == "room_clean" and isinstance(params, dict):
             await self._async_handle_room_clean(params)
+            return
+
+        if (
+            command == "zone_clean"
+            and isinstance(params, dict)
+            and "zones_cm" in params
+        ):
+            try:
+                clean_times = min(max(int(params.get("clean_times", 1)), 1), 3)
+                map_id = int(params["map_id"]) if params.get("map_id") else None
+            except (TypeError, ValueError) as err:
+                raise HomeAssistantError(
+                    f"zone_clean: clean_times and map_id must be whole numbers ({err})"
+                ) from err
+            await self.async_clean_zone(
+                params["zones_cm"], clean_times, map_id, what="zone_clean"
+            )
             return
 
         if command == "zone_clean" and isinstance(params, dict):

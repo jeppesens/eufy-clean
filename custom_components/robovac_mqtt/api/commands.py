@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import math
 from typing import Any, cast
 
 from ..const import (
@@ -280,6 +281,55 @@ def build_zone_clean_command(
         )
     )
     return {DPS_MAP["PLAY_PAUSE"]: value}
+
+
+# Largest coordinate accepted for a cm zone (1 km): beyond any home, well inside sint32.
+ZONE_CM_LIMIT = 100_000
+
+
+def _cm(value: Any) -> float:
+    """One finite, in-range centimetre value (bools are not numbers here)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{value!r} is not a number")
+    if not math.isfinite(value) or abs(value) > ZONE_CM_LIMIT:
+        raise ValueError(f"{value!r} is not a finite value within {ZONE_CM_LIMIT} cm")
+    return float(value)
+
+
+def rects_cm_to_quads(rects: Any) -> list[list[tuple[int, int]]]:
+    """Turn world-cm zones into the 4-corner quads ``build_zone_clean_command`` takes.
+
+    Each zone is either an axis-aligned rectangle ``[x0, y0, x1, y1]`` or an explicit
+    list of four ``[x, y]`` corners, in order around the shape.  Invalid zones
+    (non-finite or out-of-range values, zero area once rounded to whole cm) are
+    skipped with a warning.
+    """
+    quads: list[list[tuple[int, int]]] = []
+    if not isinstance(rects, (list, tuple)):
+        _LOGGER.warning("Zones %r skipped: expected a list of zones", rects)
+        return quads
+    for zone in rects:
+        try:
+            if len(zone) == 4 and not any(isinstance(v, (list, tuple)) for v in zone):
+                x0, y0, x1, y1 = (_cm(v) for v in zone)
+                xa, xb, ya, yb = min(x0, x1), max(x0, x1), min(y0, y1), max(y0, y1)
+                pts = [(xa, ya), (xb, ya), (xb, yb), (xa, yb)]
+            elif len(zone) == 4 and all(len(p) == 2 for p in zone):
+                pts = [(_cm(p[0]), _cm(p[1])) for p in zone]
+            else:
+                raise ValueError("expected [x0, y0, x1, y1] or four [x, y] corners")
+            quad = [(int(round(px)), int(round(py))) for px, py in pts]
+            twice_area = sum(
+                ax * by - bx * ay
+                for (ax, ay), (bx, by) in zip(quad, quad[1:] + quad[:1])
+            )
+            if twice_area == 0:
+                raise ValueError("zero-area zone")
+        except (TypeError, ValueError) as err:
+            _LOGGER.warning("Zone %r skipped: %s", zone, err)
+            continue
+        quads.append(quad)
+    return quads
 
 
 def build_map_load_command(cloud_mapid: int, seq: int = 1) -> dict[str, str]:
