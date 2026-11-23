@@ -315,10 +315,11 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         merged = dict(params)
         defaults = self._get_room_clean_defaults()
 
+        # Passes are not a setting choice: asking for two passes must not drop the
+        # robot's current mode, suction or water level for the run.
         explicit_custom_keys = (
             "fan_speed",
             "water_level",
-            "clean_times",
             "clean_mode",
             "clean_intensity",
             "edge_mopping",

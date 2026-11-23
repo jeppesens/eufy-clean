@@ -20,6 +20,7 @@
  *       vacuum: vacuum.your_robot
  *       camera: camera.your_robot_map   # optional for rooms; required for ZONES + map taps
  *       # mode: rooms                    # optional initial mode: rooms | zones
+ *       # default_passes: 1               # optional: what "Default" passes means (1-3)
  *       # title: Eufy Clean              # optional
  *       # selects:                       # optional (ZONES) — global setting selects to surface.
  *       #   - select.your_robot_suction_level   #   Omit to auto-discover select.<vacuum-slug>_*.
@@ -31,7 +32,8 @@
  *   ROOMS → vacuum.send_command { command: room_clean,
  *              params: { rooms: [ {id, fan_speed?, water_level?, clean_mode?,
  *                                  clean_intensity?, clean_times?, edge_mopping?}, ... ] } }
- *           (or { room_ids:[...] } when nothing is customized → a plain GENERAL clean).
+ *           (or { room_ids:[...], clean_times? } when only passes are set, so the integration
+ *           fills in the robot's current mode / suction / water for the run).
  *   ZONES → vacuum.send_command { command: zone_clean, params: { zones, clean_times } }
  *
  * Vanilla web component — no Lit, no build, themes itself from HA CSS variables.
@@ -68,6 +70,12 @@ const WATER_OPTS = [["Default", ""], ["Low", "low"], ["Middle", "middle"], ["Hig
 const INTENSITY_OPTS = [["Default", ""], ["Quick", "quick"], ["Normal", "normal"], ["Narrow", "narrow"]];
 const EDGE_OPTS = [["Default", ""], ["On", "on"], ["Off", "off"]]; // on→true, off→false at dispatch
 const PASSES_OPTS = [1, 2, 3];
+
+/** Passes used when a room's or the zones' passes are left on "Default" (1-3). */
+function defaultPasses(config) {
+  const n = parseInt(config && config.default_passes, 10);
+  return Number.isFinite(n) ? Math.min(Math.max(n, 1), 3) : 1;
+}
 const DEFAULT_FANS = ["Quiet", "Standard", "Turbo", "Max", "Boost_IQ"];
 
 // Escape dynamic text before interpolating it into an innerHTML template. Select options
@@ -138,6 +146,7 @@ class EufyCleanCard extends HTMLElement {
       ...config,
     };
     this._mode = m === "zones" || m === "rooms" ? m : this._defaultMode;
+    this._cleanTimes = defaultPasses(this._config);
     // transient selections reset on (re)configure; per-room setting choices are kept
     this._zones = [];
     this._drag = null;
@@ -147,6 +156,7 @@ class EufyCleanCard extends HTMLElement {
     this._frameStore = undefined;
     this._mapSwitchPending = null;
     if (this._built) {
+      this._els.ct.value = String(this._cleanTimes);
       this._selectsKey = null; // rebuild zone selects on next sync
       this._roomIdKey = null; // rebuild room list on next sync
       this._applyMode();
@@ -351,6 +361,7 @@ class EufyCleanCard extends HTMLElement {
       clean: this.shadowRoot.querySelector("button.clean"),
       status: this.shadowRoot.querySelector(".status"),
     };
+    this._els.ct.value = String(this._cleanTimes);
     this._els.title.textContent = c.title;
 
     // mode toggle
@@ -576,7 +587,7 @@ class EufyCleanCard extends HTMLElement {
   }
 
   _defaultRoomCfg() {
-    return { clean_mode: "", fan_speed: "", water_level: "", clean_intensity: "", clean_times: 1, edge: "" };
+    return { clean_mode: "", fan_speed: "", water_level: "", clean_intensity: "", clean_times: "", edge: "" };
   }
 
   _rebuildRooms(rooms) {
@@ -591,9 +602,9 @@ class EufyCleanCard extends HTMLElement {
     const fanOpts = this._fanOptions();
     const field = (labelTxt, cls, pairs) =>
       `<div class="field"><label>${labelTxt}</label><select class="${cls}">${optionsHtml(pairs, "")}</select></div>`;
-    const passesField = `<div class="field"><label>Passes</label><select class="f-passes">${PASSES_OPTS.map(
-      (n) => `<option value="${n}">${n}</option>`
-    ).join("")}</select></div>`;
+    const passesField = `<div class="field"><label>Passes</label><select class="f-passes"><option value="">Default (${defaultPasses(
+      this._config
+    )})</option>${PASSES_OPTS.map((n) => `<option value="${n}">${n}</option>`).join("")}</select></div>`;
 
     for (const room of rooms) {
       const id = room.id;
@@ -633,7 +644,7 @@ class EufyCleanCard extends HTMLElement {
       refs.fan.addEventListener("change", () => (this._roomCfg[id].fan_speed = refs.fan.value));
       refs.water.addEventListener("change", () => (this._roomCfg[id].water_level = refs.water.value));
       refs.int.addEventListener("change", () => (this._roomCfg[id].clean_intensity = refs.int.value));
-      refs.passes.addEventListener("change", () => (this._roomCfg[id].clean_times = parseInt(refs.passes.value, 10) || 1));
+      refs.passes.addEventListener("change", () => (this._roomCfg[id].clean_times = parseInt(refs.passes.value, 10) || ""));
       refs.edge.addEventListener("change", () => (this._roomCfg[id].edge = refs.edge.value));
       wrap.appendChild(el);
       this._roomEls[id] = refs;
@@ -657,7 +668,7 @@ class EufyCleanCard extends HTMLElement {
       refs.fan.value = c.fan_speed;
       refs.water.value = c.water_level;
       refs.int.value = c.clean_intensity;
-      refs.passes.value = String(c.clean_times || 1);
+      refs.passes.value = String(c.clean_times || "");
       refs.edge.value = c.edge;
     }
   }
@@ -1087,6 +1098,7 @@ class EufyCleanCard extends HTMLElement {
 
   async _cleanRooms() {
     if (!this._hass || this._sel.length === 0) return;
+    const fallback = defaultPasses(this._config);
     const rooms = this._sel.map((id) => {
       const c = this._roomCfg[id] || this._defaultRoomCfg();
       const r = { id: Number(id) };
@@ -1094,16 +1106,36 @@ class EufyCleanCard extends HTMLElement {
       if (c.fan_speed) r.fan_speed = c.fan_speed;
       if (c.water_level) r.water_level = c.water_level;
       if (c.clean_intensity) r.clean_intensity = c.clean_intensity;
-      if (c.clean_times && c.clean_times > 1) r.clean_times = c.clean_times;
       if (c.edge === "on") r.edge_mopping = true;
       else if (c.edge === "off") r.edge_mopping = false;
-      return r;
+      return { r, passes: c.clean_times || fallback, explicitPasses: !!c.clean_times };
     });
     const n = rooms.length;
-    // Any per-room customization → send the rich per-room payload (CUSTOMIZE). Otherwise a plain
-    // room_ids list → a GENERAL clean (matches the integration's own "don't force CUSTOMIZE" rule).
-    const hasCustom = rooms.some((r) => Object.keys(r).length > 1);
-    const params = hasCustom ? { rooms } : { room_ids: this._sel.map(Number) };
+    // Rooms left on Default settings → a plain room_ids clean, so the integration fills
+    // in the robot's current mode / suction / water. Passes alone don't count as a
+    // customization: one shared count rides along as clean_times. Anything else → the
+    // rich per-room payload (CUSTOMIZE).
+    const settingsCustom = rooms.some(({ r }) => Object.keys(r).length > 1);
+    const passCounts = new Set(rooms.map(({ passes }) => passes));
+    let params;
+    if (!settingsCustom && passCounts.size === 1) {
+      const passes = rooms[0].passes;
+      params = { room_ids: this._sel.map(Number) };
+      if (passes > 1) params.clean_times = passes;
+    } else {
+      params = {
+        rooms: rooms.map(({ r, passes, explicitPasses }) =>
+          // send 1 explicitly when the default is higher, so it can't inherit a 2
+          passes > 1 || (explicitPasses && fallback > 1) ? { ...r, clean_times: passes } : r
+        ),
+      };
+    }
+    const extra =
+      settingsCustom || passCounts.size > 1
+        ? " • custom settings"
+        : params.clean_times
+          ? ` • ${params.clean_times} passes`
+          : "";
     this._dispatching = true;
     this._syncControls();
     try {
@@ -1116,7 +1148,7 @@ class EufyCleanCard extends HTMLElement {
       this._roomPins = {};
       this._renderSelection();
       this._renderOverlay();
-      this._setStatus(`Sent ${n} room${n > 1 ? "s" : ""}${hasCustom ? " • custom settings" : ""}`);
+      this._setStatus(`Sent ${n} room${n > 1 ? "s" : ""}${extra}`);
     } catch (err) {
       this._setStatus(`Failed: ${err && err.message ? err.message : err}`);
     } finally {

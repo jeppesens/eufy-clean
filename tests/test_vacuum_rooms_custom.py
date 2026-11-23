@@ -170,3 +170,21 @@ async def test_room_clean_multi_room_config(mock_coordinator):
     second_call = call("room_clean", room_ids=[1, 2], map_id=1, mode="CUSTOMIZE")
 
     mock_coordinator.build_device_command.assert_has_calls([first_call, second_call])
+
+
+@pytest.mark.asyncio
+async def test_room_clean_passes_alone_keep_the_robots_settings(mock_coordinator):
+    """Asking for two passes must not drop the current mode and suction for the run."""
+    mock_coordinator.data.fan_speed = "Turbo"
+    mock_coordinator.data.cleaning_mode = "Vacuum and mop"
+    mock_coordinator.build_device_command.side_effect = [{"cmd": "config"}, {"cmd": "start"}]
+
+    await RoboVacMQTTEntity(mock_coordinator).async_send_command(
+        "room_clean", params={"room_ids": [3], "clean_times": 2}
+    )
+
+    custom = mock_coordinator.build_device_command.call_args_list[0]
+    assert custom.args == ("set_room_custom",)
+    assert custom.kwargs["clean_times"] == 2
+    assert custom.kwargs["fan_speed"] == "Turbo"
+    assert custom.kwargs["clean_mode"] == "Vacuum and mop"
