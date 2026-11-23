@@ -135,3 +135,106 @@ remote_drive:
           max: 10
           step: 0.5
           unit_of_measurement: s
+
+start_mapping:
+  name: Start mapping
+  description: >-
+    Build a new map: the robot explores the whole floor without cleaning, then
+    docks and splits the map into rooms. A new map may REPLACE the current one,
+    with its room names, room settings and no-go zones, so this needs replace_map
+    when the robot already has rooms. The robot must be docked or idle. Open every
+    internal door first; tidy the rooms afterwards with merge_rooms, divide_room and
+    rename_room.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    replace_map:
+      name: Replace the current map
+      description: Confirm that a map with rooms may be replaced.
+      default: false
+      selector:
+        boolean:
+
+save_map:
+  name: Save map
+  description: >-
+    Save the robot's current map, as the Eufy app does after a mapping run, so it
+    is kept alongside any other saved maps.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+
+rename_room:
+  name: Rename room
+  description: >-
+    Rename a room on the active map.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    room_id:
+      name: Room id
+      description: The room's id (the map camera's rooms attribute).
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    name:
+      name: Name
+      description: The new name (up to 40 characters).
+      required: true
+      selector:
+        text:
+
+merge_rooms:
+  name: Merge rooms
+  description: >-
+    Merge two or more adjacent rooms on the active map into one. Room ids are
+    renumbered afterwards.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    room_ids:
+      name: Room ids
+      description: The ids of the rooms to merge (at least two, adjacent).
+      required: true
+      example: "[2, 3]"
+      selector:
+        object:
+
+divide_room:
+  name: Divide room
+  description: >-
+    Split a room on the active map along a line. Room ids are renumbered
+    afterwards.
+  target:
+    entity:
+      domain: vacuum
+      integration: robovac_mqtt
+  fields:
+    room_id:
+      name: Room id
+      description: The id of the room to split.
+      required: true
+      selector:
+        number:
+          min: 0
+          max: 65535
+          mode: box
+    points:
+      name: Line end points
+      description: >-
+        The line's two end points, [x, y] in centimetres in the robot's map frame
+        (the map camera's robot/dock attributes and calibration_points use it).
+      required: true
+      example: "[[120, -40], [120, 260]]"
+      selector:
+        object:

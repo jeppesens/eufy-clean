@@ -381,6 +381,51 @@ Draw up to 10 boxes, set suction/mode via the surfaced `select` entities, and hi
 — it fires the `zone_clean` send_command shown above. The map only renders after the robot
 has cleaned once (or you've edited the map in the app).
 
+### Building and Editing Maps
+
+Protobuf robots can build a new map and have its rooms tidied without the Eufy app.
+
+> [!WARNING]
+> A mapping run may **replace** the current map, along with its room names, room settings and no-go zones. `start_mapping` therefore refuses unless the robot is docked or idle, and, when the robot already has rooms, unless you pass `replace_map: true`.
+
+```yaml
+# 1. Explore the whole floor without cleaning (open every internal door first)
+action: robovac_mqtt.start_mapping
+target:
+  entity_id: vacuum.robovac
+data:
+  replace_map: true   # only needed when the robot already has rooms
+
+# 2. Once it has docked: the robot splits the map into rooms ("Room 1", "Room 2", ...)
+#    and they appear in the map camera's `rooms` attribute. Tidy them:
+action: robovac_mqtt.merge_rooms
+target:
+  entity_id: vacuum.robovac
+data:
+  room_ids: [4, 5]
+
+action: robovac_mqtt.divide_room   # split along a line, in the map frame (cm)
+target:
+  entity_id: vacuum.robovac
+data:
+  room_id: 4
+  points: [[393, 820], [393, 494]]
+
+action: robovac_mqtt.rename_room
+target:
+  entity_id: vacuum.robovac
+data:
+  room_id: 1
+  name: Dining Room
+```
+
+On an S1 Pro (T2080A) the new map was ready for room cleans as soon as the run ended. `robovac_mqtt.save_map` sends the "save map" request the Eufy app sends after a mapping run (the S1 Pro answered `MAP_SAVE` without error and kept the map and its rooms).
+
+Room ids are renumbered after a merge or divide, so read the `rooms` attribute again before the next edit. Line points are centimetres in the robot's map frame: the frame of the map camera's `calibration_points` (and of its `robot` and `dock` attributes, on robots with the live P2P map). The edits go to the active map; if you use a map id override, check it still matches after a mapping run. When the robot rejects an edit (rooms not adjacent, an area too small, too many rooms) the integration logs a warning naming the reason.
+
+> [!NOTE]
+> In testing, one edit sent while the dock was washing the mop did not take, while edits during drying did. The integration logs the robot's answer to each edit; if an edit doesn't show up in the `rooms` attribute, send it again once the dock is idle.
+
 ### Map and Room IDs
 - **Active Map sensor** — `sensor.<device>_active_map` shows the current map ID (needed for service calls)
 - **Room IDs** — available in the vacuum entity's `rooms` / `segments` state attributes; inspect via **Developer Tools → States**

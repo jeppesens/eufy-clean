@@ -44,6 +44,7 @@ from ..proto.cloud.consumable_pb2 import ConsumableResponse
 from ..proto.cloud.control_pb2 import ModeCtrlRequest
 from ..proto.cloud.error_code_pb2 import ErrorCode
 from ..proto.cloud.language_pb2 import LanguageResponse
+from ..proto.cloud.map_edit_pb2 import MapEditRequest, MapEditResponse
 from ..proto.cloud.multi_maps_pb2 import MultiMapsManageResponse
 from ..proto.cloud.scene_pb2 import SceneResponse
 from ..proto.cloud.station_pb2 import StationResponse
@@ -616,6 +617,9 @@ def _process_other_dps(
                 _LOGGER.debug("Received SCENE_INFO: %s", value)
                 changes["scenes"] = _parse_scene_info(value)
 
+            elif key == DPS_MAP["MAP_EDIT_REQUEST"]:
+                _log_map_edit_response(value)
+
             elif key == DPS_MAP["MAP_DATA"]:
                 _LOGGER.debug("Received MAP_DATA: %s", value)
                 map_info = _parse_map_data(value)
@@ -1061,6 +1065,32 @@ def _deduplicate_room_names(rooms: list[dict[str, Any]]) -> list[dict[str, Any]]
     names = [room["name"] for room in rooms]
     deduped = deduplicate_names(names)
     return [{**room, "name": name} for room, name in zip(rooms, deduped)]
+
+
+def _log_map_edit_response(value: Any) -> None:
+    """Surface the robot's answer to a map edit.
+
+    The S1 Pro answers on the request DP (170) with a short ``MapEditResponse``,
+    e.g. ``AggB`` for a successful divide. A failed edit (rooms not adjacent,
+    area too small, too many rooms) is otherwise invisible: the service call
+    itself has already succeeded.
+    """
+    try:
+        resp = decode(MapEditResponse, value)
+    except Exception as err:  # noqa: BLE001 - malformed DPS must not break parsing
+        _LOGGER.debug("Unreadable map edit response %r: %s", value, err)
+        return
+    method = MapEditRequest.Method.Name(resp.method)
+    if resp.result == MapEditResponse.FAILED:
+        _LOGGER.warning(
+            "The robot rejected the map edit %s (%s)",
+            method,
+            MapEditResponse.FailCode.Value.Name(resp.fail_code.value),
+        )
+    else:
+        _LOGGER.debug(
+            "Map edit %s: %s", method, MapEditResponse.Result.Name(resp.result)
+        )
 
 
 def _parse_map_data(value: Any) -> dict[str, Any] | None:

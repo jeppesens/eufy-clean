@@ -29,7 +29,7 @@ from ..const import (
     is_s1_pro,
 )
 from ..proto.cloud.clean_param_pb2 import CleanParam, CleanParamRequest, Fan
-from ..proto.cloud.common_pb2 import Point, Quadrangle
+from ..proto.cloud.common_pb2 import Point, Quadrangle, Switch
 from ..proto.cloud.consumable_pb2 import ConsumableRequest
 from ..proto.cloud.control_pb2 import (
     ModeCtrlRequest,
@@ -310,6 +310,77 @@ def build_map_load_command(cloud_mapid: int, seq: int = 1) -> dict[str, str]:
         common=MultiMapsManageRequest.Common(cloud_mapid=int(cloud_mapid)),
     )
     return {DPS_MAP["MULTI_MAP_MANAGE"]: encode_message(req)}
+
+
+def build_start_mapping_command() -> dict[str, str]:
+    """Start a mapping run: the robot explores the whole floor without cleaning.
+
+    ``ModeCtrlRequest{method=START_FAST_MAPPING}``. An S1 Pro (T2080A) keeps the
+    new map and splits it into rooms by itself when the run ends.
+    """
+    return _build_mode_ctrl(EUFY_CLEAN_CONTROL.START_FAST_MAPPING)
+
+
+def build_map_save_command(seq: int = 1) -> dict[str, str]:
+    """Save the robot's current map (``MultiMapsManageRequest.MAP_SAVE``, DPS 172).
+
+    What the Eufy app sends after a mapping run. Keeps other saved maps
+    (multi-map on). An S1 Pro answers ``{method: MAP_SAVE, seq}`` with no error.
+    """
+    req = MultiMapsManageRequest(
+        method=MultiMapsManageRequest.MAP_SAVE,
+        seq=int(seq),
+        save_options=MultiMapsManageRequest.SaveOptions(multi_map_sw=Switch(value=True)),
+    )
+    return {DPS_MAP["MULTI_MAP_MANAGE"]: encode_message(req)}
+
+
+def build_rename_room_command(map_id: int, room_id: int, name: str) -> dict[str, str]:
+    """Rename one room on a saved map (``MapEditRequest.RENAME_ROOM``)."""
+    name = (name or "").strip()
+    if not name:
+        _LOGGER.warning("rename_room ignored: empty name")
+        return {}
+    req = MapEditRequest(
+        method=MapEditRequest.RENAME_ROOM,
+        map_id=int(map_id),
+        room_desc=MapEditRequest.RoomDesc(id=int(room_id), name=name),
+    )
+    return {DPS_MAP["MAP_EDIT_REQUEST"]: encode_message(req)}
+
+
+def build_merge_rooms_command(map_id: int, room_ids: list[int]) -> dict[str, str]:
+    """Merge two or more adjacent rooms (``MapEditRequest.MERGE_ROOMS``)."""
+    ids = list(dict.fromkeys(int(r) for r in room_ids))
+    if len(ids) < 2:
+        _LOGGER.warning("merge_rooms ignored: give at least two different room ids")
+        return {}
+    req = MapEditRequest(
+        method=MapEditRequest.MERGE_ROOMS,
+        map_id=int(map_id),
+        merge_rooms=MapEditRequest.MergeRooms(room_ids=ids),
+    )
+    return {DPS_MAP["MAP_EDIT_REQUEST"]: encode_message(req)}
+
+
+def build_divide_room_command(
+    map_id: int, room_id: int, points_cm: list[tuple[int, int]]
+) -> dict[str, str]:
+    """Split a room along a line (``MapEditRequest.DIVIDE_ROOM``).
+
+    *points_cm* are the line's two end points in the robot's world frame, in
+    centimetres (the same frame as the map camera's ``robot`` / ``dock``).
+    """
+    pts = [Point(x=int(round(x)), y=int(round(y))) for x, y in points_cm]
+    if len(pts) != 2 or (pts[0].x, pts[0].y) == (pts[1].x, pts[1].y):
+        _LOGGER.warning("divide_room ignored: give two different end points")
+        return {}
+    req = MapEditRequest(
+        method=MapEditRequest.DIVIDE_ROOM,
+        map_id=int(map_id),
+        divide_room=MapEditRequest.DivideRoom(room_id=int(room_id), points=pts),
+    )
+    return {DPS_MAP["MAP_EDIT_REQUEST"]: encode_message(req)}
 
 
 def build_set_room_custom_command(
@@ -762,6 +833,28 @@ def build_command(
             kwargs.get("zones_cm", []),
             kwargs.get("map_id", 3),
             int(kwargs.get("clean_times", 1)),
+        )
+    if cmd == "start_mapping":
+        return build_start_mapping_command()
+    if cmd == "map_save":
+        return build_map_save_command(int(kwargs.get("seq", 1)))
+    if cmd in ("rename_room", "merge_rooms", "divide_room"):
+        # Map edits need an explicit map: the entity services pass the active one.
+        if kwargs.get("map_id") is None:
+            _LOGGER.warning("%s ignored: no map_id given", cmd)
+            return {}
+        map_id = int(kwargs["map_id"])
+        if cmd == "merge_rooms":
+            return build_merge_rooms_command(map_id, kwargs.get("room_ids") or [])
+        if kwargs.get("room_id") is None:
+            _LOGGER.warning("%s ignored: no room_id given", cmd)
+            return {}
+        if cmd == "rename_room":
+            return build_rename_room_command(
+                map_id, int(kwargs["room_id"]), str(kwargs.get("name", ""))
+            )
+        return build_divide_room_command(
+            map_id, int(kwargs["room_id"]), kwargs.get("points_cm") or []
         )
     if cmd == "map_load":
         return build_map_load_command(
