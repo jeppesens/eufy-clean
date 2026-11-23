@@ -639,7 +639,7 @@ KNOWN_UNPROCESSED_DPS: frozenset[str] = frozenset(
             "MAP_STREAM"
         ],  # 166 - debug/metadata on T2351 (map data is local P2P only)
         # Note: DPS 169 (MAP_MANAGE) is now parsed as DeviceInfo
-        DPS_MAP["MAP_EDIT_REQUEST"],  # 170 - MapEditRequest echo
+        DPS_MAP["MAP_EDIT_REQUEST"],  # 170 - MapEditResponse (logged by the parser)
         # Unknown DPS keys observed in the wild:
         "150",  # Unknown, value: None
         "151",  # Unknown, value: True

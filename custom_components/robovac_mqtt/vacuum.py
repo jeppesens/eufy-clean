@@ -7,6 +7,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+import homeassistant.helpers.config_validation as cv
 import voluptuous as vol
 from homeassistant.components.vacuum import (
     StateVacuumEntity,
@@ -137,6 +138,17 @@ _ACTIVITY_MAP: dict[str, VacuumActivity] = {
 PARALLEL_UPDATES = 1
 
 
+def _finite(value: float) -> float:
+    if not math.isfinite(value):
+        raise vol.Invalid("must be a finite number")
+    return value
+
+
+# A room id and a map-frame coordinate (cm), bounded to what the protobufs carry.
+_ROOM_ID = vol.All(vol.Coerce(int), vol.Range(min=0, max=0xFFFF))
+_MAP_CM = vol.All(vol.Coerce(float), _finite, vol.Range(min=-100_000, max=100_000))
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     config_entry: ConfigEntry,
@@ -188,6 +200,42 @@ async def async_setup_entry(
             vol.Optional("seq", default=1): vol.All(vol.Coerce(int), vol.Range(min=0)),
         },
         "async_map_load",
+    )
+    # Build a new map (explore without cleaning), then tidy its rooms.
+    platform.async_register_entity_service(
+        "start_mapping",
+        {vol.Optional("replace_map", default=False): cv.boolean},
+        "async_start_mapping",
+    )
+    platform.async_register_entity_service("save_map", {}, "async_save_map")
+    platform.async_register_entity_service(
+        "rename_room",
+        {
+            vol.Required("room_id"): _ROOM_ID,
+            vol.Required("name"): vol.All(cv.string, vol.Length(min=1, max=40)),
+        },
+        "async_rename_room",
+    )
+    platform.async_register_entity_service(
+        "merge_rooms",
+        {
+            vol.Required("room_ids"): vol.All(
+                cv.ensure_list, [_ROOM_ID], vol.Length(min=2, max=64)
+            ),
+        },
+        "async_merge_rooms",
+    )
+    platform.async_register_entity_service(
+        "divide_room",
+        {
+            vol.Required("room_id"): _ROOM_ID,
+            vol.Required("points"): vol.All(
+                cv.ensure_list,
+                [vol.ExactSequence([_MAP_CM, _MAP_CM])],
+                vol.Length(min=2, max=2),
+            ),
+        },
+        "async_divide_room",
     )
     # Prune a saved map from the learn-as-seen Switch Map list (a map deleted on the
     # device or left over after a factory reset). Local-only; the active map can't be
@@ -571,6 +619,65 @@ class RoboVacMQTTEntity(CoordinatorEntity[EufyCleanCoordinator], StateVacuumEnti
         await coordinator.async_send_command(
             coordinator.build_device_command("remote_move", direction="brake"),
             wait=False,
+        )
+
+    async def _async_map_command(self, what: str, command: str, **kwargs: Any) -> None:
+        """Build and send a map-management command (protobuf robots only)."""
+        if self.coordinator.api_type != "novel":
+            raise HomeAssistantError(
+                f"{what} needs a protobuf (novel) Eufy robot, "
+                f"not api_type={self.coordinator.api_type}"
+            )
+        try:
+            built = self.coordinator.build_device_command(command, **kwargs)
+        except (TypeError, ValueError, OverflowError) as err:
+            raise HomeAssistantError(f"{what}: invalid parameters ({err})") from err
+        if not built:
+            raise HomeAssistantError(f"{what}: invalid parameters")
+        await self.coordinator.async_send_command(built)
+
+    async def async_start_mapping(self, replace_map: bool = False) -> None:
+        """Explore the whole floor without cleaning to build a new map.
+
+        A new map can replace the current one (rooms, names, zones), so it needs
+        replace_map when rooms exist, and the robot must be on the dock or idle.
+        """
+        data = self.coordinator.data
+        if data.activity not in ("docked", "charging", "idle"):
+            raise HomeAssistantError(
+                f"start_mapping: the robot is {data.activity}; dock it or stop it first"
+            )
+        if data.rooms and not replace_map:
+            raise HomeAssistantError(
+                "start_mapping: this robot already has a map with rooms, which a new "
+                "mapping run may replace; set replace_map: true to go ahead"
+            )
+        await self._async_map_command("start_mapping", "start_mapping")
+
+    async def async_save_map(self) -> None:
+        """Save the robot's current map, as the app does after a mapping run."""
+        await self._async_map_command("save_map", "map_save")
+
+    async def async_rename_room(self, room_id: int, name: str) -> None:
+        """Rename a room on the current map."""
+        await self._async_map_command(
+            "rename_room", "rename_room",
+            map_id=self.coordinator.resolve_map_id(), room_id=room_id, name=name,
+        )
+
+    async def async_merge_rooms(self, room_ids: list[int]) -> None:
+        """Merge adjacent rooms on the current map."""
+        await self._async_map_command(
+            "merge_rooms", "merge_rooms",
+            map_id=self.coordinator.resolve_map_id(), room_ids=room_ids,
+        )
+
+    async def async_divide_room(self, room_id: int, points: list[list[float]]) -> None:
+        """Split a room along a line given in world cm."""
+        await self._async_map_command(
+            "divide_room", "divide_room",
+            map_id=self.coordinator.resolve_map_id(), room_id=room_id,
+            points_cm=[(p[0], p[1]) for p in points],
         )
 
     async def async_map_load(self, cloud_mapid: int, seq: int = 1) -> None:
