@@ -251,7 +251,9 @@ def test_a_rising_battery_means_docked_and_charging():
     t.record({"6": 1, "8": 60}, now=400)
     t.record({"6": 2, "8": 59}, now=460)
     t.infer("cleaning", now=470)
+    assert not t.charging()
     t.record({"8": 60}, now=700)
+    assert t.charging()
     assert t.infer("returning", now=700) == "docked"
     assert t.infer("docked", now=460 + CHARGE_PROOF + 1) == "docked"
 

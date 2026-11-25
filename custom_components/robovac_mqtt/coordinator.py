@@ -1127,7 +1127,8 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             "activity": activity,
             "task_status": "Local only",
             "battery_level": battery,  # 163 freezes offline; the tracker reads the live DPS 8
-            "charging": activity == "docked" and 0 < battery < 100,
+            # only on evidence: a guessed "docked" is not proof it is on the charger
+            "charging": activity == "docked" and 0 < battery < 100 and tracker.charging(),
         }
         if tracker.clean_minutes is not None:
             updates["cleaning_time"] = tracker.clean_minutes * 60

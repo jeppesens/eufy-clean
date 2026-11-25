@@ -200,6 +200,14 @@ class LocalOnlyTracker:
             return False
         return self.last_cloud_dps is None or self.quiet(now)
 
+    def stopped_at(self) -> float:
+        """When the robot last did something: its last tick or HA's last command."""
+        return max(self.last_tick or 0.0, self.intent_at or 0.0) or self.connected_at
+
+    def charging(self) -> bool:
+        """The battery has risen since the robot stopped: on the dock, charging."""
+        return self.battery_rose_at is not None and self.battery_rose_at > self.stopped_at()
+
     def ticking(self, now: float) -> bool:
         return self.last_tick is not None and now - self.last_tick < TICK_WINDOW
 
@@ -237,9 +245,8 @@ class LocalOnlyTracker:
             return "cleaning"  # just started: the first tick takes up to two minutes
         if intent == "cleaning":
             intent = None  # never left the dock: the robot ignored the command
-        stopped_at = max(self.last_tick or 0.0, self.intent_at or 0.0) or self.connected_at
-        stopped_for = now - stopped_at
-        charging = self.battery_rose_at is not None and self.battery_rose_at > stopped_at
+        stopped_for = now - self.stopped_at()
+        charging = self.charging()
         falling = (
             self.battery is not None
             and self.battery_at_stop is not None

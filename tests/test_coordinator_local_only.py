@@ -78,7 +78,7 @@ def test_local_only_activity_published(coordinator):
     state = coordinator.async_set_updated_data.call_args[0][0]
     assert state.task_status == "Local only"
     assert state.activity == "docked"
-    assert state.charging is True  # docked below 100 %
+    assert state.charging is False  # a guessed dock at 70 %: no rise, so not shown charging
 
 
 def test_note_intent_publishes_at_once_while_local_only(coordinator):
@@ -324,3 +324,14 @@ def test_local_only_battery_comes_from_the_live_dps(coordinator):
             replace(coordinator.data, battery_level=100), {}
         )
     assert state.battery_level == 68 and changes["battery_level"] == 68
+
+
+def test_charging_needs_a_rising_battery_not_a_guess(coordinator):
+    with patch(_CLOCK, return_value=1000.0):
+        _go_local_only(coordinator)
+        coordinator.local_only_tracker.record({"8": 68}, now=1000)
+        state, _ = coordinator._apply_local_only(replace(coordinator.data, activity="docked"), {})
+        assert state.charging is False  # docked is only a guess here
+        coordinator.local_only_tracker.record({"8": 69}, now=1000)
+        state, _ = coordinator._apply_local_only(state, {})
+    assert state.activity == "docked" and state.charging is True
