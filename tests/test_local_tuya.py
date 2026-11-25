@@ -433,3 +433,22 @@ async def test_only_the_listen_receive_uses_the_short_socket_timeout(patch_tinyt
     assert fake_dev.set_socketTimeout.call_args_list[-1].args[0] == local_tuya._COMMAND_TIMEOUT
     assert local_tuya._COMMAND_TIMEOUT > local_tuya._RECV_TIMEOUT
     await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_poll_status_refetches_and_dispatches(patch_tinytuya, fake_dev):
+    """poll_status() asks for a fresh status and delivers it like a push."""
+    client = LocalTuyaClient(device_id="dev1", local_key="k" * 16, host="1.2.3.4")
+    received: list[bytes] = []
+    client.set_on_message(received.append)
+
+    await client.poll_status()  # not connected yet: a no-op
+    assert fake_dev.status.call_count == 0
+
+    await client.connect()
+    fake_dev.status.return_value = {"dps": {"6": 3, "163": 70}}
+    await client.poll_status()
+    await client.disconnect()
+
+    inner = json.loads(json.loads(received[-1].decode())["payload"])
+    assert inner == {"data": {"6": 3, "163": 70}}

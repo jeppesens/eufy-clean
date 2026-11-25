@@ -5,6 +5,7 @@ Complements test_coordinator.py which covers MQTT and cloud transports.
 
 # pylint: disable=redefined-outer-name
 
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -54,8 +55,9 @@ def test_connection_type_local_when_overridden(mock_hass, mock_login):
     assert coordinator.connection_type == "local"
     assert coordinator._local_key == "k" * 16
     assert coordinator._local_host == "192.168.1.50"
-    # Local push: no polling interval should be set
-    assert coordinator._base_poll_interval is None
+    # Local push, plus a once-a-minute poll that only acts while the robot is
+    # cut off from its cloud (local-only mode, see offline.py)
+    assert coordinator._base_poll_interval == timedelta(seconds=60)
 
 
 def test_connection_type_falls_back_to_cloud_without_local_creds(

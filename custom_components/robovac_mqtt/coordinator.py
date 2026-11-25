@@ -10,6 +10,7 @@ from dataclasses import replace
 from datetime import timedelta
 from typing import Any
 
+import aiohttp
 from homeassistant.components.persistent_notification import (
     async_create as pn_async_create,
 )
@@ -46,6 +47,7 @@ from .api.map_stream import (
 from .api.p2p.mapdata import CHANGED_MAP, CHANGED_POSE, CHANGED_ROOMS, CHANGED_ZONES
 from .api.p2p.mapimage import build_map_data, build_overlay, world_to_grid
 from .api.parser import update_state
+from .api.tuya_cloud import TuyaCloudError
 from .const import (
     CONF_MAP_MAX_PX,
     CONF_NOTIFY_DESKTOP,
@@ -61,12 +63,16 @@ from .const import (
 )
 from .errors import screen_error_code
 from .models import VacuumState
+from .offline import AWAY_FROM_DOCK_CM, LocalOnlyTracker
 from .p2p_map import P2PMapFeed
 from .video_stream import RobotVideo
 
 _LOGGER = logging.getLogger(__name__)
 
 _CLOUD_POLL_INTERVAL = timedelta(seconds=30)
+_LOCAL_POLL_INTERVAL = timedelta(seconds=60)
+# A live-map pose older than this is ignored by local-only inference.
+_POSE_FRESH_FOR = 60.0
 _MAX_BACKOFF_INTERVAL = timedelta(minutes=5)
 _FAILURE_THRESHOLD = 5  # Raise UpdateFailed after this many consecutive failures
 
@@ -131,7 +137,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
             device_info.get("map_id_overrides") or {}
         )
 
-        update_interval = _CLOUD_POLL_INTERVAL if self.connection_type == "cloud" else None
+        # Local Tuya: poll once a minute too. It is a no-op while the robot pushes its
+        # Eufy status, and the only way to keep cleaning time / battery fresh while it
+        # is cut off from its cloud (local-only mode, see offline.py).
+        if self.connection_type == "cloud":
+            update_interval = _CLOUD_POLL_INTERVAL
+        elif self.connection_type == "local" and self.api_type == "novel":
+            update_interval = _LOCAL_POLL_INTERVAL
+        else:
+            update_interval = None
 
         _LOGGER.debug(
             "Coordinator created: device=%s, model=%s, api_type=%s, connection=%s, poll=%s",
@@ -147,6 +161,15 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
 
         self.client: EufyCleanClient | LocalTuyaClient | None = None
+        # Local-only mode is for protobuf robots on local Tuya: legacy and scalar
+        # robots report their real activity over the LAN anyway.
+        self.local_only_tracker: LocalOnlyTracker | None = (
+            LocalOnlyTracker()
+            if self.connection_type == "local" and self.api_type == "novel"
+            else None
+        )
+        self._task_status_before_local_only = ""
+        self._cloud_check_running = False
         self.data = VacuumState(device_model=self.device_model, api_type=self.api_type)
         self._consecutive_cloud_failures: int = 0
         self._base_poll_interval: timedelta | None = update_interval
@@ -515,6 +538,12 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                 # Calculate new state based on connection
                 prev_activity = self.data.activity
                 new_state, changes = self._parse_dps(dps)
+                if self.local_only_tracker is not None:
+                    self.local_only_tracker.record(dps)
+                    new_state, changes = self._apply_local_only(new_state, changes)
+                    if self.local_only_tracker.needs_cloud_check():
+                        # Pushes reset the poll timer, so don't wait for the poll.
+                        self.hass.async_create_task(self._async_cloud_check())
 
                 if "error_code" in changes:
                     if new_state.error_code != 0:
@@ -1061,6 +1090,131 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
         )
         self.async_set_updated_data(new_state)
 
+    @property
+    def local_only(self) -> bool:
+        """True while a local-Tuya robot is cut off from its cloud (see offline.py)."""
+        return bool(self.local_only_tracker and self.local_only_tracker.local_only())
+
+    def _apply_local_only(
+        self, state: VacuumState, changes: dict[str, Any]
+    ) -> tuple[VacuumState, dict[str, Any]]:
+        """Show an inferred activity while local-only, and hand back cleanly after.
+
+        While local-only the protobuf status is frozen, so the activity is inferred
+        (offline.py) and the generic DPS fill in cleaning time, area and suction.
+        When the robot is back online the "Local only" marker goes, keeping the
+        inferred activity until the robot's own WorkStatus replaces it.
+        """
+        tracker = self.local_only_tracker
+        if tracker is None:
+            return state, changes
+        if not tracker.local_only():
+            if state.task_status != "Local only":
+                return state, changes
+            changes = {**changes, "task_status": self._task_status_before_local_only}
+            return replace(state, task_status=self._task_status_before_local_only), changes
+        if state.task_status != "Local only":
+            self._task_status_before_local_only = state.task_status
+        current = state.activity
+        away = self._away_from_dock()
+        activity = tracker.infer(current, away=away)
+        _LOGGER.debug(
+            "Local-only %s: inferred %s (was %s; away=%s, intent=%s)",
+            self.device_name, activity, current, away, tracker.intent,
+        )
+        battery = state.battery_level if tracker.battery is None else tracker.battery
+        updates: dict[str, Any] = {
+            "activity": activity,
+            "task_status": "Local only",
+            "battery_level": battery,  # 163 freezes offline; the tracker reads the live DPS 8
+            # only on evidence: a guessed "docked" is not proof it is on the charger
+            "charging": activity == "docked" and 0 < battery < 100 and tracker.charging(),
+        }
+        if tracker.clean_minutes is not None:
+            updates["cleaning_time"] = tracker.clean_minutes * 60
+        if tracker.clean_area is not None:
+            updates["cleaning_area"] = tracker.clean_area
+        if tracker.suction is not None:
+            updates["fan_speed"] = tracker.suction
+        updates = {k: v for k, v in updates.items() if getattr(state, k) != v}
+        if not updates:
+            return state, changes
+        return replace(state, **updates), {**changes, **updates}
+
+    async def _cloud_says_online(self) -> bool | None:
+        """Ask the Tuya cloud whether the robot is connected (None: can't tell).
+
+        A failed connection counts as offline: HA and the robot share the
+        internet connection, so the robot can't reach the cloud either. An API
+        error (expired session, rate limit) is retried once after a re-login and
+        otherwise means "can't tell", never "offline".
+        """
+        client = self.eufy_login.tuya_client
+        if client is None:
+            return None
+        for attempt in (1, 2):
+            try:
+                return await client.is_device_online(self.device_id)
+            except (aiohttp.ClientConnectionError, TimeoutError) as err:
+                _LOGGER.debug(
+                    "Tuya cloud unreachable for %s (%s); treating it as offline",
+                    self.device_name, err,
+                )
+                return False
+            except TuyaCloudError as err:
+                if attempt == 2:
+                    _LOGGER.debug("Tuya cloud check for %s failed: %s", self.device_name, err)
+                    return None
+                try:
+                    await self.eufy_login.tuya_login()
+                except Exception as login_err:  # noqa: BLE001 - any failure: can't tell
+                    _LOGGER.debug("Tuya re-login failed: %s", login_err)
+                    return None
+                client = self.eufy_login.tuya_client or client
+            except Exception as err:  # noqa: BLE001 - bad JSON, HTML error page...
+                _LOGGER.debug("Tuya cloud check for %s failed: %s", self.device_name, err)
+                return None
+        return None
+
+    async def _async_cloud_check(self) -> None:
+        """Ask the cloud once (never two at a time) and re-infer the state."""
+        tracker = self.local_only_tracker
+        if tracker is None or self._cloud_check_running:
+            return
+        self._cloud_check_running = True
+        try:
+            asked_at = time.monotonic()
+            tracker.note_cloud_status(await self._cloud_says_online(), asked_at=asked_at)
+        finally:
+            self._cloud_check_running = False
+        new_state, changes = self._apply_local_only(self.data, {})
+        if changes:
+            self.async_set_updated_data(new_state)
+
+    def _away_from_dock(self) -> bool | None:
+        """Is the live map pose clearly off the dock? None without a fresh pose."""
+        feed = self.p2p
+        if feed is None:
+            return None
+        last = getattr(feed, "last_object_at", None)
+        if not isinstance(last, (int, float)) or time.time() - last > _POSE_FRESH_FOR:
+            return None  # stale (no live session): a frozen pose would mislead
+        pose = getattr(feed.state, "pose", None)
+        dock = getattr(feed.state, "dock", None)
+        if pose is None or dock is None:
+            return None
+        return math.hypot(pose.x - dock.x, pose.y - dock.y) > AWAY_FROM_DOCK_CM
+
+    def note_intent(self, activity: str) -> None:
+        """Record what a command asked for; shown at once while local-only."""
+        tracker = self.local_only_tracker
+        if tracker is None:
+            return
+        tracker.note_intent(activity)
+        if tracker.local_only():
+            new_state, _ = self._apply_local_only(self.data, {})
+            self.async_set_updated_data(new_state)
+
     async def async_send_command(
         self, command_dict: dict[str, Any], *, wait: bool = True
     ) -> None:
@@ -1122,6 +1276,19 @@ class EufyCleanCoordinator(DataUpdateCoordinator[VacuumState]):
                     f"{self._consecutive_cloud_failures} consecutive failures"
                 )
 
+        if self.connection_type == "local" and isinstance(self.client, LocalTuyaClient):
+            tracker = self.local_only_tracker
+            if tracker is not None and (tracker.quiet() or tracker.needs_cloud_check()):
+                # No cloud-only DPS for a while (or just connected): the robot is
+                # idle, or cut off from its cloud. Ask the cloud when due, then poll
+                # status (dispatched through _handle_mqtt_message like any push,
+                # keeping battery and cleaning time fresh) and re-infer, so time-based
+                # transitions (docked after the ticks stop) happen without pushes.
+                if tracker.needs_cloud_check():
+                    await self._async_cloud_check()
+                await self.client.poll_status()
+                new_state, _ = self._apply_local_only(self.data, {})
+                return new_state
         return self.data
 
     def _on_cloud_success(self) -> None:

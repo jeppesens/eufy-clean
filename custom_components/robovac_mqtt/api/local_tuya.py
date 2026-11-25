@@ -270,6 +270,12 @@ class LocalTuyaClient:
                 else:
                     await self._refetch_status()
 
+    async def poll_status(self) -> None:
+        """Ask the device for its current DPS and dispatch them (public poll)."""
+        if self._dev is None or self._loop is None:
+            return
+        await self._refetch_status()
+
     async def _refetch_status(self) -> None:
         """Re-fetch status() after a reconnect so state isn't stale until the
         next push (mirrors connect()'s initial fetch)."""
