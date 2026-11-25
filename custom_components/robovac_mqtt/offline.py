@@ -10,11 +10,15 @@ Tuya robot-vacuum DPS:
   runs, including the trip home)
 * ``7``  cleaned area, m2
 * ``9``  suction (gentle / normal / strong / max)
-* ``163`` battery %, still relayed
+* ``8``  battery %, the generic Tuya one: live. Eufy's own ``163`` is NOT; it
+  freezes at its last value once the cloud is gone (seen: 163 stuck at 100 while
+  8 counted 69, 68 on a robot stranded off the dock)
 
 Without WorkStatus the coordinator would freeze on the last activity it saw.
 :class:`LocalOnlyTracker` infers the activity from what is left: the
 cleaning-time ticks, the battery trend, the live map pose and the command HA sent.
+A robot on its dock charges, so off the dock shows as a battery that falls, or that
+stays below full without rising for CHARGE_PROOF after the robot stopped.
 
 Silence alone does not prove the robot is offline: an idle robot that is online
 only pushes these DPS when something changes, and its ``status()`` reply never
@@ -65,6 +69,10 @@ TICK_WINDOW = 150.0
 DOCK_AFTER_STOP = 120.0
 # A start that has not left the dock after this long was ignored by the robot.
 START_TIMEOUT = 150.0
+# Stopped this long below FULL_ENOUGH % without the battery rising = not on the dock
+# (a docked robot charges within a minute or two).
+CHARGE_PROOF = 600.0
+FULL_ENOUGH = 98
 # Further than this from the dock (live map pose, cm) = not docked.
 AWAY_FROM_DOCK_CM = 80.0
 # How long an intent from a command is trusted before evidence takes over. A
@@ -103,6 +111,8 @@ class LocalOnlyTracker:
     suction: str | None = None
     last_tick: float | None = None
     battery: int | None = None
+    battery_live: bool = False  # seen the generic DPS 8, so ignore the frozen 163
+    battery_rose_at: float | None = None
     battery_at_stop: int | None = None
     intent: str | None = None
     intent_at: float = 0.0
@@ -124,8 +134,14 @@ class LocalOnlyTracker:
             self.clean_area = area
         if dps.get("9") in STD_SUCTION:
             self.suction = STD_SUCTION[dps["9"]]
-        battery = _int(dps.get("163"))
+        battery = _int(dps.get("8"))
         if battery is not None:
+            self.battery_live = True
+        elif not self.battery_live:
+            battery = _int(dps.get("163"))
+        if battery is not None and 0 <= battery <= 100:
+            if self.battery is not None and battery > self.battery:
+                self.battery_rose_at = now
             self.battery = battery
 
     def note_intent(self, activity: str, now: float | None = None) -> None:
@@ -221,20 +237,31 @@ class LocalOnlyTracker:
             return "cleaning"  # just started: the first tick takes up to two minutes
         if intent == "cleaning":
             intent = None  # never left the dock: the robot ignored the command
-        stopped_for = now - (self.last_tick or self.intent_at or self.connected_at)
+        stopped_at = max(self.last_tick or 0.0, self.intent_at or 0.0) or self.connected_at
+        stopped_for = now - stopped_at
+        charging = self.battery_rose_at is not None and self.battery_rose_at > stopped_at
         falling = (
             self.battery is not None
             and self.battery_at_stop is not None
-            and self.battery < self.battery_at_stop - 1
+            and self.battery < self.battery_at_stop
+        )
+        uncharged = (
+            self.battery is not None
+            and self.battery < FULL_ENOUGH
+            and stopped_for >= CHARGE_PROOF
+            and not charging
         )
         if away is True:
             return "returning" if intent == "returning" else "idle"
+        if charging:
+            return "docked"
         if away is False and intent != "returning":
             return "docked"
-        if stopped_for >= DOCK_AFTER_STOP and not falling:
+        if falling or uncharged:
+            # draining, or not charging: off the dock even with no pose to say so
+            return "returning" if intent == "returning" else "idle"
+        if stopped_for >= DOCK_AFTER_STOP:
             return "docked"
         if intent == "returning":
             return "returning"
-        if falling:
-            return "idle"
         return current if current in ("docked", "idle", "paused") else "docked"

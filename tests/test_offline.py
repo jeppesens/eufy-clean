@@ -1,6 +1,7 @@
 """Tests for local-only mode: an S1 Pro cut off from its cloud."""
 
 from custom_components.robovac_mqtt.offline import (
+    CHARGE_PROOF,
     CLOUD_CHECK_EVERY,
     CLOUD_CHECK_MAX,
     DOCK_AFTER_STOP,
@@ -221,3 +222,52 @@ def test_stop_or_pause_on_the_dock_shows_docked():
     assert t.infer("paused", now=700, away=False) == "docked"
     assert t.infer("paused", now=700, away=True) == "paused"
     assert t.infer("paused", now=700) == "paused"  # no pose: trust the intent
+
+
+def test_live_dps8_battery_wins_over_the_frozen_163():
+    """Offline, 163 sticks at its last value; the generic DPS 8 keeps counting."""
+    t = _tracker()
+    t.record({"8": 69, "163": 100}, now=400)
+    assert t.battery == 69
+    t.record({"163": 100}, now=460)  # 163 alone: still frozen, ignored
+    assert t.battery == 69
+    t.record({"8": 68}, now=520)
+    assert t.battery == 68
+
+
+def test_stranded_below_full_without_charging_is_idle_not_docked():
+    """24 Nov: stopped off the dock with no pose, DPS 8 at 69 and never rising."""
+    t = _tracker()
+    t.record({"6": 1, "8": 70}, now=400)
+    t.record({"6": 2, "8": 69}, now=460)
+    t.infer("cleaning", now=470)
+    later = 460 + TICK_WINDOW + DOCK_AFTER_STOP
+    assert t.infer("cleaning", now=later) == "docked"  # too early to tell
+    assert t.infer("docked", now=460 + CHARGE_PROOF + 1) == "idle"
+
+
+def test_a_rising_battery_means_docked_and_charging():
+    t = _tracker()
+    t.record({"6": 1, "8": 60}, now=400)
+    t.record({"6": 2, "8": 59}, now=460)
+    t.infer("cleaning", now=470)
+    t.record({"8": 60}, now=700)
+    assert t.infer("returning", now=700) == "docked"
+    assert t.infer("docked", now=460 + CHARGE_PROOF + 1) == "docked"
+
+
+def test_full_battery_on_the_dock_stays_docked():
+    t = _tracker()
+    t.record({"6": 1, "8": 100}, now=400)
+    t.record({"6": 2, "8": 100}, now=460)
+    t.infer("cleaning", now=470)
+    assert t.infer("docked", now=460 + CHARGE_PROOF * 3) == "docked"
+
+
+def test_a_return_that_never_charges_stays_returning_then_goes_idle():
+    """The dock retry automation catches 'returning' for 6 min, or 'idle' for 10."""
+    t = _tracker()
+    t.record({"8": 68}, now=400)
+    t.note_intent("returning", now=400)
+    assert t.infer("returning", now=400 + CHARGE_PROOF + 1) == "returning"
+    assert t.infer("returning", now=400 + 900 + 1) == "idle"

@@ -313,3 +313,14 @@ async def test_whole_house_start_allowed_while_online(coordinator):
     coordinator.data = replace(coordinator.data, activity="docked")
     await RoboVacMQTTEntity(coordinator).async_start()
     coordinator.async_send_command.assert_awaited_once_with({"cmd": "start_auto"})
+
+
+def test_local_only_battery_comes_from_the_live_dps(coordinator):
+    """The published battery is the tracker's DPS 8, not the frozen 163."""
+    with patch(_CLOCK, return_value=1000.0):
+        _go_local_only(coordinator)
+        coordinator.local_only_tracker.record({"8": 68, "163": 100}, now=1000)
+        state, changes = coordinator._apply_local_only(
+            replace(coordinator.data, battery_level=100), {}
+        )
+    assert state.battery_level == 68 and changes["battery_level"] == 68
