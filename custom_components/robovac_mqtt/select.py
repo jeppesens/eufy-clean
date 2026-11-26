@@ -24,6 +24,7 @@ from .const import (
     EUFY_CLEAN_WATER_LEVELS,
     HEIGHT_DETECTION_MODES,
     LEGACY_CLEAN_SPEEDS,
+    MODEL_CLEANING_INTENSITY_LABELS,
     SCALAR_CLEAN_PATTERN_NAMES,
     SCALAR_SUCTION_LEVELS,
     VOICE_CATALOG,
@@ -744,7 +745,6 @@ class CleaningIntensitySelectEntity(_StateBackedSelectEntity):
     _attr_has_entity_name = True
     _attr_name = "Cleaning Intensity"
     _attr_icon = "mdi:tune-vertical"
-    _attr_options = EUFY_CLEAN_CLEANING_INTENSITIES
     _command_name = "set_cleaning_intensity"
     _command_arg_name = "cleaning_intensity"
     _state_field = "cleaning_intensity"
@@ -754,6 +754,22 @@ class CleaningIntensitySelectEntity(_StateBackedSelectEntity):
     def __init__(self, coordinator: EufyCleanCoordinator) -> None:
         """Initialize cleaning intensity select."""
         super().__init__(coordinator, "cleaning_intensity")
+        self._labels = MODEL_CLEANING_INTENSITY_LABELS.get(
+            coordinator.device_model,
+            {name: name for name in EUFY_CLEAN_CLEANING_INTENSITIES},
+        )
+        self._names = {label: name for name, label in self._labels.items()}
+        self._attr_options = list(self._labels.values())
+
+    def _state_to_option(self, value: str | None) -> str | None:
+        """Map the protocol intensity name to the model's app name."""
+        if value is None:
+            return None
+        return self._labels.get(value)
+
+    def _option_to_state(self, option: str) -> str:
+        """Map the model's app name back to the protocol intensity name."""
+        return self._names[option]
 
 
 class HeightDetectionSelectEntity(_StateBackedSelectEntity):

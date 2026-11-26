@@ -229,6 +229,31 @@ async def test_cleaning_intensity_select_entity(mock_coordinator):
     mock_coordinator.async_send_command.assert_called_with({"cmd": "val"})
 
 
+@pytest.mark.asyncio
+async def test_cleaning_intensity_select_uses_app_names_for_e35(mock_coordinator):
+    """Test the Omni E35 offers the app's two levels and sends protocol names."""
+    mock_coordinator.device_model = "T210M"
+    mock_coordinator.data.cleaning_intensity = "Normal"
+
+    entity = CleaningIntensitySelectEntity(mock_coordinator)
+    entity.hass = MagicMock()
+    entity.async_write_ha_state = MagicMock()
+
+    assert entity.options == ["Fast", "Deep"]
+    assert entity.current_option == "Deep"
+
+    await entity.async_select_option("Fast")
+
+    mock_coordinator.build_device_command.assert_called_with(
+        "set_cleaning_intensity", cleaning_intensity="Quick"
+    )
+    new_state = mock_coordinator.async_set_updated_data.call_args.args[0]
+    assert new_state.cleaning_intensity == "Quick"
+
+    mock_coordinator.data.cleaning_intensity = "Narrow"
+    assert entity.current_option is None
+
+
 def test_mop_intensity_select_entity_entity_category(mock_coordinator):
     """Test MopIntensitySelectEntity has CONFIG entity category."""
     entity = MopIntensitySelectEntity(mock_coordinator)
