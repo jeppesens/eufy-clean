@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from typing import Any
 
 from ..const import (
@@ -14,17 +15,19 @@ from ..const import (
 )
 from ..utils import is_protobuf_dps_value
 from .http import EufyHTTPClient
+from .mega_http import (
+    DEFAULT_COUNTRY_CODE,
+    MegaCaptchaRequiredError,
+    MegaSessionExpiredError,
+    MegaTwoFactorRequiredError,
+)
 from .tuya_cloud import TuyaCloudClient, TuyaCloudError
 
 _LOGGER = logging.getLogger(__name__)
 
 
 def _is_scalar_state_value(value: Any) -> bool:
-    """Is DPS 15 a scalar (G50) status — i.e. numeric, not a Tuya status string?
-
-    The scalar protocol reports DPS 15 as an int (or numeric string); Tuya Cloud
-    legacy devices report it as a word status like "Running"/"Charging".
-    """
+    """Is DPS 15 a scalar (G50) status — i.e. numeric, not a Tuya status string?"""
     if isinstance(value, bool):
         return False
     if isinstance(value, (int, float)):
@@ -45,11 +48,22 @@ class EufyLogin:
         password: str,
         openudid: str,
         websession: Any | None = None,
+        country_code: str = DEFAULT_COUNTRY_CODE,
+        mega_session: dict[str, Any] | None = None,
+        on_session_updated: Callable[[dict[str, Any]], None] | None = None,
     ):
-        self.eufyApi = EufyHTTPClient(username, password, openudid, websession=websession)
+        self.eufyApi = EufyHTTPClient(
+            username,
+            password,
+            openudid,
+            websession=websession,
+            country_code=country_code,
+            mega_session=mega_session,
+            on_session_updated=on_session_updated,
+        )
         self.username = username
         self.password = password
-        self.openudid = openudid
+        self.openudid = self.eufyApi.mega.openudid
         self._websession = websession
         self.mqtt_credentials: dict[str, Any] | None = None
         self.mqtt_devices: list[dict[str, Any]] = []
@@ -58,53 +72,94 @@ class EufyLogin:
         self.tuya_client: TuyaCloudClient | None = None
         self._eufy_user_id: str | None = None
 
-    async def init(self):
+    def export_session(self) -> dict[str, Any]:
+        """Export persisted Mega session data."""
+        return self.eufyApi.export_session()
+
+    async def init(self) -> None:
         _LOGGER.debug("EufyLogin.init() starting: HTTP login + device discovery")
         await self.login({"mqtt": True})
+        await self._discover_all_devices()
+
+        # If legacy v2/v1 logged in (e.g. stale token or fallback session) but
+        # returned no usable MQTT or Tuya Cloud devices, fall back to Mega v6.
+        has_usable_mqtt = bool(self.mqtt_devices and self.mqtt_credentials)
+        has_usable_cloud = bool(self.cloud_devices)
+        if not self.eufyApi.use_mega and not has_usable_mqtt and not has_usable_cloud:
+            _LOGGER.info(
+                "Legacy login returned no usable devices; falling back to Eufy Mega v6 API"
+            )
+            try:
+                mega_login = await self.eufyApi.login_mega()
+            except (
+                MegaCaptchaRequiredError,
+                MegaTwoFactorRequiredError,
+                MegaSessionExpiredError,
+            ):
+                raise
+            except Exception as err:  # noqa: BLE001
+                _LOGGER.warning("Eufy Mega v6 fallback login failed: %s", err)
+                return
+
+            self._store_login_result(mega_login)
+            await self._discover_all_devices()
+
+    async def solve_captcha(self, answer: str) -> None:
+        """Continue Mega login with a captcha answer and finish discovery."""
+        eufy_login = await self.eufyApi.solve_captcha(answer)
+        self._store_login_result(eufy_login)
+        await self._discover_all_devices()
+
+    async def submit_verify_code(self, code: str) -> None:
+        """Continue Mega login with a 2FA code and finish discovery."""
+        eufy_login = await self.eufyApi.submit_verify_code(code)
+        self._store_login_result(eufy_login)
+        await self._discover_all_devices()
+
+    def _store_login_result(self, eufy_login: dict[str, Any]) -> None:
+        if not eufy_login:
+            raise EufyLoginError("Login failed")
+        self.mqtt_credentials = eufy_login.get("mqtt")
+        session = eufy_login.get("session") or {}
+        self._eufy_user_id = session.get("user_id")
+        _LOGGER.debug(
+            "HTTP login successful; mqtt_creds=%s, eufy_user_id=%s",
+            "present" if self.mqtt_credentials else "missing",
+            "present" if self._eufy_user_id else "missing",
+        )
+
+    async def _discover_all_devices(self) -> None:
+        self.mqtt_devices = []
+        self.cloud_devices = []
         await self.getDevices()
 
         # Attempt Tuya Cloud login for legacy cloud devices
         try:
             await self.tuya_login()
             await self.getCloudDevices()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             _LOGGER.warning(
-                "Tuya Cloud login failed; legacy cloud devices will be unavailable: %s", e
+                "Tuya Cloud login failed; legacy cloud devices will be unavailable: %s",
+                e,
             )
 
     async def login(self, config: dict):
-        eufyLogin = None
-
         if not config["mqtt"]:
             raise EufyLoginError("MQTT login is required")
 
-        eufyLogin = await self.eufyApi.login()
-
-        if not eufyLogin:
-            raise EufyLoginError("Login failed")
-
-        self.mqtt_credentials = eufyLogin["mqtt"]
-        _LOGGER.debug("HTTP login successful, MQTT credentials obtained")
-
-        # Store user_id for Tuya Cloud login
-        session = eufyLogin.get("session", {})
-        self._eufy_user_id = session.get("user_id")
-        _LOGGER.debug("Eufy user_id: %s", "present" if self._eufy_user_id else "missing")
+        eufy_login = await self.eufyApi.login()
+        self._store_login_result(eufy_login)
 
     async def checkLogin(self):
         if not self.mqtt_credentials:
             await self.login({"mqtt": True})
 
     async def tuya_login(self) -> None:
-        """Attempt Tuya Cloud login using Eufy user_id.
-
-        Tries EU region first, falls back to US.
-        """
+        """Attempt Tuya Cloud login using Eufy user_id (EU first, then US)."""
         if not self._eufy_user_id:
             _LOGGER.debug("No Eufy user_id available; skipping Tuya Cloud login")
             return
 
-        # Try EU first
         try:
             client = TuyaCloudClient("EU", websession=self._websession)
             await client.login(self._eufy_user_id)
@@ -114,7 +169,6 @@ class EufyLogin:
         except TuyaCloudError as e:
             _LOGGER.debug("Tuya Cloud EU login failed: %s", e)
 
-        # Fall back to US
         try:
             client = TuyaCloudClient("US", websession=self._websession)
             await client.login(self._eufy_user_id)
@@ -126,14 +180,10 @@ class EufyLogin:
 
     async def getDevices(self) -> None:
         self.eufy_api_devices = await self.eufyApi.get_cloud_device_list()
-        _LOGGER.debug("Eufy API returned %d devices from cloud list", len(self.eufy_api_devices))
+        _LOGGER.debug(
+            "Eufy API returned %d devices from cloud list", len(self.eufy_api_devices)
+        )
         devices = await self.eufyApi.get_device_list()
-        # Unified-app (v2) accounts often return an empty AIOT device list even
-        # though the cloud device list has entries. Reconstruct minimal AIOT
-        # entries from the cloud list so findModel (via aiot/v2 metadata) and
-        # MQTT setup still work. Only robot vacuums are reconstructed, since the
-        # cloud list holds every eufy product on the account (issue #121);
-        # eufy_api_devices keeps them all for findModel()'s id lookup.
         if not devices and self.eufy_api_devices:
             _LOGGER.info(
                 "AIOT device list empty — constructing device entries from cloud device list"
@@ -143,55 +193,51 @@ class EufyLogin:
                 if not record.get("id"):
                     continue
                 if not self._is_vacuum_record(record):
-                    product = record.get("product") or {}
-                    _LOGGER.debug(
-                        "Cloud list device %s: skipping (not a robot vacuum; "
-                        "product=%s, model=%s, appliance=%s)",
-                        record["id"],
-                        product.get("name"),
-                        self._cloud_record_model(record),
-                        product.get("appliance"),
-                    )
                     continue
                 devices.append(
                     {"device_sn": record["id"], "dps": {}, "_reconstructed": True}
                 )
-        devices = [
-            {
-                **self.findModel(device.get("device_sn", ""), aiot_device=device),
-                "apiType": self.checkApiType(device.get("dps", {})),
-                "mqtt": True,
-                "dps": device.get("dps", {}),
-                "softVersion": device.get("main_sw_version")
-                or device.get("soft_version")
-                or "",
-                # A reconstructed entry is a placeholder for a device whose real
-                # AIOT/MQTT list was empty — it is NOT a confirmed MQTT device.
-                # getCloudDevices() lets a matching Tuya device (with a localKey)
-                # supersede it so the device uses the Tuya cloud/local path.
-                "reconstructed": device.get("_reconstructed", False),
-            }
-            for device in devices
-            if device.get("device_sn")
-        ]
-        self.mqtt_devices = [d for d in devices if not d["invalid"]]
+
+        parsed_devices = []
+        for device in devices:
+            sn = device.get("device_sn")
+            if not sn:
+                continue
+            model_info = self.findModel(sn, aiot_device=device)
+            dps = device.get("dps") or {}
+            reconstructed = bool(device.get("_reconstructed", False))
+            if dps:
+                api_type = self.checkApiType(dps)
+            elif not reconstructed:
+                # Confirmed AIoT/Mega MQTT device with no initial DPS snapshot:
+                # default to novel protobuf (G50 T2210 uses scalar).
+                api_type = "scalar" if model_info["deviceModel"] == "T2210" else "novel"
+            else:
+                api_type = "legacy"
+
+            parsed_devices.append(
+                {
+                    **model_info,
+                    "apiType": api_type,
+                    "mqtt": True,
+                    "dps": dps,
+                    "softVersion": device.get("main_sw_version")
+                    or device.get("soft_version")
+                    or "",
+                    "reconstructed": reconstructed,
+                }
+            )
+
+        self.mqtt_devices = [d for d in parsed_devices if not d["invalid"]]
         _LOGGER.debug(
             "MQTT devices: %d valid out of %d total (%s)",
             len(self.mqtt_devices),
-            len(devices),
-            [(d["deviceName"], d["apiType"]) for d in self.mqtt_devices],
+            len(parsed_devices),
+            [(d["deviceName"], d["deviceModel"], d["apiType"]) for d in self.mqtt_devices],
         )
 
     async def getCloudDevices(self) -> None:
-        """Fetch devices from Tuya Cloud and add those not already in MQTT list.
-
-        Per device the Tuya cloud returns ``localKey`` and the last-known
-        ``ip``. The local key is the credential needed to talk the Tuya v3
-        protocol on port 6668; the ``ip`` is the public address the dock used
-        to reach the cloud, which is rarely usable as a LAN target — the user
-        normally supplies the LAN address through the integration's options
-        (handled in __init__.py).
-        """
+        """Fetch devices from Tuya Cloud and add those not already in MQTT list."""
         if not self.tuya_client:
             return
 
@@ -201,13 +247,6 @@ class EufyLogin:
             _LOGGER.warning("Failed to fetch Tuya Cloud device list: %s", e)
             return
 
-        # MQTT devices split by whether they are confirmed (real AIOT dps) or
-        # just reconstructed placeholders (the AIOT list was empty). A real Tuya
-        # device with a localKey should SUPERSEDE a placeholder rather than be
-        # dropped as a duplicate — otherwise a Tuya-only device (e.g. S1 Pro)
-        # gets stuck on the MQTT path it can't actually answer (issue #131).
-        # Tuya is keyed on devId consistently with the polling path
-        # (TuyaCloudClient.get_device), so match on devId only.
         confirmed_ids = {
             d["deviceId"] for d in self.mqtt_devices if not d.get("reconstructed")
         }
@@ -220,55 +259,21 @@ class EufyLogin:
 
         for device in tuya_devices:
             dev_id = device.get("devId")
-            if not dev_id:
-                _LOGGER.debug("Cloud device skipping (no devId): %s", device)
-                continue
-            if dev_id in seen_cloud_ids:
-                _LOGGER.debug("Cloud device %s: skipping (duplicate Tuya record)", dev_id)
+            if not dev_id or dev_id in seen_cloud_ids:
                 continue
             product_id = self._tuya_product_id(device)
             if product_id in TUYA_IGNORED_PRODUCT_IDS:
-                _LOGGER.debug(
-                    "Cloud device %s: skipping (%s is not a robot vacuum)",
-                    dev_id,
-                    TUYA_IGNORED_PRODUCT_IDS[product_id],
-                )
-                # A reconstructed placeholder with this id is that same
-                # product, so it goes too (without counting as superseded).
                 if dev_id in reconstructed_ids:
                     ignored_ids.add(dev_id)
                 continue
             if dev_id in confirmed_ids:
-                # A confirmed MQTT device — keep the (push) MQTT path.
-                _LOGGER.debug(
-                    "Cloud device %s: skipping (already a confirmed MQTT device)",
-                    dev_id,
-                )
                 continue
             if dev_id in reconstructed_ids:
                 superseded_ids.add(dev_id)
-                _LOGGER.debug(
-                    "Cloud device %s: superseding reconstructed MQTT placeholder "
-                    "with the Tuya cloud/local device",
-                    dev_id,
-                )
 
             model_info = self.findModel(dev_id, tuya_device=device)
             if model_info["invalid"]:
-                _LOGGER.debug(
-                    "Cloud device %s: skipping (no model and no localKey)", dev_id
-                )
                 continue
-            if not model_info["deviceModel"]:
-                _LOGGER.warning(
-                    "Cloud device %s kept with unknown model "
-                    "(productId=%s, name=%s); report this so a "
-                    "TUYA_PRODUCT_MODELS mapping (or, if it is not a robot "
-                    "vacuum, a TUYA_IGNORED_PRODUCT_IDS entry) can be added",
-                    dev_id,
-                    product_id,
-                    device.get("name"),
-                )
 
             dps = self._coerce_dps(device.get("dps"))
             local_key = device.get("localKey") or ""
@@ -279,28 +284,18 @@ class EufyLogin:
                     "mqtt": False,
                     "dps": dps,
                     "softVersion": "",
-                    # Surface the local-Tuya credentials so the coordinator
-                    # (or user-supplied LAN address in options) can promote
-                    # the connection to direct local push.
                     "local_key": local_key,
                     "tuya_public_ip": device.get("ip") or "",
                 }
             )
             seen_cloud_ids.add(dev_id)
 
-        # Drop the reconstructed placeholders that a Tuya device superseded or
-        # that are an ignored non-vacuum product.
         dropped_ids = superseded_ids | ignored_ids
         if dropped_ids:
             self.mqtt_devices = [
                 d for d in self.mqtt_devices if d["deviceId"] not in dropped_ids
             ]
 
-        # Single-robot safety net: if Tuya returned exactly one localKey-bearing
-        # device that did NOT match any id, and exactly one reconstructed
-        # placeholder is left over, they are the same physical robot (the Eufy
-        # cloud id and the Tuya devId differ). Drop the placeholder so we don't
-        # create two coordinators for one vacuum.
         if not superseded_ids:
             leftover = [
                 d
@@ -312,12 +307,6 @@ class EufyLogin:
                 self.mqtt_devices = [
                     d for d in self.mqtt_devices if d is not leftover[0]
                 ]
-                _LOGGER.debug(
-                    "Dropped lone reconstructed placeholder %s in favour of the "
-                    "single Tuya cloud device %s (id mismatch, same robot)",
-                    leftover[0]["deviceId"],
-                    keyed_cloud[0]["deviceId"],
-                )
 
         if self.cloud_devices:
             _LOGGER.info(
@@ -328,7 +317,6 @@ class EufyLogin:
 
     @staticmethod
     def _coerce_dps(value: Any) -> dict[str, Any]:
-        """Tuya cloud may return dps as a JSON string OR a dict — normalise."""
         if isinstance(value, str):
             try:
                 parsed = json.loads(value)
@@ -340,48 +328,32 @@ class EufyLogin:
         return {}
 
     async def get_rtc_config(self, device_id: str) -> dict[str, Any] | None:
-        """Fetch a device's P2P/RTC config, re-logging in once if the session died.
-
-        Reads ``tuya_client`` at call time: a re-login (here or in
-        ``getCloudDevice``) replaces the client, so a reference captured at
-        startup would keep a dead sid.
-        """
         if not self.tuya_client:
             raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session")
         try:
             return await self.tuya_client.get_rtc_config(device_id)
         except TuyaCloudError as e:
-            _LOGGER.debug("Tuya RTC config for %s failed: %s; attempting re-login", device_id, e)
             self.tuya_client.sid = None
             await self.tuya_login()
             if not self.tuya_client:
-                raise TuyaCloudError("NO_SESSION", "no Tuya Cloud session after re-login") from e
+                raise TuyaCloudError(
+                    "NO_SESSION", "no Tuya Cloud session after re-login"
+                ) from e
             return await self.tuya_client.get_rtc_config(device_id)
 
     async def getCloudDevice(self, device_id: str) -> dict[str, Any] | None:
-        """Poll a cloud device's DPS via Tuya Cloud API.
-
-        On failure, attempts re-login and retries once.
-        """
         if not self.tuya_client:
             _LOGGER.warning("Cannot poll cloud device: no Tuya client")
             return None
 
         try:
-            result = await self.tuya_client.get_device(device_id)
-            _LOGGER.debug(
-                "Cloud device %s poll: %s",
-                device_id,
-                f"{len(result)} DPS keys" if result else "not found",
-            )
-            return result
-        except TuyaCloudError as e:
-            _LOGGER.debug("Cloud device %s poll failed: %s; attempting re-login", device_id, e)
+            return await self.tuya_client.get_device(device_id)
+        except TuyaCloudError:
             self.tuya_client.sid = None
             try:
                 await self.tuya_login()
                 return await self.tuya_client.get_device(device_id)
-            except Exception as retry_err:
+            except Exception as retry_err:  # noqa: BLE001
                 _LOGGER.warning(
                     "Failed to poll cloud device %s after re-login: %s",
                     device_id,
@@ -392,18 +364,12 @@ class EufyLogin:
     async def sendCloudCommand(
         self, device_id: str, dps: dict[str, Any]
     ) -> None:
-        """Send a command to a cloud device via Tuya Cloud API.
-
-        On failure, attempts re-login and retries once.
-        """
         if not self.tuya_client:
             raise EufyLoginError("Cannot send cloud command: no Tuya client")
 
         try:
             await self.tuya_client.send_command(device_id, dps)
-            _LOGGER.debug("Cloud command to %s succeeded: %s", device_id, dps)
-        except TuyaCloudError as e:
-            _LOGGER.debug("Cloud command to %s failed: %s; attempting re-login", device_id, e)
+        except TuyaCloudError:
             self.tuya_client.sid = None
             try:
                 await self.tuya_login()
@@ -419,24 +385,10 @@ class EufyLogin:
 
     @staticmethod
     def checkApiType(dps: dict):
-        """Classify a device's DPS protocol from its initial state snapshot.
-
-        - "novel"  : Anker protobuf DPS (WORK_STATUS/CLEANING_PARAMETERS as base64)
-        - "scalar" : Tuya-style plain int/JSON DPS over MQTT (e.g. T2210/G50) —
-                     reuses the protobuf DPS *numbers* but with int values
-        - "legacy" : no protobuf DPS at all (pure Tuya cloud devices, PR #110)
-
-        Value-shape based: a key-presence check alone misclassifies scalar
-        devices (which carry protobuf DPS numbers with int values) as novel.
-        """
         for key in (DPS_MAP["WORK_STATUS"], DPS_MAP["CLEANING_PARAMETERS"]):
             val = dps.get(key)
             if val is not None:
                 return "novel" if is_protobuf_dps_value(val) else "scalar"
-        # DPS 15 is the scalar (G50) status as an INT, but Tuya Cloud legacy
-        # devices (e.g. S1 Pro) report DPS 15 as a STATUS STRING ("Running").
-        # Only the numeric form is scalar — a status string is legacy and must
-        # use the legacy parser/command builder.
         state_val = dps.get(SCALAR_DPS["STATE"])
         if state_val is not None and _is_scalar_state_value(state_val):
             return "scalar"
@@ -446,7 +398,6 @@ class EufyLogin:
 
     @staticmethod
     def _resolve_model(code: str) -> str:
-        """Return the best device model code, falling back to first 5 chars."""
         if code in EUFY_CLEAN_DEVICES:
             return code
         truncated = code[:5]
@@ -456,7 +407,6 @@ class EufyLogin:
 
     @staticmethod
     def _cloud_record_model(record: dict[str, Any]) -> str:
-        """Model code of an Eufy cloud device list record."""
         raw_code = (
             (record.get("product") or {}).get("product_code", "")
             or record.get("device_model", "")
@@ -465,12 +415,6 @@ class EufyLogin:
 
     @staticmethod
     def _is_vacuum_record(record: dict[str, Any]) -> bool:
-        """Is an Eufy cloud device list record a robot vacuum?
-
-        Yes when eufy marks it a cleaning appliance or its model is a known
-        robovac; no for the account's other eufy products, e.g. a smart scale
-        (issue #121).
-        """
         product = record.get("product") or {}
         return (
             product.get("appliance") == EUFY_APPLIANCE_CLEANING
@@ -479,24 +423,13 @@ class EufyLogin:
 
     @staticmethod
     def _tuya_product_id(tuya_device: dict[str, Any]) -> str:
-        """Tuya product id of a Tuya cloud device record."""
         return tuya_device.get("productId") or tuya_device.get("productKey") or ""
 
     @staticmethod
     def _resolve_tuya_model(tuya_device: dict[str, Any]) -> str:
-        """Best-effort model code for a Tuya-cloud device whose devId does not
-        match any Eufy v2 device id.
-
-        Tries the productId/productKey -> model table first, then an EXACT
-        model code embedded in the device name. Returns "" when no known model
-        can be determined — the caller decides validity.
-        """
         product_id = EufyLogin._tuya_product_id(tuya_device)
         if product_id in TUYA_PRODUCT_MODELS:
             return TUYA_PRODUCT_MODELS[product_id]
-        # Only accept a name token that is an EXACT known model code — routing
-        # arbitrary tokens through _resolve_model()'s 5-char truncation would
-        # false-positive (e.g. "T22610" -> "T2261") on user-set device names.
         name = tuya_device.get("name") or ""
         for token in name.replace("-", " ").split():
             if token in EUFY_CLEAN_DEVICES:
@@ -509,17 +442,8 @@ class EufyLogin:
         aiot_device: dict | None = None,
         tuya_device: dict | None = None,
     ):
-        device = next((d for d in self.eufy_api_devices if d.get("id") == deviceId), None)
-        # MQTT topics use the model resolved below ("Subscribing to ..." logs
-        # it); log the raw codes so a collapsed variant (e.g. a suffixed
-        # product code) is visible (#107).
-        _LOGGER.debug(
-            "Device %s: raw model codes: V2 product_code=%r, V2 device_model=%r, "
-            "AIOT device_model=%r",
-            deviceId,
-            ((device or {}).get("product") or {}).get("product_code"),
-            (device or {}).get("device_model"),
-            (aiot_device or {}).get("device_model"),
+        device = next(
+            (d for d in self.eufy_api_devices if d.get("id") == deviceId), None
         )
 
         if device:
@@ -533,15 +457,7 @@ class EufyLogin:
                 "invalid": False,
             }
 
-        # Fallback: accounts where the V2 endpoint returns no metadata for a
-        # device (e.g. devices added through the modern Eufy Clean app rather
-        # than the legacy EufyHome app) still get a usable entry from the
-        # AIOT device-list response, which carries device_model and
-        # device_name directly.
         if aiot_device:
-            # Use the shared resolver (not a raw [:5] slice) so 6-char codes
-            # like T2080A (S1 Pro) aren't truncated to T2080 (S1) and
-            # misidentified.
             model_code = self._resolve_model(aiot_device.get("device_model") or "")
             return {
                 "deviceId": deviceId,
@@ -549,16 +465,10 @@ class EufyLogin:
                 "deviceName": aiot_device.get("alias_name")
                 or aiot_device.get("device_name")
                 or "Eufy Robovac",
-                "deviceModelName": None,
+                "deviceModelName": EUFY_CLEAN_DEVICES.get(model_code),
                 "invalid": not bool(model_code),
             }
 
-        # Fallback: a Tuya-cloud device (legacy transport) whose devId is not in
-        # the Eufy v2 list. Resolve the model from the Tuya record rather than
-        # skipping the device. A device that exposes a localKey is a real,
-        # controllable Tuya device even when its exact model is unknown — keep
-        # it (so the legacy/local transport works) and only flag it invalid when
-        # there is neither a resolvable model nor a localKey (issue #131).
         if tuya_device is not None:
             model = self._resolve_tuya_model(tuya_device)
             has_local_key = bool(tuya_device.get("localKey"))
