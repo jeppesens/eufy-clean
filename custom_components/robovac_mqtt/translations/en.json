@@ -5,27 +5,46 @@
         "title": "Login",
         "data": {
           "username": "Email address",
-          "password": "Password"
+          "password": "Password",
+          "country_code": "Country code (e.g. GB, US, DE)"
         }
       },
       "reconfigure": {
         "title": "Reconfigure",
         "data": {
           "username": "Email address",
-          "password": "Password"
+          "password": "Password",
+          "country_code": "Country code (e.g. GB, US, DE)"
         }
       },
       "reauth_confirm": {
         "title": "Re-authenticate",
         "description": "Re-enter the password for **{username}**.",
         "data": {
-          "password": "Password"
+          "password": "Password",
+          "country_code": "Country code (e.g. GB, US, DE)"
+        }
+      },
+      "captcha": {
+        "title": "Captcha verification",
+        "description": "Enter the characters shown in the image below:\n\n![Captcha]({captcha_image})",
+        "data": {
+          "captcha_answer": "Captcha code"
+        }
+      },
+      "two_factor": {
+        "title": "Two-factor authentication",
+        "description": "A verification code was sent via **{method}**. Enter it below.",
+        "data": {
+          "verify_code": "Verification code"
         }
       }
     },
     "error": {
       "no_devices": "No supported devices found on this account. Make sure at least one MQTT-capable Eufy robot vacuum is registered.",
       "invalid_auth": "Invalid credentials",
+      "invalid_captcha": "Incorrect captcha answer — a new image has been loaded.",
+      "invalid_code": "Invalid verification code — please try again.",
       "unknown": "Unexpected error",
       "username_mismatch": "Username cannot be changed"
     },

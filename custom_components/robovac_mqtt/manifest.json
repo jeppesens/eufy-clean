@@ -21,7 +21,8 @@
     "paho.mqtt"
   ],
   "requirements": [
-    "tinytuya>=1.18.0,<2.0.0"
+    "tinytuya>=1.18.0,<2.0.0",
+    "cryptography>=41.0.0"
   ],
   "version": "1.13.1"
 }

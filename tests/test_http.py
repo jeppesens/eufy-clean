@@ -7,6 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from custom_components.robovac_mqtt.api.http import _REQUEST_TIMEOUT, EufyHTTPClient
+from custom_components.robovac_mqtt.api.mega_http import (
+    MegaCaptchaRequiredError,
+    MegaTwoFactorRequiredError,
+)
 
 
 def _mock_websession(mock_response: AsyncMock) -> MagicMock:
@@ -76,7 +80,7 @@ async def test_get_mqtt_credentials_returns_none_without_user_info():
 
 @pytest.mark.asyncio
 async def test_login_returns_empty_on_failed_login():
-    """login() should return {} when eufy_login gets a non-200 / no access_token response."""
+    """login() should return {} when legacy and Mega login all fail."""
     mock_response = AsyncMock()
     mock_response.status = 401
     mock_response.json = AsyncMock(return_value=None)
@@ -106,7 +110,6 @@ async def test_login_validate_only():
 
     result = await client.login(validate_only=True)
 
-    # Should contain session data
     assert "session" in result
     assert result["session"]["access_token"] == "tok_abc"
 
@@ -120,7 +123,7 @@ def test_request_timeout_is_configured():
     assert _REQUEST_TIMEOUT.total == 30
 
 
-# --- v2/v1 login fallback (PR #122) ---
+# --- v2/v1 login fallback (PR #122) + Mega v6 fallback ---
 
 
 def _mock_websession_sequence(*responses: AsyncMock) -> MagicMock:
@@ -179,16 +182,93 @@ async def test_login_validate_falls_back_to_v1():
 
 @pytest.mark.asyncio
 async def test_login_all_attempts_fail():
-    """Returns {} when both v2 and v1 fail."""
+    """Returns {} when v2, v1, and Mega v6 fallback all fail."""
     mock_session = _mock_websession_sequence(
         _login_response(401), _login_response(403)
     )
     client = _make_client(websession=mock_session)
+    client.login_mega = AsyncMock(side_effect=RuntimeError("mega failed"))
 
     result = await client.login(validate_only=True)
 
     assert result == {}
     assert mock_session.post.call_count == 2
+    client.login_mega.assert_awaited_once_with(validate_only=True)
+
+
+@pytest.mark.asyncio
+async def test_login_falls_back_to_mega_when_legacy_fails():
+    """When both legacy endpoints fail, login() falls back to Mega v6."""
+    mock_session = _mock_websession_sequence(
+        _login_response(401), _login_response(401)
+    )
+    client = _make_client(websession=mock_session)
+    expected = {
+        "session": {"access_token": "mega_tok", "user_id": "u_mega"},
+        "user": {"user_center_id": "u_mega", "user_center_token": "mega_tok"},
+        "mqtt": {"endpoint_addr": "aiot-mqtt-eu.anker.com"},
+    }
+    client.login_mega = AsyncMock(return_value=expected)
+
+    result = await client.login()
+
+    assert result == expected
+    assert mock_session.post.call_count == 2
+    client.login_mega.assert_awaited_once_with(validate_only=False)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "challenge",
+    [
+        MegaCaptchaRequiredError("cap1", "data:image/png;base64,AAA"),
+        MegaTwoFactorRequiredError("email"),
+    ],
+)
+async def test_login_propagates_mega_challenges(challenge):
+    """Captcha and 2FA exceptions from Mega fallback propagate to config flow."""
+    mock_session = _mock_websession_sequence(
+        _login_response(401), _login_response(401)
+    )
+    client = _make_client(websession=mock_session)
+    client.login_mega = AsyncMock(side_effect=challenge)
+
+    with pytest.raises(type(challenge)):
+        await client.login()
+
+
+@pytest.mark.asyncio
+async def test_login_reuses_persisted_mega_session():
+    """When a valid Mega session is already restored, legacy endpoints are skipped."""
+    mock_session = MagicMock()
+    client = EufyHTTPClient(
+        username="test@example.com",
+        password="secret",
+        openudid="0123456789abcdef",
+        websession=mock_session,
+        country_code="GB",
+        mega_session={
+            "user_id": "ap_1",
+            "account_user_id": "acc_1",
+            "auth_token": "saved_tok",
+            "share_key": "00" * 16,
+            "key_ident": "kid_1",
+            "region": "eu-pr",
+            "country_code": "GB",
+            "token_expires_at": 0,
+            "saved_at": 9_999_999_999.0,
+        },
+    )
+    client.mega.get_user_mqtt_info = AsyncMock(
+        return_value={"endpoint_addr": "aiot-mqtt-eu.anker.com"}
+    )
+
+    result = await client.login()
+
+    assert client.use_mega is True
+    assert result["session"]["access_token"] == "saved_tok"
+    assert result["mqtt"]["endpoint_addr"] == "aiot-mqtt-eu.anker.com"
+    mock_session.post.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -201,7 +281,6 @@ async def test_login_prefers_credential_with_user_center():
         _login_response(200, "tok_v1"),  # ...so does v1
     )
     client = _make_client(websession=mock_session)
-    # v2's token has no user_center; v1's does.
     client.get_user_info = AsyncMock(
         side_effect=[None, {"user_center_id": "x", "user_center_token": "t"}]
     )
@@ -225,12 +304,12 @@ async def test_login_falls_back_when_no_user_center_anywhere():
         _login_response(200, "tok_v1"),
     )
     client = _make_client(websession=mock_session)
-    client.get_user_info = AsyncMock(return_value=None)  # 401 -> no user_center
+    client.get_user_info = AsyncMock(return_value=None)
     client.get_mqtt_credentials = AsyncMock(return_value={"endpoint": "mqtt"})
 
     result = await client.login()
 
-    assert result["session"]["access_token"] == "tok_v2"  # first working token
+    assert result["session"]["access_token"] == "tok_v2"
     assert result["user"] is None
     assert result["mqtt"] is None
     client.get_mqtt_credentials.assert_not_awaited()
@@ -266,10 +345,9 @@ async def test_login_real_sequence_v2_user_center_skips_v1():
 
     assert result["session"]["access_token"] == "tok_v2"
     assert result["user"]["user_center_id"] == "uc1"
-    assert result["user"]["gtoken"]  # real gtoken computed by get_user_info
+    assert result["user"]["gtoken"]
     assert result["mqtt"] == {"endpoint": "mqtt"}
     assert client.user_info["user_center_id"] == "uc1"
-    # Only one login POST happened (v1 not attempted).
     login_posts = [
         c.args[0]
         for c in mock_session.post.call_args_list

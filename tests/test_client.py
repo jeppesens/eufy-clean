@@ -11,15 +11,16 @@ from paho.mqtt import client as mqtt
 
 from custom_components.robovac_mqtt.api.client import (
     EufyCleanClient,
+    _mqtt_uuid_from,
 )
 
 
-def _make_client() -> EufyCleanClient:
+def _make_client(app_name: str = "eufy_home") -> EufyCleanClient:
     """Create a EufyCleanClient instance for testing (no real connection)."""
     return EufyCleanClient(
         device_id="TEST123",
         user_id="user1",
-        app_name="eufy_home",
+        app_name=app_name,
         thing_name="thing1",
         access_key="",
         ticket="",
@@ -94,13 +95,36 @@ def test_on_connect_failure_no_event():
     mock_mqtt.subscribe.assert_not_called()
 
 
+def test_mega_client_id_shape_and_thing_name_fallback():
+    """eufy_mega uses the v6 app-shaped client ID and falls back to thing_name."""
+    client = _make_client(app_name="eufy_mega")
+    expected_prefix = f"android-eufy_mega-user1-{_mqtt_uuid_from('abc123')}-"
+    assert client._build_client_id().startswith(expected_prefix)
+
+    client._use_thing_name_id = True
+    assert client._build_client_id() == "thing1"
+
+
+def test_mega_rc5_schedules_thing_name_reconnect():
+    """On rc=5 (not authorized) for eufy_mega, client schedules thing_name fallback."""
+    client = _make_client(app_name="eufy_mega")
+    mock_loop = MagicMock()
+    client._loop = mock_loop
+
+    with patch("asyncio.run_coroutine_threadsafe") as mock_schedule:
+        client._on_connect(MagicMock(), None, {}, 5)
+        mock_schedule.assert_called_once()
+        # Close the unawaited coroutine created by the mocked call.
+        coro = mock_schedule.call_args.args[0]
+        coro.close()
+
+
 @pytest.mark.asyncio
 async def test_send_command_not_connected():
     """Test send_command when _mqtt_client is None returns without error."""
     client = _make_client()
     assert client._mqtt_client is None
 
-    # Should not raise
     await client.send_command({"test": "value"})
 
 
@@ -119,17 +143,19 @@ async def test_send_command_disconnected_client():
 
 @pytest.mark.asyncio
 async def test_disconnect_cleans_temp_files():
-    """Test disconnect() removes temporary certificate and key files."""
+    """Test disconnect() removes temporary certificate, key, and CA files."""
     client = _make_client()
 
-    # Create real temp files to verify deletion
     cert_fd, cert_path = tempfile.mkstemp(suffix=".pem")
     key_fd, key_path = tempfile.mkstemp(suffix=".key")
+    ca_fd, ca_path = tempfile.mkstemp(suffix=".ca.pem")
     os.close(cert_fd)
     os.close(key_fd)
+    os.close(ca_fd)
 
     client._cert_path = cert_path
     client._key_path = key_path
+    client._root_ca_path = ca_path
 
     mock_mqtt = MagicMock()
     client._mqtt_client = mock_mqtt
@@ -139,8 +165,10 @@ async def test_disconnect_cleans_temp_files():
 
     assert not os.path.exists(cert_path)
     assert not os.path.exists(key_path)
+    assert not os.path.exists(ca_path)
     assert client._cert_path is None
     assert client._key_path is None
+    assert client._root_ca_path is None
 
 
 @pytest.mark.asyncio

@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import logging
-import random
 import re
-import string
+import secrets
 from typing import Any
 
 import homeassistant.helpers.config_validation as cv
@@ -19,6 +18,15 @@ from voluptuous import Optional as VOptional
 from voluptuous import Required, Schema
 
 from .api.cloud import EufyLogin
+from .api.mega_http import (
+    CONF_COUNTRY_CODE,
+    CONF_MEGA_SESSION,
+    CONF_OPENUDID,
+    DEFAULT_COUNTRY_CODE,
+    MegaApiError,
+    MegaCaptchaRequiredError,
+    MegaTwoFactorRequiredError,
+)
 from .const import (
     CONF_LOCAL_DEVICES,
     CONF_LOCAL_HOST,
@@ -40,47 +48,77 @@ from .const import (
 
 _LOGGER = logging.getLogger(__name__)
 
-USER_SCHEMA = Schema(
-    {
-        Required(CONF_USERNAME): cv.string,
-        Required(CONF_PASSWORD): cv.string,
-    }
-)
-
 
 class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call-arg]
     """Handle a config flow for Eufy Robovac."""
 
     VERSION = 1
-    data: dict[str, Any] | None
+
+    def __init__(self) -> None:
+        self._eufy_login: EufyLogin | None = None
+        self._pending_data: dict[str, Any] = {}
+        self._flow_mode: str = "user"
+        self._target_entry: config_entries.ConfigEntry | None = None
+        self._captcha_image: str = ""
+        self._two_factor_method: str = "email"
 
     @staticmethod
     def async_get_options_flow(
         config_entry: config_entries.ConfigEntry,
     ) -> OptionsFlowHandler:
-        """Return the options flow (global settings + per-device local-Tuya)."""
         return OptionsFlowHandler(config_entry)
+
+    def _default_country(self, entry: config_entries.ConfigEntry | None = None) -> str:
+        if entry and entry.data.get(CONF_COUNTRY_CODE):
+            return str(entry.data[CONF_COUNTRY_CODE])
+        return (self.hass.config.country or DEFAULT_COUNTRY_CODE).upper()
+
+    def _user_schema(
+        self,
+        *,
+        default_username: str | None = None,
+        default_country: str | None = None,
+    ) -> Schema:
+        country = default_country or self._default_country()
+        if default_username is not None:
+            return Schema(
+                {
+                    Required(CONF_USERNAME, default=default_username): cv.string,
+                    Required(CONF_PASSWORD): cv.string,
+                    Required(CONF_COUNTRY_CODE, default=country): cv.string,
+                }
+            )
+        return Schema(
+            {
+                Required(CONF_USERNAME): cv.string,
+                Required(CONF_PASSWORD): cv.string,
+                Required(CONF_COUNTRY_CODE, default=country): cv.string,
+            }
+        )
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
         """Handle the initial step."""
         if user_input is None:
-            return self.async_show_form(step_id="user", data_schema=USER_SCHEMA)
-        errors: dict[str, str] = {}
-        username = user_input[CONF_USERNAME]
+            return self.async_show_form(step_id="user", data_schema=self._user_schema())
+
+        username = user_input[CONF_USERNAME].strip()
+        password = user_input[CONF_PASSWORD]
+        country = user_input[CONF_COUNTRY_CODE].strip().upper() or DEFAULT_COUNTRY_CODE
+
         await self.async_set_unique_id(username)
         self._abort_if_unique_id_configured()
 
-        title, errors = await self._login_and_get_title(username, user_input[CONF_PASSWORD])
-
-        if not errors:
-            data = user_input.copy()
-            data[VACS] = {}
-            return self.async_create_entry(title=title, data=data)
-
-        return self.async_show_form(
-            step_id="user", data_schema=USER_SCHEMA, errors=errors
+        self._flow_mode = "user"
+        self._target_entry = None
+        return await self._start_login(
+            username=username,
+            password=password,
+            country=country,
+            openudid=secrets.token_hex(8),
+            retry_step="user",
+            retry_schema=self._user_schema(default_country=country),
         )
 
     async def async_step_reconfigure(
@@ -90,49 +128,49 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         assert entry
         current_username = entry.data[CONF_USERNAME]
+        current_country = self._default_country(entry)
 
         if user_input is None:
-            schema = Schema(
-                {
-                    Required(CONF_USERNAME, default=current_username): cv.string,
-                    Required(CONF_PASSWORD): cv.string,
-                }
-            )
             return self.async_show_form(
-                step_id="reconfigure", data_schema=schema, description_placeholders={}
+                step_id="reconfigure",
+                data_schema=self._user_schema(
+                    default_username=current_username,
+                    default_country=current_country,
+                ),
             )
 
-        errors: dict[str, str] = {}
-        title = current_username
-        username = user_input[CONF_USERNAME]
+        username = user_input[CONF_USERNAME].strip()
+        country = user_input[CONF_COUNTRY_CODE].strip().upper() or current_country
 
-        # Verify username matches existing entry (optional, but robust)
         if username != current_username:
-            errors[CONF_USERNAME] = "username_mismatch"
-        else:
-            title, errors = await self._login_and_get_title(username, user_input[CONF_PASSWORD])
-
-        if not errors:
-            return self.async_update_reload_and_abort(
-                entry,
-                data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]},
-                title=title,
+            return self.async_show_form(
+                step_id="reconfigure",
+                data_schema=self._user_schema(
+                    default_username=current_username,
+                    default_country=country,
+                ),
+                errors={CONF_USERNAME: "username_mismatch"},
             )
 
-        schema = Schema(
-            {
-                Required(CONF_USERNAME, default=current_username): cv.string,
-                Required(CONF_PASSWORD): cv.string,
-            }
-        )
-        return self.async_show_form(
-            step_id="reconfigure", data_schema=schema, errors=errors
+        self._flow_mode = "reconfigure"
+        self._target_entry = entry
+        openudid = entry.data.get(CONF_OPENUDID) or secrets.token_hex(8)
+        return await self._start_login(
+            username=username,
+            password=user_input[CONF_PASSWORD],
+            country=country,
+            openudid=openudid,
+            retry_step="reconfigure",
+            retry_schema=self._user_schema(
+                default_username=current_username,
+                default_country=country,
+            ),
         )
 
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
     ) -> ConfigFlowResult:
-        """Handle reauthentication when credentials expire."""
+        """Handle reauthentication when credentials or session expire."""
         return await self.async_step_reauth_confirm()
 
     async def async_step_reauth_confirm(
@@ -141,85 +179,215 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):  # type: ignore[call
         """Handle reauth confirmation step."""
         entry = self._get_reauth_entry()
         username = entry.data[CONF_USERNAME]
+        current_country = self._default_country(entry)
+        schema = Schema(
+            {
+                Required(CONF_PASSWORD): cv.string,
+                Required(CONF_COUNTRY_CODE, default=current_country): cv.string,
+            }
+        )
 
         if user_input is None:
-            schema = Schema({Required(CONF_PASSWORD): cv.string})
             return self.async_show_form(
                 step_id="reauth_confirm",
                 data_schema=schema,
                 description_placeholders={"username": username},
             )
 
-        _title, errors = await self._login_and_get_title(
-            username, user_input[CONF_PASSWORD]
-        )
-
-        if not errors:
-            return self.async_update_reload_and_abort(
-                entry,
-                data={**entry.data, CONF_PASSWORD: user_input[CONF_PASSWORD]},
-            )
-
-        schema = Schema({Required(CONF_PASSWORD): cv.string})
-        return self.async_show_form(
-            step_id="reauth_confirm",
-            data_schema=schema,
-            errors=errors,
+        country = user_input[CONF_COUNTRY_CODE].strip().upper() or current_country
+        self._flow_mode = "reauth"
+        self._target_entry = entry
+        openudid = entry.data.get(CONF_OPENUDID) or secrets.token_hex(8)
+        return await self._start_login(
+            username=username,
+            password=user_input[CONF_PASSWORD],
+            country=country,
+            openudid=openudid,
+            retry_step="reauth_confirm",
+            retry_schema=schema,
             description_placeholders={"username": username},
         )
 
-    async def _login_and_get_title(
-        self, username: str, password: str
-    ) -> tuple[str, dict[str, str]]:
-        """Login and return (title, errors).
+    async def _start_login(
+        self,
+        *,
+        username: str,
+        password: str,
+        country: str,
+        openudid: str,
+        retry_step: str,
+        retry_schema: Schema,
+        description_placeholders: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
+        session = async_get_clientsession(self.hass)
+        self._pending_data = {
+            CONF_USERNAME: username,
+            CONF_PASSWORD: password,
+            CONF_COUNTRY_CODE: country,
+            CONF_OPENUDID: openudid,
+        }
+        self._eufy_login = EufyLogin(
+            username,
+            password,
+            openudid,
+            websession=session,
+            country_code=country,
+        )
 
-        Title is the discovered device name(s) (MQTT + Tuya Cloud), falling
-        back to the username when no devices are found.
-        """
-        errors: dict[str, str] = {}
-        title = username
         try:
-            openudid = "".join(random.choices(string.hexdigits, k=32))
-            _LOGGER.info("Trying to login with username: %s", username)
-            session = async_get_clientsession(self.hass)
-            eufy_login = EufyLogin(username, password, openudid, websession=session)
-            await eufy_login.init()
-            devices = eufy_login.mqtt_devices + eufy_login.cloud_devices
-            if devices:
-                title = ", ".join(
-                    d.get("deviceName") or "Eufy Robot" for d in devices
-                )
-            else:
-                errors["base"] = "no_devices"
-        except Exception as e:
-            _LOGGER.exception("Unexpected exception: %s", e)
-            errors["base"] = "invalid_auth"
+            await self._eufy_login.init()
+        except MegaCaptchaRequiredError as cap:
+            self._captcha_image = cap.image
+            return await self.async_step_captcha()
+        except MegaTwoFactorRequiredError as tfa:
+            self._two_factor_method = tfa.method
+            return await self.async_step_two_factor()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("Eufy login failed: %s", err)
+            return self.async_show_form(
+                step_id=retry_step,
+                data_schema=retry_schema,
+                errors={"base": "invalid_auth"},
+                description_placeholders=description_placeholders,
+            )
 
-        return title, errors
+        return self._finish_flow(
+            retry_step=retry_step,
+            retry_schema=retry_schema,
+            description_placeholders=description_placeholders,
+        )
+
+    async def async_step_captcha(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Display and validate a Mega captcha challenge."""
+        schema = Schema({Required("captcha_answer"): cv.string})
+
+        if user_input is None:
+            return self.async_show_form(
+                step_id="captcha",
+                data_schema=schema,
+                description_placeholders={"captcha_image": self._captcha_image},
+            )
+
+        if self._eufy_login is None:
+            return self.async_abort(reason="unknown")
+
+        try:
+            await self._eufy_login.solve_captcha(user_input["captcha_answer"])
+        except MegaCaptchaRequiredError as cap:
+            self._captcha_image = cap.image
+            return self.async_show_form(
+                step_id="captcha",
+                data_schema=schema,
+                errors={"base": "invalid_captcha"},
+                description_placeholders={"captcha_image": self._captcha_image},
+            )
+        except MegaTwoFactorRequiredError as tfa:
+            self._two_factor_method = tfa.method
+            return await self.async_step_two_factor()
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("Captcha submission failed: %s", err)
+            return self.async_show_form(
+                step_id="captcha",
+                data_schema=schema,
+                errors={"base": "invalid_auth"},
+                description_placeholders={"captcha_image": self._captcha_image},
+            )
+
+        return self._finish_flow(
+            retry_step="captcha",
+            retry_schema=schema,
+            description_placeholders={"captcha_image": self._captcha_image},
+        )
+
+    async def async_step_two_factor(
+        self, user_input: dict[str, Any] | None = None
+    ) -> ConfigFlowResult:
+        """Prompt for and submit a Mega 2FA verification code."""
+        schema = Schema({Required("verify_code"): cv.string})
+        placeholders = {"method": self._two_factor_method}
+
+        if user_input is None:
+            return self.async_show_form(
+                step_id="two_factor",
+                data_schema=schema,
+                description_placeholders=placeholders,
+            )
+
+        if self._eufy_login is None:
+            return self.async_abort(reason="unknown")
+
+        try:
+            await self._eufy_login.submit_verify_code(user_input["verify_code"])
+        except MegaApiError as err:
+            _LOGGER.warning("2FA verification failed: %s", err)
+            return self.async_show_form(
+                step_id="two_factor",
+                data_schema=schema,
+                errors={"base": "invalid_code"},
+                description_placeholders=placeholders,
+            )
+        except Exception as err:  # noqa: BLE001
+            _LOGGER.exception("Unexpected 2FA failure: %s", err)
+            return self.async_show_form(
+                step_id="two_factor",
+                data_schema=schema,
+                errors={"base": "invalid_auth"},
+                description_placeholders=placeholders,
+            )
+
+        return self._finish_flow(
+            retry_step="two_factor",
+            retry_schema=schema,
+            description_placeholders=placeholders,
+        )
+
+    def _finish_flow(
+        self,
+        *,
+        retry_step: str,
+        retry_schema: Schema,
+        description_placeholders: dict[str, str] | None = None,
+    ) -> ConfigFlowResult:
+        assert self._eufy_login is not None
+        devices = self._eufy_login.mqtt_devices + self._eufy_login.cloud_devices
+        if not devices:
+            return self.async_show_form(
+                step_id=retry_step,
+                data_schema=retry_schema,
+                errors={"base": "no_devices"},
+                description_placeholders=description_placeholders,
+            )
+
+        title = ", ".join(d.get("deviceName") or "Eufy Robot" for d in devices)
+        mega_session = self._eufy_login.export_session()
+        final_data = {
+            **self._pending_data,
+            CONF_MEGA_SESSION: mega_session,
+        }
+
+        if self._flow_mode in ("reconfigure", "reauth") and self._target_entry:
+            return self.async_update_reload_and_abort(
+                self._target_entry,
+                data={**self._target_entry.data, **final_data},
+                title=title if self._flow_mode == "reconfigure" else self._target_entry.title,
+            )
+
+        final_data[VACS] = {}
+        return self.async_create_entry(title=title, data=final_data)
 
 
 class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
-    """Eufy Robovac options: global settings + per-device local-Tuya overrides.
-
-    Global settings cover map rendering, robot style and notifications. The
-    per-device section lets a user opt a Tuya Cloud device into direct local
-    push by entering its LAN address (the local key is auto-supplied by the
-    Tuya Cloud login), plus manual room id->name overrides.
-
-    Saving changed options reloads the entry (OptionsFlowWithReload), so the
-    entry must not register an update listener: HA raises if it does.
-    """
+    """Eufy Robovac options: global settings + per-device local-Tuya overrides."""
 
     def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        # HA 2025+ deprecates assigning to self.config_entry; use a private ref.
         self._config_entry = config_entry
-        # Device id chosen in the "devices" step, configured in the "device" step.
         self._selected_device: str | None = None
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Top-level options menu."""
         return self.async_show_menu(
             step_id="init",
             menu_options=["settings", "devices"],
@@ -228,14 +396,7 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     async def async_step_settings(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Global settings: map rendering, robot style, notifications.
-
-        Every field is optional (each has a current/default value), so any one
-        can be changed without re-entering the others.
-        """
         if user_input is not None:
-            # An unselected mobile-service dropdown submits None; store "" so
-            # downstream consumers can rely on a plain string.
             if user_input.get(CONF_NOTIFY_MOBILE_SERVICE) is None:
                 user_input[CONF_NOTIFY_MOBILE_SERVICE] = ""
             return self.async_create_entry(
@@ -250,7 +411,6 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
             CONF_NOTIFY_MOBILE_SERVICE, DEFAULT_NOTIFY_MOBILE_SERVICE
         )
 
-        # Discover available mobile app notify services
         all_notify = self.hass.services.async_services().get("notify", {})
         mobile_services = sorted(
             svc for svc in all_notify if svc.startswith("mobile_app_")
@@ -288,8 +448,6 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
                 VOptional(
                     CONF_NOTIFY_DESKTOP, default=current_notify_desktop
                 ): selector.BooleanSelector(),
-                # vol.Maybe lets an unselected dropdown (which submits None) pass
-                # validation; the step normalises None back to "".
                 VOptional(
                     CONF_NOTIFY_MOBILE_SERVICE, default=current_notify_mobile_service
                 ): vol.Maybe(
@@ -306,7 +464,6 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
         return self.async_show_form(step_id="settings", data_schema=schema)
 
     def _eligible_devices(self) -> list[tuple[str, str, str, Any]]:
-        """Return (device_id, name, model, coordinator) for each loaded device."""
         runtime = self.hass.data.get(DOMAIN, {}).get(
             self._config_entry.entry_id, {}
         )
@@ -318,7 +475,6 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     async def async_step_devices(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Pick a device to configure (local-Tuya address + room overrides)."""
         devices = self._eligible_devices()
         if not devices:
             return self.async_abort(reason="no_devices")
@@ -345,18 +501,12 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
     async def async_step_device(
         self, user_input: dict[str, Any] | None = None
     ) -> ConfigFlowResult:
-        """Configure one device's local-Tuya host / protocol / room overrides.
-
-        Uses static field keys (host/version/rooms) so they get proper
-        translated labels, with the device name shown in the step description.
-        """
         dev_id = self._selected_device
         devices = {d[0]: d for d in self._eligible_devices()}
         if not dev_id or dev_id not in devices:
             return self.async_abort(reason="no_devices")
         _id, name, model, coord = devices[dev_id]
         has_local_key = bool(getattr(coord, "_local_key", None))
-        # Copy the full stored map so other devices' overrides are preserved.
         existing_all: dict[str, dict] = dict(
             self._config_entry.options.get(CONF_LOCAL_DEVICES, {})
         )
@@ -394,7 +544,6 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
                 if entry:
                     existing_all[dev_id] = entry
                 else:
-                    # All fields cleared — drop any stored override.
                     existing_all.pop(dev_id, None)
                 return self.async_create_entry(
                     title="",
@@ -403,18 +552,13 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
                         CONF_LOCAL_DEVICES: existing_all,
                     },
                 )
-            # Re-show with the submitted values preserved (the map id text is
-            # kept as typed so a malformed line can be corrected in place).
             current = {
                 CONF_LOCAL_HOST: host,
                 CONF_LOCAL_VERSION: version,
                 CONF_ROOM_NAMES: rooms_parsed,
             }
 
-        # Pre-fill with suggested_value, not default=: the frontend omits an
-        # emptied optional field from the submission, and a default= would put
-        # the stored value back, making a saved override impossible to clear.
-        schema_dict: dict = {}
+        schema_dict: dict[Any, Any] = {}
         if has_local_key:
             schema_dict[
                 VOptional(
@@ -436,14 +580,10 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
                     )
                 },
             )
-        ] = selector.TextSelector(
-            selector.TextSelectorConfig(multiline=True)
-        )
+        ] = selector.TextSelector(selector.TextSelectorConfig(multiline=True))
         schema_dict[
             VOptional(CONF_MAP_ID, description={"suggested_value": map_ids_text})
-        ] = selector.TextSelector(
-            selector.TextSelectorConfig(multiline=True)
-        )
+        ] = selector.TextSelector(selector.TextSelectorConfig(multiline=True))
         return self.async_show_form(
             step_id="device",
             data_schema=Schema(schema_dict),
@@ -453,22 +593,11 @@ class OptionsFlowHandler(config_entries.OptionsFlowWithReload):
 
 
 def _option_lines(text: str) -> list[str]:
-    """Return the meaningful lines of a multi-line options field.
-
-    Whitespace is stripped; blank lines and ``#`` comments are dropped.
-    """
     lines = (raw_line.strip() for raw_line in text.splitlines())
     return [line for line in lines if line and not line.startswith("#")]
 
 
 def _parse_rooms_text(text: str) -> dict[int, str]:
-    """Parse a user-entered "id: name" multi-line string into a dict.
-
-    Lines starting with ``#`` are treated as comments. Whitespace and
-    duplicate IDs are tolerated; the LAST occurrence of an ID wins. Lines
-    that don't fit ``<int>: <text>`` are silently ignored — we'd rather
-    accept loose input than reject the whole form.
-    """
     rooms: dict[int, str] = {}
     for line in _option_lines(text):
         if ":" not in line:
@@ -484,18 +613,10 @@ def _parse_rooms_text(text: str) -> dict[int, str]:
     return rooms
 
 
-# A single hostname label: alphanumeric, may contain hyphens internally,
-# 1-63 chars. The full hostname is one or more such labels joined by dots.
 _HOSTNAME_LABEL = re.compile(r"^(?!-)[A-Za-z0-9-]{1,63}(?<!-)$")
 
 
 def _is_valid_host(host: str) -> bool:
-    """Return True if ``host`` is a bare IP address or plausible hostname.
-
-    Rejects values carrying a scheme or port (e.g. ``http://x`` or
-    ``1.2.3.4:6668``) since the local-Tuya client expects a bare host. An
-    empty string is *not* validated here (empty = "stay on cloud").
-    """
     if not host:
         return False
     try:
@@ -503,19 +624,12 @@ def _is_valid_host(host: str) -> bool:
         return True
     except ValueError:
         pass
-    # Not an IP — accept a plausible hostname (no scheme, no port, no spaces).
     if len(host) > 253:
         return False
     return all(_HOSTNAME_LABEL.match(label) for label in host.split("."))
 
 
 def _format_rooms_text(rooms: dict[int, str]) -> str:
-    """Render the saved override dict back as the textarea default.
-
-    Room ids are sorted numerically (not lexically) so that e.g. room 10
-    comes after room 9 even when keys arrive as strings (JSON storage
-    stringifies int keys).
-    """
     if not rooms:
         return ""
     return "\n".join(
@@ -525,14 +639,6 @@ def _format_rooms_text(rooms: dict[int, str]) -> str:
 
 
 def _parse_map_ids_text(text: str) -> tuple[int | None, dict[int, int]]:
-    """Parse the map id override field into (all-maps id, per-map ids).
-
-    A bare ``<local id>`` line applies to every map; a ``<reported id>:
-    <local id>`` line applies only while the device reports that map id. For
-    duplicates the LAST line wins. Unlike room names, a malformed line raises
-    ``ValueError``: silently ignoring it would send room cleans to a map id the
-    firmware rejects.
-    """
     all_maps: int | None = None
     per_map: dict[int, int] = {}
     for line in _option_lines(text):
@@ -545,7 +651,6 @@ def _parse_map_ids_text(text: str) -> tuple[int | None, dict[int, int]]:
 
 
 def _positive_int(text: str) -> int:
-    """Return ``text`` as an int greater than zero, else raise ``ValueError``."""
     value = int(text.strip())
     if value <= 0:
         raise ValueError(f"not a positive integer: {text!r}")
@@ -553,11 +658,6 @@ def _positive_int(text: str) -> int:
 
 
 def _format_map_ids_text(all_maps: int | None, per_map: dict[int, int]) -> str:
-    """Render the saved map id overrides back as the textarea default.
-
-    The all-maps id comes first. Reported ids are sorted numerically because
-    JSON storage stringifies the int keys.
-    """
     lines = [str(all_maps)] if all_maps else []
     lines.extend(
         f"{reported_id}: {local_id}"
