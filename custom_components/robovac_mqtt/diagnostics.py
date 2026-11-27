@@ -21,6 +21,7 @@ REDACT_KEYS = {
     "private_key",
     "sid",
     "openudid",
+    "mega_session",
 }
 
 

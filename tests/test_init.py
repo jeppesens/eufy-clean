@@ -5,6 +5,7 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import aiohttp
+import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
@@ -12,6 +13,14 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.robovac_mqtt import _FRONTEND_DIR, _int_keyed
 from custom_components.robovac_mqtt.api.cloud import EufyLoginError
+from custom_components.robovac_mqtt.api.mega_http import (
+    CONF_COUNTRY_CODE,
+    CONF_MEGA_SESSION,
+    CONF_OPENUDID,
+    MegaCaptchaRequiredError,
+    MegaSessionExpiredError,
+    MegaTwoFactorRequiredError,
+)
 from custom_components.robovac_mqtt.const import (
     CONF_LOCAL_DEVICES,
     CONF_MAP_ID,
@@ -22,7 +31,6 @@ from custom_components.robovac_mqtt.const import (
 
 async def test_load_unload_entry(hass: HomeAssistant):
     """Test loading and unloading the integration."""
-    # Create a mock config entry
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={
@@ -33,12 +41,9 @@ async def test_load_unload_entry(hass: HomeAssistant):
     )
     config_entry.add_to_hass(hass)
 
-    # Mock EufyLogin and EufyCleanCoordinator
     with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
         "custom_components.robovac_mqtt.EufyCleanCoordinator"
     ) as mock_coord_cls:
-
-        # Setup Login mock
         mock_login = mock_login_cls.return_value
         mock_login.init = AsyncMock()
         mock_login.mqtt_devices = [
@@ -51,26 +56,21 @@ async def test_load_unload_entry(hass: HomeAssistant):
         ]
         mock_login.cloud_devices = []
 
-        # Setup Coordinator mock
         mock_coord = mock_coord_cls.return_value
         mock_coord.initialize = AsyncMock()
         mock_coord.device_id = "test_device_id"
         mock_coord.device_name = "Test Vac"
         mock_coord.device_model = "T2118"
-        mock_coord.data = MagicMock()  # Mock the VacuumState data
-
-        # Mock client and disconnect method
+        mock_coord.data = MagicMock()
         mock_coord.client = MagicMock()
         mock_coord.client.disconnect = AsyncMock()
         mock_coord.async_stop_p2p = AsyncMock()
 
-        # Setup the config entry
         result = await hass.config_entries.async_setup(config_entry.entry_id)
         assert result is True, f"Async setup failed, result: {result}"
 
         await hass.async_block_till_done()
 
-        # Check if the entry state is LOADED
         assert (
             config_entry.state == ConfigEntryState.LOADED
         ), f"Entry state is {config_entry.state}, expected {ConfigEntryState.LOADED}"
@@ -79,21 +79,33 @@ async def test_load_unload_entry(hass: HomeAssistant):
         # HA deprecates one next to async_update_reload_and_abort (#168).
         assert not config_entry.update_listeners
 
-        # Verify calls
+        # Stable openudid persisted on first setup
+        assert CONF_OPENUDID in config_entry.data
+
         mock_login_cls.assert_called_with(
-            "test_user", "test_password", unittest.mock.ANY, websession=unittest.mock.ANY
+            "test_user",
+            "test_password",
+            config_entry.data[CONF_OPENUDID],
+            websession=unittest.mock.ANY,
+            country_code=unittest.mock.ANY,
+            mega_session=None,
+            on_session_updated=unittest.mock.ANY,
         )
         mock_login.init.assert_called_once()
         mock_coord_cls.assert_called_once()
         mock_coord.initialize.assert_called_once()
 
-        # Unload the config entry
+        # Session update callback persists Mega session back to entry data
+        on_session_updated = mock_login_cls.call_args.kwargs["on_session_updated"]
+        on_session_updated({"auth_token": "tok_new", "user_id": "u1"})
+        assert config_entry.data[CONF_MEGA_SESSION]["auth_token"] == "tok_new"
+        assert CONF_COUNTRY_CODE in config_entry.data
+
         unload_result = await hass.config_entries.async_unload(config_entry.entry_id)
         assert unload_result is True, f"Unload failed, result: {unload_result}"
 
         await hass.async_block_till_done()
 
-        # Check if the entry state is NOT_LOADED
         assert (
             config_entry.state == ConfigEntryState.NOT_LOADED
         ), f"Entry state {config_entry.state}, expected {ConfigEntryState.NOT_LOADED}"
@@ -125,8 +137,6 @@ async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
     ):
         mock_login = mock_login_cls.return_value
         mock_login.init = AsyncMock()
-        # Card registration is independent of devices, but setup requires at
-        # least one initialized coordinator (ConfigEntryNotReady otherwise).
         mock_login.mqtt_devices = [
             {
                 "deviceId": "card_device_id",
@@ -151,25 +161,19 @@ async def test_bundled_eufy_clean_card_registered(hass: HomeAssistant):
         assert result is True, f"Async setup failed, result: {result}"
         await hass.async_block_till_done()
 
-        # Registration is DEFERRED to the frontend component, not done inline — this
-        # is what prevents the load-order race (entry set up before frontend) that
-        # left the card unregistered on some installs (#140).
         assert len(when_setup_calls) == 1
         component, register_cb = when_setup_calls[0]
         assert component == "frontend"
-        mock_add_js.assert_not_called()  # nothing registered until frontend is up
+        mock_add_js.assert_not_called()
 
-        # Frontend becomes ready -> the card registers once, with a cache-bust URL.
         await register_cb(hass, "frontend")
         assert hass.data[DOMAIN]["card_registered"] is True
         mock_add_js.assert_called_once()
         registered_url = mock_add_js.call_args.args[1]
         assert registered_url.startswith("/robovac_mqtt/eufy-clean-card.js?v=")
-        # The cache-buster tracks the card's content, not the integration version.
         card = (_FRONTEND_DIR / "eufy-clean-card.js").read_bytes()
         assert registered_url.endswith(hashlib.sha256(card).hexdigest()[:12])
 
-        # Idempotent: a second frontend-ready callback does nothing.
         await register_cb(hass, "frontend")
         mock_add_js.assert_called_once()
 
@@ -189,7 +193,6 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
     with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls, patch(
         "custom_components.robovac_mqtt.EufyCleanCoordinator"
     ) as mock_coord_cls:
-
         mock_login = mock_login_cls.return_value
         mock_login.init = AsyncMock()
         mock_login.mqtt_devices = [
@@ -213,7 +216,6 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
             }
         ]
 
-        # Track coordinator creation calls
         coordinators = []
 
         def make_coordinator(*args, **kwargs):
@@ -235,20 +237,29 @@ async def test_mixed_mqtt_and_cloud_device_setup(hass: HomeAssistant):
         assert result is True
         await hass.async_block_till_done()
 
-        # Should have created 2 coordinators
         assert len(coordinators) == 2
 
         device_ids = {info["deviceId"] for _, info in coordinators}
         assert "mqtt_dev_1" in device_ids
         assert "cloud_dev_1" in device_ids
 
-        # Both should have initialize() called
         for coord, _ in coordinators:
             coord.initialize.assert_called_once()
 
 
-async def test_setup_auth_failure_raises_config_entry_auth_failed(hass: HomeAssistant):
-    """Login failure with EufyLoginError should result in SETUP_ERROR (auth failed)."""
+@pytest.mark.parametrize(
+    "auth_error",
+    [
+        EufyLoginError("Invalid credentials"),
+        MegaSessionExpiredError("Token kicked", code=26084, status=401),
+        MegaCaptchaRequiredError("cap1", "data:image/png;base64,AAA"),
+        MegaTwoFactorRequiredError("email"),
+    ],
+)
+async def test_setup_auth_failure_raises_config_entry_auth_failed(
+    hass: HomeAssistant, auth_error: Exception
+):
+    """Auth/session/challenge errors should result in SETUP_ERROR (reauth)."""
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_USERNAME: "bad_user", CONF_PASSWORD: "bad_pass"},
@@ -258,7 +269,7 @@ async def test_setup_auth_failure_raises_config_entry_auth_failed(hass: HomeAssi
 
     with patch("custom_components.robovac_mqtt.EufyLogin") as mock_login_cls:
         mock_login = mock_login_cls.return_value
-        mock_login.init = AsyncMock(side_effect=EufyLoginError("Invalid credentials"))
+        mock_login.init = AsyncMock(side_effect=auth_error)
 
         await hass.config_entries.async_setup(config_entry.entry_id)
         await hass.async_block_till_done()
@@ -288,8 +299,7 @@ async def test_setup_network_failure_raises_config_entry_not_ready(hass: HomeAss
 
 
 async def test_setup_passes_map_id_overrides_to_coordinator(hass: HomeAssistant):
-    """Stored map id overrides reach the coordinator's device_info, with the
-    per-map keys (stringified by JSON storage) back as ints."""
+    """Stored map id overrides reach the coordinator's device_info."""
     config_entry = MockConfigEntry(
         domain=DOMAIN,
         data={CONF_USERNAME: "test_user", CONF_PASSWORD: "test_password"},
@@ -336,9 +346,7 @@ async def test_setup_passes_map_id_overrides_to_coordinator(hass: HomeAssistant)
 
 
 def test_int_keyed_restores_int_keys_and_drops_bad_entries(caplog):
-    """Stored override dicts come back from JSON with string keys: they are
-    coerced back to int, and an entry that doesn't convert is logged and
-    dropped instead of failing setup."""
+    """Stored override dicts come back from JSON with string keys."""
     raw = {"2154": "1", "3001": 2, "kitchen": 3, "4": "x"}
     assert _int_keyed(raw, int, "dev1", "map id") == {2154: 1, 3001: 2}
     assert "ignoring non-integer map id 'kitchen'" in caplog.text

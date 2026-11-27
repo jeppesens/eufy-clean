@@ -63,7 +63,9 @@ class EufyLogin:
         )
         self.username = username
         self.password = password
-        self.openudid = self.eufyApi.mega.openudid
+        self.openudid = openudid or getattr(
+            getattr(self.eufyApi, "mega", None), "openudid", ""
+        )
         self._websession = websession
         self.mqtt_credentials: dict[str, Any] | None = None
         self.mqtt_devices: list[dict[str, Any]] = []
@@ -444,6 +446,14 @@ class EufyLogin:
     ):
         device = next(
             (d for d in self.eufy_api_devices if d.get("id") == deviceId), None
+        )
+        _LOGGER.debug(
+            "Device %s: raw model codes: V2 product_code=%r, V2 device_model=%r, "
+            "AIOT device_model=%r",
+            deviceId,
+            ((device or {}).get("product") or {}).get("product_code"),
+            (device or {}).get("device_model"),
+            (aiot_device or {}).get("device_model"),
         )
 
         if device:
