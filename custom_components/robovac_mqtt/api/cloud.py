@@ -200,7 +200,7 @@ class EufyLogin:
                     {"device_sn": record["id"], "dps": {}, "_reconstructed": True}
                 )
 
-        parsed_devices = []
+        parsed_devices: list[dict[str, Any]] = []
         for device in devices:
             sn = device.get("device_sn")
             if not sn:
@@ -235,7 +235,10 @@ class EufyLogin:
             "MQTT devices: %d valid out of %d total (%s)",
             len(self.mqtt_devices),
             len(parsed_devices),
-            [(d["deviceName"], d["deviceModel"], d["apiType"]) for d in self.mqtt_devices],
+            [
+                (d["deviceName"], d["deviceModel"], d["apiType"])
+                for d in self.mqtt_devices
+            ],
         )
 
     async def getCloudDevices(self) -> None:

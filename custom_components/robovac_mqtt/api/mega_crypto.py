@@ -140,7 +140,7 @@ def prepare_key_exchange(local_key_hex: str = EUFY_MEGA_LOCAL_KEY_HEX) -> KeyExc
     key_ident = gen_id()
     sig = hmac.new(
         local_key_hex.encode("utf-8"),
-        f"{ts}+{once}+{encrypted_client_public_key}".encode("utf-8"),
+        f"{ts}+{once}+{encrypted_client_public_key}".encode(),
         hashlib.sha256,
     ).hexdigest()
 

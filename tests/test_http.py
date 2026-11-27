@@ -225,7 +225,7 @@ async def test_login_falls_back_to_mega_when_legacy_fails():
         MegaTwoFactorRequiredError("email"),
     ],
 )
-async def test_login_propagates_mega_challenges(challenge: Exception):
+async def test_login_propagates_mega_challenges(challenge):
     """Captcha and 2FA exceptions from Mega fallback propagate to config flow."""
     mock_session = _mock_websession_sequence(
         _login_response(401), _login_response(401)

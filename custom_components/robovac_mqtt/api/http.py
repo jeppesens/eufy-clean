@@ -10,7 +10,6 @@ import aiohttp
 from ..const import (
     EUFY_API_DEVICE_LIST,
     EUFY_API_DEVICE_LIST_HOME,
-    EUFY_API_DEVICE_LIST_MEGA,
     EUFY_API_DEVICE_V2,
     EUFY_API_LOGIN,
     EUFY_API_LOGIN_V2,
@@ -276,8 +275,6 @@ class EufyHTTPClient:
 
         endpoints = [
             (EUFY_API_DEVICE_LIST, 3, "standard"),
-            (EUFY_API_DEVICE_LIST_MEGA, 7, "mega"),
-            (EUFY_API_DEVICE_LIST_MEGA, 3, "mega-standard"),
         ]
 
         for url, attribute, label in endpoints:
@@ -301,7 +298,7 @@ class EufyHTTPClient:
                         devices = devices.get("devices", [])
                     if not isinstance(devices, list):
                         continue
-                    result = []
+                    result: list[dict[str, Any]] = []
                     for item in devices:
                         if not isinstance(item, dict):
                             continue
