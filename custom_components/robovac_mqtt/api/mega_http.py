@@ -331,7 +331,10 @@ class MegaHTTPClient:
         )
         _LOGGER.debug("Mega estimate_domain (%s): %s", status, str(data)[:300])
         env = data if isinstance(data, dict) else {}
-        payload = env.get("data") if isinstance(env.get("data"), dict) else {}
+        raw_payload = env.get("data")
+        payload: dict[str, Any] = (
+            raw_payload if isinstance(raw_payload, dict) else {}
+        )
         domain = str(
             payload.get("domain")
             or payload.get("host")
@@ -368,7 +371,8 @@ class MegaHTTPClient:
             headers,
         )
         env = data if isinstance(data, dict) else {}
-        inner = env.get("data") if isinstance(env.get("data"), dict) else {}
+        raw_inner = env.get("data")
+        inner: dict[str, Any] = raw_inner if isinstance(raw_inner, dict) else {}
         server_pub = inner.get("server_public_key")
         if status != 200 or env.get("code") != 0 or not server_pub:
             raise MegaApiError(
@@ -725,7 +729,8 @@ class MegaHTTPClient:
         for item in raw_devices:
             if not isinstance(item, dict):
                 continue
-            dev = item.get("device") if isinstance(item.get("device"), dict) else item
+            nested = item.get("device")
+            dev: dict[str, Any] = nested if isinstance(nested, dict) else item
             if dev.get("device_sn"):
                 results.append(dev)
         return results

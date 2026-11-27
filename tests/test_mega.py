@@ -96,6 +96,7 @@ class _FakeMegaServer:
             return 463, {"code": CODE_IDENTITY_KEY_STALE, "msg": "get identity error"}
 
         req = json.loads(decrypt_body(raw_text, self.share_key).decode("utf-8"))
+        payload: dict[str, Any]
 
         if url.endswith("/passport/generate/captcha"):
             payload = {"captcha_id": "cap_1", "item": "iVBORw0KGgo="}
